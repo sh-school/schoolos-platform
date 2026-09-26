@@ -1,0 +1,22 @@
+{% load icons %}
+{% load ui %}
+{% comment %}لوحةُ من يحمل جناحاً بتكليفٍ لا بدوره — بديلُ المشرف من ملاحظي الطلبة وعمّال الخدمات.{% endcomment %}
+<div class="exec-dash">
+
+  {% page_header "رصد الغياب — جناحي اليوم" subtitle=subtitle icon="attendance_register" %}
+    <a href="{% url 'wings:record_index' %}" class="btn-primary btn-sm">{% icon "attendance_register" %} رصد الغياب</a>
+  {% endpage_header %}
+
+  {% include "wings/partials/student_search_form.html" %}
+
+  {% if not school_day.is_open %}
+    {% include "wings/partials/day_off.html" %}
+  {% else %}
+    {% for panel in record_panels %}
+      {% include "wings/partials/record_panel.html" %}
+    {% empty %}
+      {% callout "info" show=True %}لا جناحَ مُسنَدٌ إليك اليوم — راجع النائبَ الإداريّ.{% endcallout %}
+    {% endfor %}
+  {% endif %}
+
+</div>

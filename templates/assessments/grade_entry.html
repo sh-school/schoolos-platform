@@ -1,0 +1,158 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}إدخال درجات — {{ assessment.title }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/assessments/" parent_label="التقييمات" current="إدخال الدرجات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header assessment.title subtitle=subtitle icon="absence" %}{% endpage_header %}
+
+  <div id="stats-bar">
+  {% kpi_strip label="أرقام الرصد" %}
+    {% kpi "المحفوظ" stats.total sub=entered_sub tone="blue" title="سجلّاتُ الدرجة والغياب المحفوظة" %}
+    {% kpi "مُدخَل" stats.entered|default:"0" tone="green" title="طلابٌ لهم درجة" %}
+    {% kpi "غائب" stats.absent|default:"0" tone=absent_tone %}
+    {% kpi "المتوسط" stats.avg|default:"—" tone="orange" %}
+  {% endkpi_strip %}
+  </div>
+
+  {% filter_bar "بحثٌ في الطلاب" live=True %}
+    {% field "q" "بحث باسم الطالب" id="gradeSearch" hide_label=True grow=True placeholder="بحث باسم الطالب..." autocomplete="off" %}
+  {% endfilter_bar %}
+
+  {% section_card "درجات الطلاب" meta=students_data|length icon="grades" flush=True empty="لا طلابَ مسجّلين في هذا الفصل" %}{% if students_data %}
+    <p class="scroll-x-hint">← مرّر يميناً لرؤية كل الأعمدة</p>
+    <div class="table-wrap table-wrap-scroll">
+      <table id="grades-table">
+        <thead>
+          <tr>
+            <th scope="col">اسم الطالب</th>
+            <th scope="col" class="num">الدرجة <small>/ {{ assessment.max_grade }}</small></th>
+            <th scope="col" class="num">غائب</th>
+            <th scope="col" class="num">معذور</th>
+            <th scope="col">ملاحظة</th>
+            <th scope="col" class="num">حفظ</th>
+          </tr>
+        </thead>
+        <tbody id="grades-body">
+          {% for item in students_data %}
+          {% include "assessments/partials/grade_row.html" with student=item.student grade_obj=item.grade_obj %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="asm-save-bar">
+      {% callout "hint" %}Enter يحفظ الصفَّ وينتقل إلى التالي، و↑↓ أو Tab للتنقّل — أو احفظ الكلَّ دفعةً واحدة.{% endcallout %}
+      {% callout "warning" %}«حفظ الكل وإغلاق» يعيد حساب نتائج الفصل للشعبة كلّها ويُثبّت حالة التقييم «مرصود».{% endcallout %}
+      <form method="post" action="{% url 'save_all_grades' assessment.id %}" id="save-all-form">
+        {% csrf_token %}
+        {# الحقولُ المخفيّة تُبنى عند الإرسال من الحالة الحاليّة لكلّ صفّ — لا نسخةَ قديمة #}
+        <div id="save-all-fields" hidden></div>
+        <button type="submit" class="btn-primary">
+          {% icon "confirm" %} حفظ الكل وإغلاق
+        </button>
+      </form>
+    </div>
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  if (typeof window.smartFilter === 'function') {
+    window.smartFilter('gradeSearch', '#grades-body tr[data-text]', { textAttr: 'data-text' });
+  }
+});
+</script>
+<script nonce="{{ request.csp_nonce }}">
+(function () {
+  'use strict';
+  /**
+   * التنقل بلوحة المفاتيح في جدول الدرجات
+   * ArrowDown / Tab  → حقل الدرجة التالي
+   * ArrowUp          → حقل الدرجة السابق
+   * Enter            → حفظ الصف الحالي + التالي
+   * Shift+Tab        → حقل الدرجة السابق
+   */
+
+  function getGradeInputs() {
+    return Array.from(
+      document.querySelectorAll('#grades-table input[name="grade"]:not([disabled])')
+    );
+  }
+
+  document.getElementById('grades-table')?.addEventListener('keydown', function (e) {
+    var inp = e.target;
+    if (!inp.matches('input[name="grade"]')) return;
+
+    var inputs = getGradeInputs();
+    var idx = inputs.indexOf(inp);
+
+    if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
+      e.preventDefault();
+      inputs[idx + 1]?.focus();
+    } else if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) {
+      e.preventDefault();
+      inputs[idx - 1]?.focus();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      // حفظ الصف الحالي عبر HTMX
+      var row = inp.closest('tr');
+      var form = row?.querySelector('form[hx-post]');
+      if (form) {
+        htmx.trigger(form, 'submit');
+      }
+      // الانتقال للتالي بعد swap (مهلة صغيرة)
+      var nextIdx = idx + 1;
+      setTimeout(function () {
+        getGradeInputs()[nextIdx]?.focus();
+      }, 300);
+    }
+  });
+
+  // «حفظ الكل»: اقرأ الحالةَ الحاليّةَ لكلّ صفٍّ عند الإرسال (بعد أيّ حفظٍ HTMX أو تعديل)
+  document.getElementById('save-all-form')?.addEventListener('submit', function () {
+    var box = document.getElementById('save-all-fields');
+    box.textContent = '';
+    function add(name, value) {
+      var h = document.createElement('input');
+      h.type = 'hidden';
+      h.name = name;
+      h.value = value;
+      box.appendChild(h);
+    }
+    document.querySelectorAll('#grades-body tr[id^="row-"]').forEach(function (tr) {
+      var sid = tr.id.slice(4);
+      var g = tr.querySelector('input[name="grade"]');
+      var a = tr.querySelector('input[name="is_absent"]');
+      var e = tr.querySelector('input[name="is_excused"]');
+      var n = tr.querySelector('input[name="notes"]');
+      if (!g || !a || !e || !n) return;
+      add('grade_' + sid, g.value);
+      add('absent_' + sid, a.checked ? '1' : '0');
+      add('excused_' + sid, e.checked ? '1' : '0');
+      add('notes_' + sid, n.value);
+    });
+  });
+
+  // إضافة data-idx لكل input لتسهيل التتبع البصري
+  document.addEventListener('htmx:afterSwap', function () {
+    getGradeInputs().forEach(function (inp, i) {
+      inp.dataset.idx = i;
+    });
+  });
+  getGradeInputs().forEach(function (inp, i) {
+    inp.dataset.idx = i;
+  });
+
+})();
+</script>
+{% endblock extra_js %}

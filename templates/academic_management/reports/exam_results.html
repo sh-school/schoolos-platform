@@ -1,0 +1,76 @@
+{% extends "academic_management/reports/_base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block filters %}
+{% url 'academic_management:exam_results_reports' as reset_url %}
+{% filter_bar "تصفية تقرير الباقات" %}
+  {% field "package_type" "نوع الباقة" type="select" choices=data.package_type_choices value=data.filters.package_type blank="كل الباقات" %}
+  {% field "semester" "الفصل الدراسي" type="select" choices=data.semester_choices value=data.filters.semester blank="الفصلين" %}
+  {% field "class_group_id" "الشعبة" type="select" choices=data.classes value=data.filters.class_group_id blank="كل الشعب" %}
+  <div class="filter-actions">
+    <button type="submit" class="btn-primary btn-sm">{% icon "search" %} عرض التقرير</button>
+    <a href="{{ reset_url }}" class="btn-secondary btn-sm">مسح</a>
+  </div>
+{% endfilter_bar %}
+{% endblock %}
+
+{% block report_body %}
+  {% if data.class_summary %}
+  {% section_card "مقارنة الفصول" meta=data.class_summary|length icon="stats" flush=True %}
+    <div class="table-wrap">
+      <table aria-label="مقارنة الفصول">
+        <thead>
+          <tr>
+            <th scope="col">الشعبة</th>
+            <th scope="col" class="num">عدد الباقات</th>
+            <th scope="col" class="num">المتوسط العام</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cs in data.class_summary %}
+          <tr>
+            <td>{{ cs.class_group }}</td>
+            <td class="num">{{ cs.packages_count }}</td>
+            <td class="num"><b>{{ cs.overall_avg|default_if_none:"—" }}</b></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endsection_card %}
+  {% endif %}
+
+  {% section_card "تفاصيل الباقات" meta=data.total_packages icon="wings" empty="لا توجد بيانات باقات للفلاتر المحددة" empty_sub="حدّد نوع الباقة أو الفصل الدراسي لعرض النتائج" flush=True %}{% if data.rows %}
+    <div class="table-wrap">
+      <table aria-label="تفاصيل الباقات">
+        <thead>
+          <tr>
+            <th scope="col">الباقة</th>
+            <th scope="col">الفصل الدراسي</th>
+            <th scope="col">الشعبة</th>
+            <th scope="col">المادة</th>
+            <th scope="col" class="num">عدد الطلاب</th>
+            <th scope="col" class="num">المتوسط</th>
+            <th scope="col" class="num">الأدنى–الأعلى</th>
+            <th scope="col" class="num">من</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in data.rows %}
+          <tr>
+            <td>{{ r.package }}</td>
+            <td>{{ r.semester }}</td>
+            <td>{{ r.class_group }}</td>
+            <td>{{ r.subject }}</td>
+            <td class="num">{{ r.students_count }}</td>
+            <td class="num"><b>{{ r.avg_score|default_if_none:"—" }}</b></td>
+            <td class="num">{{ r.range_label }}</td>
+            <td class="num">{{ r.max_grade }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+{% endblock %}

@@ -1,0 +1,57 @@
+{% comment %}
+  مكوّن Modal العام — SchoolOS v5.2
+
+  الاستخدام:
+    include "components/modal.html" with modal_id="my-modal" title="العنوان" size="md" content=modal_html
+
+  أو افتح بزر: <button data-modal-open="my-modal">افتح</button>
+
+  المتغيرات:
+    modal_id  — معرّف فريد (مطلوب)
+    title     — العنوان
+    size      — sm | md (افتراضي) | lg
+    content   — محتوى HTML (من mark_safe في View فقط)
+    no_footer — True لإخفاء footer
+
+  تحذير أمني:
+    content يستخدم safe — يجب أن يكون من مصدر موثوق فقط (mark_safe في View).
+    لا تمرر أي بيانات من إدخال المستخدم مباشرة إلى content.
+{% endcomment %}
+<div
+  id="modal-{{ modal_id }}"
+  class="modal-overlay"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="modal-title-{{ modal_id }}"
+>
+  <div class="modal-box modal-{{ size|default:'md' }}" role="document">
+
+    {# ── Header ── #}
+    <div class="modal-header">
+      <span id="modal-title-{{ modal_id }}">{{ title|default:"" }}</span>
+      <button
+        class="modal-close-btn"
+        data-modal-close="{{ modal_id }}"
+        aria-label="إغلاق النافذة"
+      >×</button>
+    </div>
+
+    {# ── Body ── #}
+    <div class="modal-body">
+      {% block modal_content %}{{ content|safe }}{% endblock %}
+    </div>
+
+    {# ── Footer (اختياري) ── #}
+    {% if not no_footer %}
+    <div class="modal-footer">
+      <button
+        class="btn-secondary"
+        data-modal-close="{{ modal_id }}"
+      >إغلاق</button>
+      {% block modal_footer %}{% endblock %}
+    </div>
+    {% endif %}
+
+  </div>
+</div>

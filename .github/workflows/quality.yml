@@ -1,0 +1,389 @@
+name: Quality — فحص أسبوعي شامل
+
+on:
+  schedule:
+    - cron: "0 6 * * 0"  # كل أحد الساعة 6 صباحاً UTC
+  workflow_dispatch:      # يدوي عند الحاجة
+
+permissions:
+  contents: read
+
+jobs:
+  # ══════════════════════════════════════════════════════
+  #  CVEs في المكتبات — pip-audit
+  # ══════════════════════════════════════════════════════
+  pip-audit:
+    name: pip-audit — فحص CVEs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install native libraries for dependency audit
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcairo2-dev pkg-config
+      - name: تثبيت pip-audit
+        run: pip install pip-audit==2.7.3
+
+      - name: فحص CVEs في المكتبات
+        run: |
+          pip-audit -r requirements.txt \
+            --format json \
+            --output pip-audit-report.json || true
+          pip-audit -r requirements.txt \
+            --vulnerability-service pypi \
+            --desc
+
+      - name: رفع تقرير pip-audit
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pip-audit-report
+          path: pip-audit-report.json
+
+  # ══════════════════════════════════════════════════════
+  #  تعقيد الكود — radon
+  # ══════════════════════════════════════════════════════
+  radon:
+    name: radon — تعقيد الكود
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: تثبيت radon
+        run: pip install radon==6.0.1
+
+      - name: تقرير التعقيد الحلقي (CC)
+        run: |
+          echo "## تقرير تعقيد الكود (Cyclomatic Complexity)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### الدوال ذات التعقيد العالي (C+)" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          radon cc . \
+            --exclude "migrations,*.venv,manage.py" \
+            --min C \
+            --show-complexity \
+            --average 2>> $GITHUB_STEP_SUMMARY || true
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: تقرير Maintainability Index
+        run: |
+          echo "### Maintainability Index (ملفات F)" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          radon mi . \
+            --exclude "migrations,.venv" \
+            --min F 2>> $GITHUB_STEP_SUMMARY || true
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: فشل إذا وجد تعقيد F (أسوأ درجة)
+        # النطاقُ نفسُه الذي تحكمه بوّابةُ الطلبات (quality-gate.yml → complexity):
+        # سكربتاتُ البذر وأوامرُ الإدارة والاختبارات تُقاس وتُعرض في التقرير أعلاه
+        # ولا تُسقط البناء. وكان النطاقان يفترقان، فبقيت هذه الوظيفةُ حمراءَ منذ
+        # 2026-08-09 على دالّتين خارجَ ما تحكمه البوّابة (real_seed.run و
+        # import_timetable_pdf.handle، كلتاهما CC 43) — وحمرةٌ دائمةٌ لا تُقرأ.
+        run: |
+          result=$(radon cc . \
+            --exclude "*/migrations/*,*/.venv/*,manage.py,scripts/*,*/scripts/*,tests/*,*/tests/*,*/management/commands/*" \
+            --min F \
+            --show-complexity 2>/dev/null)
+          if [ -n "$result" ]; then
+            echo "ERROR: radon found grade-F functions (CC >= 41)"
+            echo "$result"
+            exit 1
+          fi
+          echo "ممتاز: لا توجد دوال بتعقيد F"
+
+  # ══════════════════════════════════════════════════════
+  #  الكود الميت — vulture
+  # ══════════════════════════════════════════════════════
+  vulture:
+    name: vulture — كشف الكود الميت
+    runs-on: ubuntu-latest
+    continue-on-error: true  # تقرير فقط
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: تثبيت vulture
+        run: pip install vulture==2.11
+
+      - name: كشف الكود الميت
+        run: |
+          echo "## تقرير الكود الميت (vulture)" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          vulture . \
+            --exclude .venv,migrations \
+            --min-confidence 80 \
+            2>> $GITHUB_STEP_SUMMARY || true
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  # ══════════════════════════════════════════════════════
+  #  تغطية الاختبارات الأسبوعية
+  # ══════════════════════════════════════════════════════
+  coverage-report:
+    name: تقرير التغطية الأسبوعي
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       test_db
+          POSTGRES_USER:     test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SETTINGS_MODULE: shschool.settings.testing
+      SECRET_KEY: ci-testing-only-not-for-production-use-a1b2c3d4e5f6
+      FERNET_KEY: dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLWZvcmNpLS0=
+      EXCEL_PROTECTION_PASSWORD: ci-testing-only
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت مكتبات النظام
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev \
+            libffi-dev shared-mime-info pkg-config
+
+      - name: تثبيت المتطلبات
+        # `requirements.txt` وحدَه لا يحمل pytest — وكان هذا يُسقط الوظيفةَ
+        # بـ«pytest: command not found» كلَّ أحدٍ منذ 2026-08-09. وملفُّ
+        # التطوير مصدرٌ واحدٌ للأدوات (وهو يستدعي requirements.txt بنفسه).
+        run: pip install -r requirements-dev.txt
+
+      - name: تطبيق Migrations
+        run: python manage.py migrate --noinput
+
+      - name: تثبيت متصفّحَي Chromium وWebKit (مع مكتبات النظام)
+        # اختباراتُ Playwright (tests/e2e وaxe والحمولة وسقّاطةُ الجوال) تحتاج المتصفّحات. وغيابُها أسقط
+        # هذه الوظيفةَ كلَّ أحدٍ بـ`BrowserType.launch` (27 فشلاً و173 خطأً في 2026-09-20) — ثمّ
+        # بـ`SynchronousOnlyOperation` لأنّ fixture الجلسة تُبقي حلقةَ async قائمةً في العمليّة كلّها.
+        run: playwright install --with-deps chromium webkit
+
+      - name: تشغيل الاختبارات مع تقرير HTML شامل
+        # المتصفّحُ خارج هذه العمليّة (الخطوةُ التالية) كما في nightly.yml. والقائمةُ يدويّةٌ فتُنسى،
+        # فيحرسها `tests/test_nightly_isolates_browser_tests.py` للسيرَين معاً.
+        run: |
+          pytest \
+            --ignore=tests/e2e \
+            --ignore=tests/test_a11y_axe_ratchet.py \
+            --ignore=tests/test_web_vitals_budget.py \
+            --ignore=tests/test_mobile_audit.py \
+            --ignore=tests/test_lighthouse_mobile.py \
+            --ignore=tests/test_action_cards_fit_narrow_screens.py \
+            --ignore=tests/test_page_nav_htmx_process.py \
+            --cov=. \
+            --cov-report=html:htmlcov \
+            --cov-report=term-missing \
+            --cov-report=json:coverage.json \
+            -q
+
+      - name: "Playwright — e2e وaxe والحمولة (عمليّةٌ منفصلة)"
+        if: always()
+        env:
+          # fixtures المتصفّح تلمس القاعدةَ من داخل حلقة Playwright؛ ولا يُضبط هذا على الخطوة الرئيسيّة
+          # فيُخفي أعطالاً حقيقيّة. وLighthouse يتخطّى نفسَه هنا (لا LIGHTHOUSE_RUN) — هو ليليٌّ وحده.
+          DJANGO_ALLOW_ASYNC_UNSAFE: "1"
+        run: |
+          python -m pytest tests/e2e tests/test_a11y_axe_ratchet.py \
+            $(ls tests/test_web_vitals_budget.py 2>/dev/null) \
+            tests/test_mobile_audit.py \
+            tests/test_action_cards_fit_narrow_screens.py \
+            tests/test_page_nav_htmx_process.py \
+            tests/test_lighthouse_mobile.py \
+            -p no:cacheprovider -v
+
+      - name: رفع تقرير HTML
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-coverage-html
+          path: htmlcov/
+          retention-days: 30
+
+      - name: ملخص أسبوعي
+        run: |
+          echo "## التقرير الأسبوعي الشامل" >> $GITHUB_STEP_SUMMARY
+          echo "| المقياس | القيمة |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          python3 -c "
+          import json
+          try:
+              with open('coverage.json') as f:
+                  data = json.load(f)
+              total = data['totals']
+              print(f'| الأسطر المغطاة | {total[\"covered_lines\"]} / {total[\"num_statements\"]} |')
+              print(f'| نسبة التغطية | {total[\"percent_covered\"]:.1f}% |')
+              print(f'| الفروع المغطاة | {total.get(\"covered_branches\", \"N/A\")} |')
+          except Exception as e:
+              print(f'| خطأ | {e} |')
+          " >> $GITHUB_STEP_SUMMARY
+
+  # ══════════════════════════════════════════════════════
+  #  Mutation Testing — mutmut (أسبوعي)
+  # ══════════════════════════════════════════════════════
+  mutation-testing:
+    name: mutmut — اختبار الطفرات
+    runs-on: ubuntu-latest
+    continue-on-error: true  # تقرير فقط
+    timeout-minutes: 60      # سقفٌ احتياطيٌّ فوق `timeout 40m` أدناه
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       test_db
+          POSTGRES_USER:     test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+
+    env:
+      DJANGO_SETTINGS_MODULE: shschool.settings.testing
+      SECRET_KEY: ci-testing-only-not-for-production-use-a1b2c3d4e5f6
+      FERNET_KEY: dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLWZvcmNpLS0=
+      EXCEL_PROTECTION_PASSWORD: ci-testing-only
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت مكتبات النظام
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev \
+            libffi-dev shared-mime-info pkg-config
+
+      - name: تثبيت المتطلبات
+        run: |
+          pip install -r requirements-dev.txt
+          pip install mutmut==2.5.1
+
+      - name: تطبيق Migrations
+        run: python manage.py migrate --noinput
+
+      - name: تشغيل Mutation Testing (عينة محدودة)
+        # المهلةُ صريحةٌ: كانت الوظيفةُ تدور ستَّ ساعاتٍ حتّى يقطعها حدُّ GitHub فيُوسَم السيرُ كلُّه
+        # «cancelled» كلَّ أحد (09-06 و09-13 و09-20) — وخطوةُ التقرير التالية لا تُنتج شيئاً.
+        # `timeout` يوقف mutmut بعد 40 دقيقةً فيبقى ما أنجزه في الذاكرة المؤقّتة، ويخرج بـ0 بسبب `|| true`
+        # فتبلغ خطوةُ التقرير، ويخضرّ السيرُ. والنتيجةُ جزئيّةٌ عن عمد: هي عيّنةٌ، لا شرطُ نجاح.
+        run: |
+          timeout 40m mutmut run \
+            --paths-to-mutate=core/models/ \
+            --runner="pytest tests/test_models.py tests/test_auth_security.py -x -q --no-header --tb=no" \
+            --CI || true
+
+      - name: تقرير الطفرات
+        if: always()
+        run: |
+          echo "## تقرير اختبار الطفرات (Mutation Testing)" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          mutmut results >> $GITHUB_STEP_SUMMARY 2>&1 || echo "لا نتائج" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  # ══════════════════════════════════════════════════════
+  #  API Contract Testing — أسبوعي
+  # ══════════════════════════════════════════════════════
+  api-contracts:
+    name: اختبار عقود API
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       test_db
+          POSTGRES_USER:     test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+
+    env:
+      DJANGO_SETTINGS_MODULE: shschool.settings.testing
+      SECRET_KEY: ci-testing-only-not-for-production-use-a1b2c3d4e5f6
+      FERNET_KEY: dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLWZvcmNpLS0=
+      EXCEL_PROTECTION_PASSWORD: ci-testing-only
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت مكتبات النظام
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev \
+            libffi-dev shared-mime-info pkg-config
+
+      - name: تثبيت المتطلبات
+        # `requirements.txt` وحدَه لا يحمل pytest — وكان هذا يُسقط الوظيفةَ
+        # بـ«pytest: command not found» كلَّ أحدٍ منذ 2026-08-09. وملفُّ
+        # التطوير مصدرٌ واحدٌ للأدوات (وهو يستدعي requirements.txt بنفسه).
+        run: pip install -r requirements-dev.txt
+
+      - name: تطبيق Migrations
+        run: python manage.py migrate --noinput
+
+      - name: اختبار عقود API
+        run: pytest tests/test_api_contract.py -v --tb=short

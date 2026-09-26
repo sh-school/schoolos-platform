@@ -1,0 +1,80 @@
+{% extends "base/base.html" %}
+{% load static %}
+{% block title %}لوحة التحكم — {{ current_school.name|default:"المدرسة" }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current="الرئيسية" home=True %}
+{% endblock %}
+
+{% block content %}
+{% comment %}
+قالبٌ لكلّ دور في dashboard/roles/ — كان هذا الملفُّ ألفَ سطرٍ لأحد عشر دوراً،
+كلٌّ منها بإطارٍ وبطاقاتٍ مختلفة. والأسماءُ هنا قائمةٌ مغلقة: الدورُ الذي لا
+قالبَ له يرى «other» لا خطأً.
+{% endcomment %}
+{% if view_type == "director" %}{% include "dashboard/roles/director.html" %}
+{% elif view_type == "teacher" or view_type == "coordinator" %}{% include "dashboard/roles/teacher.html" %}
+{% elif view_type == "student" %}{% include "dashboard/roles/student.html" %}
+{% elif view_type == "specialist_social" %}{% include "dashboard/roles/specialist_social.html" %}
+{% elif view_type == "therapist" %}{% include "dashboard/roles/therapist.html" %}
+{% elif view_type == "activities" %}{% include "dashboard/roles/activities.html" %}
+{% elif view_type == "admin_ops" %}{% include "dashboard/roles/admin_ops.html" %}
+{% elif view_type == "transport_mgmt" %}{% include "dashboard/roles/transport_mgmt.html" %}
+{% elif view_type == "service" %}{% include "dashboard/roles/service.html" %}
+{% elif view_type == "wing_holder" %}{% include "dashboard/roles/wing_holder.html" %}
+{% else %}{% include "dashboard/roles/other.html" %}
+{% endif %}
+{% endblock %}
+
+{% comment %}
+كانت كتلةُ السكربت معرَّفةً داخلَ كتلة المحتوى، ومزلقُ جانغو أنّ الكتلةَ
+المتداخلةَ تُرسَم مرّتين: مرّةً في مكانها من المحتوى، ومرّةً حيث يضعها
+القالبُ الأب. فكان `const OPTS` يُصرَّح مرّتين في الصفحة الواحدة، ويُخفق
+السكربتُ الثاني بـ Identifier 'OPTS' has already been declared — فلا
+يُرسَم رسمُه. وأُخرجت الكتلةُ إلى مستواها، والشرطُ داخلَها.
+{% endcomment %}
+{% block extra_js %}
+{% if view_type == "director" %}
+<script src="{% static 'js/vendor/chart.umd.min.js' %}"></script>
+<script nonce="{{ request.csp_nonce }}">
+Chart.defaults.font.family = 'Tajawal, sans-serif';
+Chart.defaults.font.size = 10;
+
+const OPTS = { responsive: true, maintainAspectRatio: false };
+
+async function fc(u){try{return await(await fetch(u)).json()}catch(e){return null}}
+
+// Mini Attendance Chart
+(async()=>{
+  const d = await fc('/analytics/api/attendance-trend/');
+  if(!d) return;
+  new Chart(document.getElementById('miniAttendance'),{
+    type:'line',
+    data:{labels:d.labels.slice(-7), datasets:[{
+      label:'نسبة الحضور %',
+      data:d.datasets[0].data.slice(-7),
+      borderColor:chartColor('chart-2'),backgroundColor:chartAlpha('chart-2', .1),
+      fill:true,tension:0.4,pointRadius:2,borderWidth:1.5
+    }]},
+    options:{...OPTS,plugins:{legend:{display:false}},
+      scales:{y:{min:0,max:100,ticks:{callback:v=>v+'%',font:{size:9}}},x:{ticks:{font:{size:9}}}}}
+  });
+})();
+
+// Mini Grades Distribution
+(async()=>{
+  const d = await fc('/analytics/api/grades-distribution/');
+  if(!d) return;
+  new Chart(document.getElementById('miniGrades'),{
+    type:'doughnut',
+    data:{labels:d.labels, datasets:[{
+      data:d.datasets[0].data,
+      /* سلّمُ درجاتٍ يحمل معنى — يُقرأ من الرموز فينقلب مع الوضع. */
+      backgroundColor:[chartColor('status-success'),chartColor('chart-2'),chartColor('chart-4'),chartColor('status-warning'),chartColor('status-danger'),chartColor('chart-1')]
+    }]},
+    options:{...OPTS,plugins:{legend:{position:'bottom',labels:{padding:6,font:{size:9}}}},cutout:'55%'}
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

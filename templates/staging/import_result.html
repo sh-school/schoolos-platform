@@ -1,0 +1,80 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load privacy ui %}
+{% block title %}{% if is_dry_run %}معاينة الاستيراد{% else %}نتيجة الاستيراد{% endif %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/import/" parent_label="الاستيراد" current="نتيجة الاستيراد" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header result_title subtitle=assessment.title icon=result_icon %}
+    {% if not is_dry_run %}
+    <a href="{% url 'grade_entry' assessment.id %}" class="btn-primary btn-sm">{% icon "grades" %} عرض كشف الدرجات</a>
+    {% endif %}
+    <a href="{% url 'import_grades_select' %}" class="{% if is_dry_run %}btn-primary{% else %}btn-secondary{% endif %} btn-sm">{% icon "upload" %} {% if is_dry_run %}ارفع الملف للاستيراد الفعلي{% else %}رجوع للاستيراد{% endif %}</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="نتيجة الملف" %}
+    {% kpi "إجمالي الصفوف" log.total_rows %}
+    {% if is_dry_run %}
+      {% kpi "ستُستورد" imported tone=result_tone %}
+    {% else %}
+      {% kpi "تم استيرادها" imported tone=result_tone %}
+    {% endif %}
+    {% kpi "سجلات بها خطأ" log.failed_rows tone=failed_tone %}
+  {% endkpi_strip %}
+
+  {% section_card "الملف والتقييم" meta=log.file_name icon="export_excel" %}
+    {% if is_dry_run %}
+    {% callout "warning" %}وضع المعاينة — لم يُحفظ أيُّ درجة. راجع الأخطاء، ثمّ ارفع الملف مجدداً واختر <strong>استيراد</strong> للحفظ الفعلي.{% endcallout %}
+    {% endif %}
+    <ul class="chip-row import-meta" aria-label="التقييم">
+      <li class="chip-stat"><span class="chip-stat__key">المادة</span><b class="chip-stat__value">{{ assessment.package.setup.subject.name_ar }}</b></li>
+      <li class="chip-stat"><span class="chip-stat__key">الفصل</span><b class="chip-stat__value">{{ assessment.class_group.short_label }}</b></li>
+    </ul>
+  {% endsection_card %}
+
+  {% if errors %}
+  {% section_card "الأخطاء" meta=errors|length icon="status_error" %}
+    <ul class="plain-list is-scroll">
+      {% for err in errors %}
+      <li class="plain-list__row import-error">{% icon "close" %}<span class="plain-list__main">{{ err }}</span></li>
+      {% endfor %}
+    </ul>
+  {% endsection_card %}
+  {% endif %}
+
+  {% if is_dry_run and preview_rows %}
+  {% section_card "الصفوف التي ستُستورد" meta=preview_rows|length icon="status_success" flush=True %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">الرقم الشخصي</th>
+            <th scope="col">الاسم</th>
+            <th scope="col" class="num">الدرجة</th>
+            <th scope="col" class="num">غائب</th>
+            <th scope="col">ملاحظة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preview_rows %}
+          <tr>
+            <td dir="ltr">{{ row.national_id|mask_id }}</td>
+            <td>{{ row.name }}</td>
+            <td class="num"><b>{{ row.grade }}</b></td>
+            <td class="num">{% if row.is_absent %}<span class="status-badge status-danger">غائب</span>{% else %}—{% endif %}</td>
+            <td>{{ row.notes|default:"" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endsection_card %}
+  {% endif %}
+
+</div>
+{% endblock %}

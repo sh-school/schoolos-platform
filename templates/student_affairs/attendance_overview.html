@@ -1,0 +1,175 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+
+{% block title %}إحصائيات الغياب — شؤون الطلاب{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}{% page_layout "dashboard" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-affairs/" parent_label="شؤون الطلاب" current="إحصائيات الغياب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-page">
+
+  {% page_header "إحصائيات الغياب" subtitle=page_subtitle icon="stats" %}
+    <a href="{% url 'wings:record_index' %}" class="btn-primary btn-sm">{% icon "attendance_register" %} رصد الغياب</a>
+    {# «غياب اليوم» مقيَّدٌ بطلبة الجناح للمقيَّد به (operations.daily_absence) — فرابطُه للجميع. #}
+    <a href="{% url 'daily_report' %}" class="btn-secondary btn-sm">{% icon "absence" %} غياب اليوم</a>
+    <a data-app-file href="{% url 'student_affairs:attendance_export' %}" class="btn-secondary btn-sm">{% icon "export_excel" %} تصدير Excel</a>
+    <a data-app-file href="{% url 'student_affairs:attendance_pdf' %}" class="btn-secondary btn-sm" target="_blank">{% icon "export_pdf" %} تصدير PDF</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="حضور اليوم" %}
+    {% kpi "نسبة الحضور" pct_label tone=pct_tone title="الحاضرون من سجلّات حضور اليوم" %}
+    {% kpi "حاضرون" summary.present tone="green" %}
+    {% kpi "غائبون" summary.absent tone="red" %}
+    {% kpi "متأخرون" summary.late tone="orange" %}
+    {% kpi "معذورون" summary.excused tone="blue" %}
+  {% endkpi_strip %}
+
+  <div class="fill-grid" style="--flow: row; --tc: repeat(2, minmax(0, 1fr)); --rows: 2">
+  {% section_card "اتجاه الحضور والغياب" meta="آخر 14 يوماً" icon="trend" %}
+    <div class="dash-chart-wrap">
+      <canvas id="attendanceChart" role="img" aria-label="رسم بياني: نسبتا الحضور والغياب آخر 14 يوماً"></canvas>
+    </div>
+  {% endsection_card %}
+
+  {% section_card "توزيع الحضور حسب الصف" meta="اليوم" icon="stats" empty="لا بيانات حضور لليوم" flush=True %}{% if class_breakdown %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>الصف</th>
+            <th class="num">إجمالي</th>
+            <th class="num">حاضرون</th>
+            <th class="num">غائبون</th>
+            <th class="num">متأخرون</th>
+            <th class="num">نسبة الحضور</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in class_breakdown %}
+          <tr>
+            <td>{{ row.label }}</td>
+            <td class="num">{{ row.total }}</td>
+            <td class="num">{{ row.present_count }}</td>
+            <td class="num">{{ row.absent_count }}</td>
+            <td class="num">{{ row.late_count }}</td>
+            <td class="num"><span class="status-badge {{ row.badge }}">{{ row.pct }}%</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+
+    {% section_card "أكثر الطلاب غياباً" meta="آخر 30 يوماً" icon="stats" empty="لا بيانات غياب في آخر 30 يوماً" %}{% if worst_students %}
+      <ol class="plain-list is-scroll">
+        {% for s in worst_students %}
+          <li class="plain-list__row">
+            <a href="{% url 'student_affairs:student_profile' s.student__id %}" class="plain-list__title sa-link">{{ s.student__full_name }}</a>
+            <span class="status-badge {{ s.badge }}">{{ s.absence_count }} يوم</span>
+          </li>
+        {% endfor %}
+      </ol>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "تنبيهات الغياب المتكرر" meta=alerts|length icon="absence" empty="لا تنبيهات معلقة" %}{% if alerts %}
+      <ul class="plain-list is-scroll">
+        {% for alert in alerts %}
+          <li class="plain-list__row">
+            <span class="plain-list__main">
+              <a href="{% url 'student_affairs:student_profile' alert.student.id %}" class="plain-list__title sa-link">{{ alert.student.full_name }}</a>
+              <span class="plain-list__sub">{{ alert.absence_count }} يوم غياب</span>
+            </span>
+            <span class="status-badge status-warning">{{ alert.get_status_display }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/vendor/chart.umd.min.js' %}"></script>
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function() {
+  var ctx = document.getElementById('attendanceChart');
+  if (!ctx) return;
+
+  var labels = {{ chart_labels_json|safe }};
+  var presentData = {{ chart_present_json|safe }};
+  var absentData = {{ chart_absent_json|safe }};
+
+  var gridColor = chartColor('border');
+  var textColor = chartColor('text-secondary');
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: 'نسبة الحضور %',
+          data: presentData,
+          borderColor: chartColor('status-success'),
+          backgroundColor: chartAlpha('status-success', .08),
+          fill: true,
+          tension: 0.3,
+          borderWidth: 2,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+        },
+        {
+          label: 'نسبة الغياب %',
+          data: absentData,
+          borderColor: chartColor('status-danger'),
+          backgroundColor: chartAlpha('status-danger', .08),
+          fill: true,
+          tension: 0.3,
+          borderWidth: 2,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: textColor, font: { family: 'Tajawal', size: 12 } }
+        },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) { return ctx.dataset.label + ': ' + ctx.parsed.y + '%'; }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { family: 'Tajawal', size: 11 } }
+        },
+        y: {
+          min: 0,
+          max: 100,
+          grid: { color: gridColor },
+          ticks: {
+            color: textColor,
+            font: { family: 'Tajawal', size: 11 },
+            callback: function(v) { return v + '%'; }
+          }
+        }
+      }
+    }
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,160 @@
+{% load brand_tags %}
+{% load static %}
+{% comment %}
+ورقةُ الصفحات — صفحةٌ لكلّ معلّمٍ (مرتّبةً بالأقسام) أو لكلّ شعبة (بترتيب المدرسة).
+
+القسمُ من السجلّ الإداريّ لا من الموادّ (قرار 2026-09-06)، والتخصّصُ المكتوب
+يُذكر بجانب اسم صاحبه. ولا فهرسَ في أوّلها — الورقُ يُوزَّع ولا يُقرأ فهرساً.
+
+القالبُ واحدٌ للشاشة والورق وملفّ PDF. و`data-pdf-own-page`: الورقةُ تحمل
+@page بنفسها — اتّجاهاً وترقيماً — فلا يحقن مولّدُ PDF ترويستَه وذيلَه عليها.
+{% endcomment %}
+<meta charset="utf-8">
+<title>{{ title }}</title>
+{% comment %}خطُّ الورقة تجوّل: على الشاشة من /static/، وفي PDF يحقنه المولّد من القرص ما لم يجد @font-face في الصفحة — فتُحذف في مساره.{% endcomment %}
+{% if not for_pdf %}
+<style>
+  @font-face{font-family:'Tajawal';font-weight:400;font-display:swap;src:url("{% static 'fonts/Tajawal-Regular.woff2' %}") format('woff2');}
+  @font-face{font-family:'Tajawal';font-weight:500;font-display:swap;src:url("{% static 'fonts/Tajawal-Medium.woff2' %}") format('woff2');}
+  @font-face{font-family:'Tajawal';font-weight:700;font-display:swap;src:url("{% static 'fonts/Tajawal-Bold.woff2' %}") format('woff2');}
+</style>
+{% endif %}
+<style>
+  @page {
+    size: {% if paper == 'a3' %}A3{% else %}A4{% endif %} {{ orient }};
+    margin: {{ geo.css.margin }};
+    @bottom-center {
+      content: "{{ school.name }} — \002066{{ year }}\002069 — " counter(page) " / " counter(pages);
+      font-family: "Tajawal", sans-serif;
+      font-size: 8pt;
+      color: {% brand_color "TEXT_MUTED" %};
+    }
+  }
+
+  body {
+    font-family: "Tajawal", "Segoe UI", Tahoma, sans-serif;
+    direction: rtl;
+    background: {% brand_color "SURFACE_ALT" %};
+    margin: 0;
+    color: {% brand_color "TEXT_PRIMARY" %};
+  }
+
+  /* الورقةُ بالملّيمتر على الشاشة وفي الورق سواءً (operations/schedule_paper.py):
+     الشاشةُ حشوُها هوامشُ الصفحة، فالمحتوى بعرض الورقة وارتفاعُ الصفّ نفسُه.
+
+     وكانت الطباعةُ عموداً مرناً والجدولُ `flex: 1; height: 1px` — يمتدّ في
+     المتصفّح ولا يمتدّ في مولّد PDF (WeasyPrint)، فيشغل الجدولُ في الملفّ ثُلثَ
+     الورقة وتحته فراغ (بلاغ 2026-09-14). فالأشرطةُ الآن ثابتةُ الارتفاع وما بقي
+     للصفوف الخمسة. */
+  .sheet {
+    background: {% brand_color "SURFACE" %};
+    width: {{ geo.css.content_w }};
+    margin: 12px auto;
+    padding: {{ geo.css.margin }};
+    box-shadow: 0 2px 10px rgba(0,0,0,.08);
+  }
+
+  .page-header { text-align: center; height: {{ geo.css.header_h }}; margin-bottom: {{ geo.css.gap }}; overflow: hidden; box-sizing: border-box; }
+  .print-emblem { height: {% if orient == 'landscape' %}11mm{% else %}14mm{% endif %}; width: auto; margin-bottom: 0.5mm; }
+  .ministry { font-size: 7.5pt; line-height: 3.2mm; color: {% brand_color "TEXT_MUTED" %}; }
+  .school-name { font-size: 12pt; line-height: 5.4mm; font-weight: 700; color: {% brand_color "MAROON" %}; }
+  .doc-title { font-size: 9.75pt; line-height: 4.2mm; color: {% brand_color "TEXT_SECONDARY" %}; }
+  .year { font-size: 7.5pt; line-height: 3.2mm; color: {% brand_color "TEXT_MUTED" %}; }
+
+  .who {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    overflow: hidden;
+    box-sizing: border-box;
+    height: {{ geo.css.who_h }};
+    border: 1px solid {% brand_color "BORDER_STRONG" %};
+    background: {% brand_color "MAROON_BG" %};
+    border-radius: 6px;
+    padding: 0 10px;
+    margin-bottom: {{ geo.css.gap }};
+    font-size: 9pt;
+  }
+  /* السطرُ لا يلتفّ (ارتفاعُه محسوب)، فالعنصرُ الطويلُ يُختصر بنقاطٍ ولا يركب جارَه —
+     والمنسّقُ أوّلُ ما يُختصر: اسمُ المعلّم والنصابُ ألزمُ لقارئ الورقة. */
+  .who > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+  .who > span.who-dept { flex-shrink: 1; }
+  .who > span.who-head { flex-shrink: 1; }
+  {% if orient == 'portrait' %}.who { font-size: 7.5pt; gap: 5px; padding: 0 6px; }{% endif %}
+  .who b { color: {% brand_color "MAROON" %}; }
+  .who .specialty { color: {% brand_color "MAROON_DARK" %}; font-weight: 500; }
+
+{% include "schedule/pdf/week_grid_css.html" %}
+
+  /* ذيلُ كلّ صفحة: الوزارةُ والمدرسةُ وتاريخُ الطباعة ووقتُها، ورؤيةُ الوزارة (قرار 2026-09-06). */
+  .page-footer {
+    height: {{ geo.css.footer_h }};
+    margin-top: {{ geo.css.gap }};
+    padding-top: 1.2mm;
+    box-sizing: border-box;
+    overflow: hidden;
+    border-top: 1px solid {% brand_color "BORDER" %};
+    font-size: 6.5pt;
+    color: {% brand_color "TEXT_MUTED" %};
+    text-align: center;
+    line-height: 1.45;
+  }
+  .page-footer .stamp { direction: ltr; unicode-bidi: embed; }
+  .empty-note { text-align: center; color: {% brand_color "TEXT_MUTED" %}; padding: 20mm 0; font-size: 13px; }
+
+  @media print {
+    body { background: {% brand_color "SURFACE" %}; }
+    .sheet {
+      width: auto;
+      margin: 0;
+      padding: 0;
+      box-shadow: none;
+      page-break-after: always;
+      break-after: page;
+    }
+    .sheet:last-child { page-break-after: auto; break-after: auto; }
+  }
+</style>
+<body data-pdf-own-page>
+{% include "components/app_back_bar.html" %}
+
+{% for row in pages %}
+<section class="sheet">
+  <div class="page-header">
+    <img class="print-emblem" src="{% if for_pdf %}static/brand/logoMaroon.png{% else %}{% static 'brand/logoMaroon.png' %}{% endif %}" alt="شعار {{ school.name }}" width="295" height="295">
+    <div class="ministry">وزارة التربية والتعليم والتعليم العالي — دولة قطر</div>
+    <div class="school-name">{{ school.name }}</div>
+    <div class="doc-title">{% if kind == 'classes' %}الجدول الأسبوعي للشعبة{% else %}الجدول الأسبوعي للمعلّم{% endif %}</div>
+    {% comment %}العامُ بين عازلَي اتّجاه: «2026-2027» في سطرٍ عربيٍّ كان يُقرأ «2027-2026».{% endcomment %}
+    <div class="year">العام الدراسي &#8294;{{ year }}&#8297;</div>
+  </div>
+
+  {% if kind == 'classes' %}
+  <div class="who">
+    <span>الشعبة: <b>{{ row.class_group.label_with_track }}</b></span>
+    <span>عدد الحصص: <b>{{ row.total }}</b></span>
+  </div>
+  {% else %}
+  <div class="who">
+    <span>المعلّم: <b>{{ row.teacher.full_name }}</b>{% if row.department.specialty %} <span class="specialty">({{ row.department.specialty }})</span>{% endif %}</span>
+    <span class="who-dept">القسم: <b>{{ row.department.name }}</b></span>
+    {% if row.department.head %}<span class="who-head">المنسّق: {{ row.department.head }}</span>{% endif %}
+    <span>النصاب الأسبوعي: <b>{{ row.total }}</b> حصة</span>
+  </div>
+  {% endif %}
+
+  {% if kind == 'classes' %}{% include "schedule/pdf/week_grid.html" with week=row.week who="teacher" %}{% else %}{% include "schedule/pdf/week_grid.html" with week=row.week who="class" %}{% endif %}
+
+  <div class="page-footer">
+    وزارة التربية والتعليم والتعليم العالي — دولة قطر &nbsp;|&nbsp; {{ school.name }} &nbsp;|&nbsp;
+    تاريخ الطباعة: <span class="stamp">&#8294;{% now "Y/m/d H:i" %}&#8297;</span><br>
+    {% include "components/ministry_vision.html" %}
+  </div>
+</section>
+{% empty %}
+<section class="sheet"><p class="empty-note">لا جداول في هذا النطاق.</p></section>
+{% endfor %}
+</body>

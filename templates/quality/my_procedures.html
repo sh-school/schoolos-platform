@@ -1,0 +1,67 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}إجراءاتي{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/quality/" parent_label="ضمان الجودة" current="إجراءاتي" %}
+{% endblock %}
+
+{% block content %}
+<div class="qmy">
+
+  {% page_header "إجراءاتي في الخطة التشغيلية" subtitle=year icon="my_actions" %}
+    <a href="{% url 'quality_dashboard' %}" class="btn-secondary btn-sm">← العودة</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام إجراءاتي" %}
+    {% kpi "إجمالي" total %}
+    {% kpi "مكتمل" completed tone="green" %}
+    {% kpi "نسبة الإنجاز" pct_label tone=pct_tone %}
+  {% endkpi_strip %}
+
+  {% filter_bar "ترشيحُ إجراءاتي" css="qmy-filters" %}
+    {% field "status" "الحالة" type="select" choices=STATUS_CHOICES value=status_filter blank="— كل الحالات —" %}
+    {# بحثٌ في المتصفّح وحده (`smartFilter`) بلا اسمٍ يُرسَل — فلا يُعطى اسماً. #}
+    <div class="ui-field ui-field--grow">
+      <label for="qmy-search" class="ui-field__label">بحث</label>
+      <input type="text" id="qmy-search" class="form-control" placeholder="ابحث في الإجراءات...">
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="btn-primary btn-sm">فلترة</button>
+      <a href="{% url 'my_procedures' %}" class="btn-secondary btn-sm">إعادة ضبط</a>
+    </div>
+  {% endfilter_bar %}
+
+  {% section_card "الإجراءات" meta=procedures|length icon="checklist" empty="لا توجد إجراءات مرتبطة بحسابك" %}{% if not mapping_exists %}
+    {% callout "warning" %}<b>حسابك غير مربوط بالخطة التشغيلية.</b> تواصل مع مدير المدرسة ليربطه بمسمّاك الوظيفيّ من صفحة «ربط المنفذين بالموظفين».{% endcallout %}
+  {% elif procedures %}
+    <ul class="plain-list" id="qmy-list">
+      {% for proc in procedures %}
+      <li class="plain-list__row qmy-item" data-text="{{ proc.text|lower }}">
+        <a href="{% url 'procedure_detail' proc.id %}" class="plain-list__main qmy-item__link">
+          <span class="plain-list__sub"><span dir="ltr">{{ proc.number }}</span> · {{ proc.indicator.target.domain.name }}</span>
+          <span class="plain-list__title">{{ proc.text|truncatechars:100 }}</span>
+          <span class="plain-list__sub">
+            {% icon "date" %} {{ proc.date_range }}
+            {% if proc.deadline %}
+            · <span class="{% if proc.deadline_overdue %}qmy-item__deadline{% endif %}"{% if proc.deadline_overdue %} title="تجاوز الموعد ولم يكتمل"{% endif %}>{% icon "time" %} {{ proc.deadline|date:"Y/m/d" }}</span>
+            {% endif %}
+          </span>
+        </a>
+        <span class="status-badge status-{{ proc.status_tone }}">{{ proc.get_status_display }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  window.smartFilter('qmy-search', '#qmy-list .qmy-item', { textAttr: 'data-text' });
+});
+</script>
+{% endblock %}

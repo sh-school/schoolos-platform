@@ -1,0 +1,184 @@
+"""
+quality/urls.py — الإصلاح #4: إضافة مسارات لجنة المنفذين
+"""
+
+from django.urls import path
+
+from . import evaluation_views, grievance_views, observation_views, views
+
+urlpatterns = [
+    # ── الإشراف على أداء المعلّم (الملاحظة الصفّية) ──────────
+    path("observations/", observation_views.observation_list, name="observation_list"),
+    path("observations/new/", observation_views.observation_create, name="observation_create"),
+    path(
+        "observations/teacher-schedule/",
+        observation_views.observation_teacher_schedule,
+        name="observation_teacher_schedule",
+    ),
+    path(
+        "observations/archive/",
+        observation_views.observation_archive,
+        name="observation_archive",
+    ),
+    path(
+        "observations/<uuid:obs_id>/restore/",
+        observation_views.observation_restore,
+        name="observation_restore",
+    ),
+    path(
+        "observations/self/new/",
+        observation_views.observation_self_create,
+        name="observation_self_create",
+    ),
+    path(
+        "observations/peer/new/",
+        observation_views.observation_peer_create,
+        name="observation_peer_create",
+    ),
+    path(
+        "observations/<uuid:obs_id>/",
+        observation_views.observation_detail,
+        name="observation_detail",
+    ),
+    path(
+        "observations/<uuid:obs_id>/edit/",
+        observation_views.observation_edit,
+        name="observation_edit",
+    ),
+    path(
+        "observations/<uuid:obs_id>/submit/",
+        observation_views.observation_submit,
+        name="observation_submit",
+    ),
+    path(
+        "observations/<uuid:obs_id>/withdraw/",
+        observation_views.observation_withdraw,
+        name="observation_withdraw",
+    ),
+    path(
+        "observations/<uuid:obs_id>/reopen/",
+        observation_views.observation_reopen,
+        name="observation_reopen",
+    ),
+    path(
+        "observations/<uuid:obs_id>/delete/",
+        observation_views.observation_delete,
+        name="observation_delete",
+    ),
+    path(
+        "observations/<uuid:obs_id>/acknowledge/",
+        observation_views.observation_acknowledge,
+        name="observation_acknowledge",
+    ),
+    path(
+        "observations/<uuid:obs_id>/pdf/",
+        observation_views.observation_pdf,
+        name="observation_pdf",
+    ),
+    path(
+        "observations/<uuid:obs_id>/pdf/view/",
+        observation_views.observation_pdf_view,
+        name="observation_pdf_view",
+    ),
+    path(
+        "observations/<uuid:obs_id>/send/",
+        observation_views.observation_send,
+        name="observation_send",
+    ),
+    # ── Phase 6: تقييم الموظفين ─────────────────────────────
+    path("evaluations/", evaluation_views.evaluation_dashboard, name="evaluation_dashboard"),
+    path(
+        "evaluations/employee/<uuid:employee_id>/",
+        evaluation_views.create_evaluation,
+        name="create_evaluation",
+    ),
+    path(
+        "evaluations/approve/<uuid:eval_id>/",
+        evaluation_views.approve_evaluation,
+        name="approve_evaluation",
+    ),
+    path(
+        "evaluations/receipt/<uuid:eval_id>/",
+        evaluation_views.record_evaluation_receipt,
+        name="record_evaluation_receipt",
+    ),
+    path(
+        "evaluations/grievances/",
+        grievance_views.evaluation_grievances,
+        name="evaluation_grievances",
+    ),
+    path(
+        "evaluations/grievance/<uuid:eval_id>/",
+        grievance_views.file_evaluation_grievance,
+        name="file_evaluation_grievance",
+    ),
+    path(
+        "evaluations/grievance/<uuid:eval_id>/decision/",
+        grievance_views.record_grievance_decision,
+        name="record_grievance_decision",
+    ),
+    path(
+        "evaluations/acknowledge/<uuid:eval_id>/",
+        evaluation_views.acknowledge_evaluation,
+        name="acknowledge_evaluation",
+    ),
+    path("evaluations/mine/", evaluation_views.my_evaluations, name="my_evaluations"),
+    # ── الخطة التشغيلية ──────────────────────────────────────
+    path("", views.plan_dashboard, name="quality_dashboard"),
+    path("domain/<uuid:domain_id>/", views.domain_detail, name="domain_detail"),
+    path("procedure/<uuid:proc_id>/", views.procedure_detail, name="procedure_detail"),
+    path(
+        "procedure/<uuid:proc_id>/status/", views.update_procedure_status, name="update_proc_status"
+    ),
+    path("procedure/<uuid:proc_id>/approve/", views.approve_procedure, name="approve_procedure"),
+    path("procedure/<uuid:proc_id>/evidence/", views.upload_evidence, name="upload_evidence"),
+    path("my-procedures/", views.my_procedures, name="my_procedures"),
+    # ── قوائم التنفيذ والمراجعة ───────────────────────────────
+    path("execution/", views.execution_list, name="execution_list"),
+    path("review/", views.review_list, name="review_list"),
+    # ── Modals (HTMX partials) ────────────────────────────────
+    path(
+        "procedure/<uuid:proc_id>/update-modal/",
+        views.task_update_modal,
+        name="task_update_modal",
+    ),
+    path(
+        "procedure/<uuid:proc_id>/review-modal/",
+        views.review_evaluate_modal,
+        name="review_evaluate_modal",
+    ),
+    path(
+        "procedure/<uuid:proc_id>/toggle-evidence/",
+        views.toggle_evidence_request,
+        name="toggle_evidence_request",
+    ),
+    path("report/", views.progress_report, name="quality_report"),
+    # ── لجنة المراجعة الذاتية ─────────────────────────────────
+    path("committee/", views.quality_committee, name="quality_committee"),
+    path("committee/add/", views.add_committee_member, name="add_committee_member"),
+    path(
+        "committee/remove/<uuid:member_id>/",
+        views.remove_committee_member,
+        name="remove_committee_member",
+    ),
+    # ── لجنة منفذي الخطة التشغيلية (الإصلاح #4 — جديد) ───────
+    path("executor-committee/", views.executor_committee, name="executor_committee"),
+    path(
+        "executor-committee/member/<uuid:member_id>/",
+        views.executor_member_detail,
+        name="executor_member_detail",
+    ),
+    path("executor-committee/add/", views.add_committee_member, name="add_executor_member"),
+    path(
+        "executor-committee/remove/<uuid:member_id>/",
+        views.remove_committee_member,
+        name="remove_executor_member",
+    ),
+    # ── ربط المنفذين ─────────────────────────────────────────
+    path("executor-mapping/", views.executor_mapping, name="executor_mapping"),
+    path("executor-mapping/save/", views.save_executor_mapping, name="save_executor_mapping"),
+    path("executor-mapping/apply-all/", views.apply_all_mappings, name="apply_all_mappings"),
+    # ── تقرير PDF ───────────────────────────────────────────────
+    path("report/pdf/", views.progress_report_pdf, name="quality_report_pdf"),
+]
+# (already imported views above)

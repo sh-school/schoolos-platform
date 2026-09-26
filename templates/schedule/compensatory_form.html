@@ -1,0 +1,59 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}طلب حصة تعويضية{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/teacher/schedule/compensatory/" parent_label="الحصص التعويضية" current="إضافة حصة تعويضية" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash form-page">
+  {% page_header "طلب حصة تعويضية" icon="compensation" %}{% endpage_header %}
+  {% section_card "بيانات الطلب" icon="edit_record" %}
+
+    <form method="post">
+      {% csrf_token %}
+      <div class="form-stack">
+        {# خيارُ الغياب والحصّة تسميتُهما مركّبةٌ من عدّة قيم — فالقائمتان يدويّتان مسمّاتان. #}
+        <div class="ui-field">
+          <label for="comp-absence" class="ui-field__label">الغياب المرتبط</label>
+          <select name="absence" id="comp-absence" class="form-control" required>
+            <option value="">— اختر —</option>
+            {% for abs in my_absences %}
+            <option value="{{ abs.pk }}">{{ abs.date|date:"Y/m/d" }} — {{ abs.get_reason_display }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="ui-field">
+          <label for="comp-original-slot" class="ui-field__label">الحصة الأصلية (الفائتة)</label>
+          <select name="original_slot" id="comp-original-slot" class="form-control" required>
+            <option value="">— اختر حصة —</option>
+            {% for slot in my_slots %}
+            <option value="{{ slot.pk }}">{{ slot.get_day_of_week_display }} — ح{{ slot.period_number }} — {{ slot.subject|default:"مادة" }} ({{ slot.class_group.short_label }})</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        {% field "compensatory_date" "تاريخ التعويض" type="date" id="comp-date" required=True help="يجب أن يكون خلال أسبوع من تاريخ الغياب" %}
+        {% comment %}
+        حصصُ الشعبة ذلك اليومَ بجرس طابقها — تُحمَّل بعد اختيار الحصّة الفائتة والتاريخ.
+        المُشغِّلُ على غلافٍ ثابتٍ لا على الحقل: حقلٌ يستبدل نفسه يُضيّع طلباً ينتظر خلفَ
+        طلبٍ جارٍ (تغييران متتاليان)، و`hx-sync` يُبقي آخرَ الطلبات وحده.
+        {% endcomment %}
+        <div id="comp-period-box"
+             hx-get="{% url 'compensatory_options' %}"
+             hx-trigger="change from:#comp-original-slot, change from:#comp-date"
+             hx-include="#comp-original-slot, #comp-date"
+             hx-sync="this:replace">
+          {% include "schedule/partials/compensatory_options.html" %}
+        </div>
+        {% field "notes" "ملاحظات (اختياري)" type="textarea" placeholder="أي ملاحظات إضافية..." %}
+      </div>
+
+      <button type="submit" class="btn-primary mt-4" data-loading>إرسال طلب التعويض</button>
+    </form>
+  {% endsection_card %}
+</div>
+{% endblock %}

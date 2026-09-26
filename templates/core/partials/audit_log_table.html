@@ -1,0 +1,79 @@
+{% load ui %}
+{# ── partial: جدول سجل الصلاحيات — يُعاد تحميله عبر HTMX ── #}
+{% if logs %}
+<div class="table-wrap">
+  <table aria-label="سجل تغييرات الصلاحيات">
+    <thead>
+      <tr>
+        <th scope="col">وقت التنفيذ</th>
+        <th scope="col">المنفّذ</th>
+        <th scope="col">المستهدف</th>
+        <th scope="col">الإجراء</th>
+        <th scope="col">التفاصيل</th>
+        <th scope="col" class="num">عنوان IP</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log in logs %}
+      <tr>
+
+        {# ── وقت التنفيذ ── #}
+        <td class="num">
+          {{ log.created_at|date:"d/m/Y" }}<br>
+          <span class="text-muted text-xs">{{ log.created_at|date:"H:i" }}</span>
+        </td>
+
+        {# ── المنفّذ ── #}
+        <td class="font-medium">
+          {{ log.actor.full_name|default:"النظام" }}
+        </td>
+
+        {# ── المستهدف ── #}
+        <td>
+          {{ log.target.full_name|default:"—" }}
+        </td>
+
+        {# ── الإجراء — لون مُرمَّز ── #}
+        <td>
+          <span class="status-badge
+            {% if log.action == 'role_assigned' %}status-success
+            {% elif log.action == 'role_removed' %}status-danger
+            {% elif log.action == 'account_disabled' %}status-warning
+            {% elif log.action == 'account_enabled' %}status-success
+            {% elif log.action == 'dept_changed' or log.action == 'dept_head_set' or log.action == 'dept_head_removed' %}status-info
+            {% elif log.action == 'substitute_assigned' %}status-maroon
+            {% elif log.action == 'swap_approved' or log.action == 'compensatory_approved' %}status-success
+            {% elif log.action == 'swap_rejected' %}status-danger
+            {% else %}status-gray
+            {% endif %}">
+            {{ log.get_action_display }}
+          </span>
+        </td>
+
+        {# ── التفاصيل ── #}
+        <td class="text-xs text-secondary max-w-xs">
+          {% if log.details %}
+            {% for key, val in log.details.items %}
+              <span class="inline-block">
+                <span class="text-muted">{{ key }}:</span>
+                <span class="font-medium">{{ val }}</span>
+              </span>{% if not forloop.last %} &nbsp;·&nbsp; {% endif %}
+            {% endfor %}
+          {% else %}
+            <span class="text-muted">—</span>
+          {% endif %}
+        </td>
+
+        {# ── IP ── #}
+        <td class="num text-xs text-muted font-mono">
+          {{ log.ip_address|default:"—" }}
+        </td>
+
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+{% empty_state "لا توجد سجلات تطابق معايير البحث" icon="search" %}
+{% endif %}

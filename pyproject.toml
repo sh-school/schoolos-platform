@@ -1,0 +1,207 @@
+# ──────────────────────────────────────────────────────
+#  pyproject.toml — SchoolOS Qatar
+# ──────────────────────────────────────────────────────
+
+# ── Ruff — يستبدل black + isort + flake8 ─────────────
+[tool.ruff]
+line-length    = 100
+target-version = "py312"
+exclude = [
+    ".venv", "venv", ".local", "migrations", "__pycache__",
+    ".git", ".claude", "staticfiles", "htmlcov", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", "_archive",
+    "scripts", "setup_fonts.py",
+    "notifications/0003_pushsubscription.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "S",   # flake8-bandit (أمان خفيف)
+    "DJ",  # flake8-django
+    "N",   # pep8-naming
+]
+ignore = [
+    "E501",   # line too long — نتحكم بـ line-length
+    "E402",   # module import not at top — شائع في Django settings
+    "S101",   # assert — مقبول في الاختبارات
+    "S105",   # hardcoded password — false positives في Django
+    "S106",
+    "S107",
+    "S110",   # try-except-pass — مقبول أحياناً
+    "S311",   # pseudo-random — ليس للأمان
+    "S308",   # mark_safe — نستخدمه بوعي
+    "DJ001",  # null=True on CharField — اختياري
+    "DJ012",  # model field ordering — أسلوبي
+    "N806",   # variable in function should be lowercase — تعارض مع Django
+    "N814",   # camelcase import — مقبول
+    "B904",   # raise from — اختياري في الآن
+    "B007",   # loop variable not used — مقبول أحياناً
+    "S112",   # try-except-continue — مقبول مع logging
+    "DJ007",  # ModelForm __all__ — legacy code
+    "DJ008",  # __str__ missing — legacy models
+    "E741",   # ambiguous variable — l/O/I
+
+    "F403",   # star imports — مستخدم في settings
+    "F405",   # may be undefined from star — يتبع F403
+    "F841",   # local variable assigned but never used — مؤقت
+    "F811",   # redefinition of unused — legacy management commands
+]
+[tool.ruff.lint.per-file-ignores]
+"tests/**"    = ["S", "B", "E741", "N805", "UP038", "F811"]
+"conftest.py" = ["S", "B", "N805"]
+"**/migrations/**" = ["N999", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "operations", "assessments", "reports",
+                     "notifications", "quality", "behavior", "clinic",
+                     "transport", "library", "parents", "staging",
+                     "api", "shschool", "student_affairs", "staff_affairs",
+                     "exam_control", "breach", "analytics"]
+known-third-party = ["django", "rest_framework", "drf_spectacular",
+                     "celery", "redis", "PIL", "weasyprint", "axes"]
+
+[tool.ruff.format]
+quote-style              = "double"
+indent-style             = "space"
+skip-magic-trailing-comma = false
+
+# ── pytest ────────────────────────────────────────────
+# ملفُّ الضبط الوحيد. كان `pytest.ini` يُبطل هذا القسمَ كلَّه بصمت (pytest يقرأ
+# أوّلَ ملفٍّ يجده ويتجاهل الباقي)، فكانت هنا أعلامُ تغطيةٍ وعتبةٌ لا تُقرأ قطّ،
+# وهناك أنماطُ جمعٍ أخرى — وقسمان يتناقضان لا يُصلحان بمزيدٍ من التعليقات بل بحذف
+# أحدهما (2026-09-14). وحارسُ `tests/test_ci_gates_are_honest.py` يرفض عودتَه.
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "shschool.settings.testing"
+# `tests.py` مقصود: `student_affairs/tests.py` لا مجلّدَ `tests/` له، وكان خارجَ
+# الجمع مرّتين (انظر `tests/test_suite_collection.py`).
+python_files     = ["test_*.py", "tests.py"]
+python_classes   = ["Test*"]
+python_functions = ["test_*"]
+# لا `testpaths`: الجمعُ من الجذر كي تُجمع `developer_feedback/tests/` و`student_affairs/tests.py`.
+# و`norecursedirs` يُبطل افتراضاتِ pytest (`.*`, `build`, `dist`…) فتُعاد هنا صراحةً.
+norecursedirs = [
+    ".*", "*.egg", "build", "dist", "node_modules", "venv", ".venv", "staticfiles",
+    "_archive", "AAdocs", "backups", "data", "loadtest",
+]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "slow: اختبارات بطيئة",
+    "integration: اختبارات تكامل",
+    "e2e: اختبارات شاملة (تحتاج playwright)",
+    "asyncio: اختبارات غير متزامنة",
+]
+# لا `--cov` هنا: التغطيةُ تُطلب صراحةً في البوّابة (`--cov=. --cov-report=xml`)،
+# والعتبةُ في `[tool.coverage.report].fail_under` أدناه — pytest-cov يقرؤها من هناك.
+# ولا `-v`: ثلاثةُ آلافِ سطرٍ لا يقرؤها أحد.
+addopts = ["--tb=short", "--strict-markers"]
+
+# ── Coverage ──────────────────────────────────────────
+# كان `.coveragerc` يُبطل هذا القسمَ (coverage يقرؤه أوّلاً)، فدُمج فيه وحُذف.
+# القائمةُ هي قائمتُه — وهي ما قِيست به النسبةُ الفعليّة (≈75% في 2026-09).
+[tool.coverage.run]
+source = ["."]
+omit   = [
+    "*/migrations/*",
+    "*/management/commands/*",
+    "*/tests/*",
+    "manage.py",
+    "setup_fonts.py",
+    "shschool/settings/development.py",
+    "shschool/settings/production.py",
+    "shschool/wsgi.py",
+    "shschool/asgi.py",
+    ".venv/*",
+    ".claude/*",
+]
+
+[tool.coverage.report]
+# عتبةُ التغطية — الرقمُ الوحيد في المستودع. كانت ثلاثاً: 70 في البوّابة و60 في
+# nightly و85 في عنوانه، والملخّصُ يطبع PASS عند 60 والبوّابةُ تفشل عند 70.
+# البوّابةُ وnightly والتقريرُ الأسبوعيّ يقرؤونها من هنا، ولا يُسمح برقمٍ ثانٍ
+# (`tests/test_ci_gates_are_honest.py`).
+fail_under = 70
+show_missing = true
+skip_covered  = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
+# ── Bandit ────────────────────────────────────────────
+[tool.bandit]
+exclude_dirs = [".venv", ".local", "migrations", "tests", "manage.py"]
+skips        = ["B101", "B601"]  # assert + shell=True في مواضع مقبولة
+
+# ── mypy ─────────────────────────────────────────────
+[tool.mypy]
+python_version         = "3.12"
+ignore_missing_imports = true
+exclude                = ["migrations", ".venv", "manage.py", "scripts"]
+plugins                = ["mypy_django_plugin.main"]
+
+# ✅ v5.2: strict mode — فحص صارم للأنواع
+warn_return_any             = true
+warn_unused_configs         = true
+warn_redundant_casts        = true
+warn_unused_ignores         = true
+no_implicit_optional        = true
+strict_equality             = true
+check_untyped_defs          = true
+disallow_untyped_decorators = true
+# ✅ v5.3: strict mode additions
+disallow_untyped_defs       = true
+disallow_incomplete_defs    = true
+disallow_untyped_calls      = true
+warn_unreachable            = true
+
+# ── تخصيص لكل وحدة ─────────────────────────────────
+[[tool.mypy.overrides]]
+module = ["tests.*", "conftest"]
+disallow_untyped_defs   = false
+disallow_untyped_calls  = false
+check_untyped_defs      = false
+
+# ✅ v5.3: تخفيف على views (Django CBV signatures معقدة)
+# كان النمطُ `*.views_*` وmypy يرفضه («Patterns must be fully-qualified module
+# names») فيتجاهله بتحذيرٍ لم يقرأه أحد — `*` تكون مقطعاً كاملاً لا جزءَ اسم.
+# فالوحداتُ تُسمّى بأسمائها (2026-09-14).
+[[tool.mypy.overrides]]
+module = [
+    "*.views", "*.admin",
+    "api.views_erasure",
+    "governance.views_media",
+    "core.views_audit", "core.views_auth", "core.views_dashboard", "core.views_health",
+    "core.views_it_admin",
+    "core.views_pwa", "core.views_search", "core.views_students",
+    "core.views_styleguide",
+    "operations.views_attendance", "operations.views_schedule", "operations.views_swap",
+    "quality.views_committee", "quality.views_executor", "quality.views_reports",
+    "wings.views_register",
+]
+disallow_untyped_defs   = false
+disallow_untyped_calls  = false
+
+[[tool.mypy.overrides]]
+module = ["celery.*", "redis.*", "weasyprint.*", "openpyxl.*", "PIL.*"]
+ignore_missing_imports = true
+
+# ── mutmut — Mutation Testing ───────────────────────
+[tool.mutmut]
+paths_to_mutate = "core/,assessments/,operations/,behavior/"
+tests_dir = "tests/"
+runner = "python -m pytest tests/ -x -q --no-header --tb=no"
+dict_synonyms = "Struct,NamedStruct"
+
+[tool.django-stubs]
+django_settings_module = "shschool.settings.testing"

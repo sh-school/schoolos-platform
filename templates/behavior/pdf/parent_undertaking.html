@@ -1,0 +1,89 @@
+{% extends "behavior/pdf/base_form.html" %}
+{% load brand_tags %}
+{% block content %}
+
+<div class="header">
+  <div class="school-name">{{ school.name|default:"المدرسة" }}</div>
+  {# عنوانُ الوثيقة `<h1>` لا `<div>`: الشكلُ من `.form-title` في الأب، والدلالةُ لفهرس PDF وقارئ الشاشة. #}
+  <h1 class="form-title">نموذج تعهّد ولي الأمر</h1>
+  <div class="date-line">التاريخ: {{ infraction.date|date:"Y/m/d" }}</div>
+</div>
+
+<!-- بيانات ولي الأمر والطالب -->
+<div class="section">
+  <div class="section-title">بيانات ولي الأمر والطالب</div>
+  <table class="data-table">
+    <tr>
+      <td class="fl">اسم ولي الأمر:</td>
+      <td class="fv">{{ parent_name|default:"_______________________________" }}</td>
+      <td class="fl">الرقم الشخصي:</td>
+      <td class="fv">{{ parent_id|default:"______________" }}</td>
+    </tr>
+    <tr>
+      <td class="fl">اسم الطالب:</td>
+      <td class="fv">{{ infraction.student.full_name }}</td>
+      <td class="fl">الرقم الشخصي:</td>
+      <td class="fv">{{ infraction.student.national_id }}</td>
+    </tr>
+    <tr>
+      <td class="fl">الصف:</td>
+      <td class="fv">{{ student_grade|default:"—" }}</td>
+      <td class="fl">الشعبة:</td>
+      <td class="fv">{{ student_section|default:"—" }}</td>
+    </tr>
+  </table>
+</div>
+
+<!-- سبب التعهد -->
+<div class="section">
+  <div class="section-title">سبب التعهد</div>
+  <p class="body-text">
+    {% if infraction.violation_category %}
+    مخالفة [{{ infraction.violation_category.code }}] — {{ infraction.violation_category.name_ar }}<br>
+    {% endif %}
+    {{ infraction.description }}
+  </p>
+</div>
+
+<!-- نص التعهد -->
+<div class="section">
+  <div class="section-title">نص التعهد</div>
+  <p class="body-text">
+    أتعهد أنا ولي أمر الطالب المذكور أعلاه بمتابعة انتظامه والتزامه بلوائح
+    السلوك والانضباط والتعليمات المنظمة للاختبارات، والتعاون مع المدرسة في
+    تنفيذ أي خطط علاجية أو تقويمية لازمة. وأتحمل مسؤولية أي مخالفة لاحقة
+    وفق اللوائح المعتمدة.
+  </p>
+  <table class="data-table is-spaced">
+    <tr>
+      <td class="fl">مدة التعهد:</td>
+      <td class="fv">من تاريخ التوقيع حتى نهاية العام الدراسي {{ academic_year }}</td>
+    </tr>
+  </table>
+</div>
+
+<!-- التوقيعات -->
+<div class="sig-section">
+  <div class="sig-section-title">التوقيعات والاعتماد</div>
+  <table class="sig-table">
+    <tr>
+      <td><div class="sig-line">ولي الأمر</div></td>
+      <td><div class="sig-line">رقم الجوال<br>{{ parent_phone|default:"_______________" }}</div></td>
+      <td><div class="sig-line">البريد الإلكتروني<br>{{ parent_email|default:"_______________" }}</div></td>
+    </tr>
+    <tr>
+      <td><div class="sig-line">المستلم بالمدرسة<br>{{ received_by }}</div></td>
+      <td><div class="sig-line">توقيع المستلم</div></td>
+      <td><div class="sig-line">التاريخ: {{ infraction.date|date:"Y/m/d" }}</div></td>
+    </tr>
+  </table>
+</div>
+
+{% if exported_by %}
+<div class="export-stamp">
+  <p><strong>صدر بواسطة:</strong> {{ exported_by }} — {{ exporter_role }}</p>
+  <p>التاريخ: {{ export_datetime }}</p>
+  <p>{{ school_name }} — وثيقة رسمية — SchoolOS</p>
+</div>
+{% endif %}
+{% endblock %}

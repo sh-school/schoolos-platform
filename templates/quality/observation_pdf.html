@@ -1,0 +1,292 @@
+{% load static brand_tags %}
+{% comment %}
+استمارة الإشراف على أداء المعلّم — طبق الأصل من نموذج المدرسة (docx).
+
+القياسات من `sectPr` في الملفّ الأصل لا مُقدَّرةً بالعين:
+
+    الورق        12240 × 15840 twip  =  Letter (8.5 × 11 بوصة)
+    الهوامش      علوي 1620 · سفلي 1170 · يمين ويسار 720 twip
+
+والهامشان العلويّ والسفليّ ضُبطا على ارتفاع شريطَي الورق الرسميّ لا على
+رقمَي الأصل: الشريطان أقصر منهما بنحو نصف بوصة مجتمعةً، والفائض رُدّ إلى
+المتن ليكبُر خطُّه — والصفحةُ واحدة.
+
+واللونان من الملفّ نفسه: 943634 لشرائط العناوين، وDDD9C3 لكل خليّة عنوان
+(`FORM_BAND` و`FORM_KEY_BG` في `core/brand.py`، ورمزاهما في `:root`)
+— عناوينِ الأعمدة وعناوينِ الحقول معاً؛ وقد أُحصيت سبعاً وخمسين مرّة فيه.
+
+والأصل صفحتان، وطلبت المدرسة صفحةً واحدة — فجُمعت المجالات الأربعة في
+جدولٍ واحد، وصُغِّرت الأحجام حتى تسعها الصفحة.
+
+وخلايا التقدير فارغةٌ تُؤشَّر باليد كما في الأصل — فإن كان التقدير مُدخَلاً
+وُضعت علامته في خانته وحدها.
+
+والأصل يكتب رؤوس أعمدة التقدير وعمودَ المجال عمودياً. وجُرّب
+`writing-mode: vertical-rl` فأخرج WeasyPrint حروفاً عربيةً مُشوَّهة ونفخ
+الجدول إلى خمس صفحات — فالكتابة العمودية ليست في وسعه مع العربية. فبقيت
+أفقيةً في أعمدةٍ ضيّقة مثبَّتة العرض: أقربُ ما يُنال بلا تشويه.
+
+و`data-pdf-own-page` تُعلن أنّ هذا القالب يتولّى صفحته كاملةً: ورقَها
+وهوامشها وترويستها وخطّها. فلا يحقن `pdf_utils` فوقه ترويسة المنصّة.
+
+وخطوط الوثيقة يحقنها `pdf_utils` بمسارات مطلقة على القرص، ولا تُطلب هنا
+بـ`@font-face`: `{% static %}` يُخرج رابطاً نسبياً يحمل بصمةً في الإنتاج،
+وWeasyPrint يحلّه على القرص فلا يجده ويسقط إلى DejaVu Sans — بلا شكوى.
+
+والخطّ: الأصل بـ«Traditional Arabic»، وهو ملكيّةُ Monotype — ومستودع هذا
+المشروع عامّ، فإيداعُه فيه نشرٌ لبرمجيّةٍ مرخَّصة لا حقَّ لنا فيه.
+
+فالمُودَع «Noto Naskh Arabic» برخصة SIL OFL: نسخيٌّ حرٌّ، أقربُ ما يُوجد
+إلى ملامح الأصل. ويُطلب Traditional Arabic أوّلاً فيظهر على الأجهزة التي
+هو مثبَّتٌ عليها؛ ومن أراده في ملفّ الخادم ثبّته في نظام الخادم نفسه — لا
+في المستودع.
+{% endcomment %}
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>استمارة الإشراف على أداء المعلّم</title>
+<style>
+@page {
+  size: 8.5in 11in;
+  /* هامشا الأصل 1.125 و0.8125 بوصة، والشريطان أقصر منهما بكثير
+     (0.878 و0.405). فضُبطا على ارتفاعهما وفضلةٍ يسيرة، والفائض
+     رُدَّ إلى المتن فكبُر خطُّه. */
+  /* الهامشان يسعان الشريطين وفسحةً حولهما: الترويسة 0.878 بوصة
+     والتذييل 0.367 عند عرض 6.8، وحول كلٍّ منهما 0.14 من فوقه
+     ومثلها من تحته — فلا يلتصق شريطٌ بحافّة ولا بمتن. */
+  margin: 1.08in 0.5in 0.65in 0.5in;
+  @top-center { content: element(sheet-header); }
+  @bottom-center { content: element(sheet-footer); }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+body {
+  direction: rtl;
+  font-family: 'Traditional Arabic', 'Noto Naskh Arabic', 'Amiri', serif;
+  font-size: 11.6pt;
+  line-height: 1.15;
+  color: {% brand_color "PRINT_INK" %};
+  background: {% brand_color "SURFACE" %};
+}
+
+/* صندوق الهامش بلا عرضٍ محدَّد، فـ`width: 100%` لا تُحلّ عليه: تعود
+   الصورة إلى عرضها الطبيعيّ (٢٤١٠ بكسل ≈ ٢٥ بوصة) فتفيض ولا يظهر شيء —
+   وهو ما خرج من الإنتاج: صفرُ صورٍ في الملفّ بلا خطأٍ ولا شكوى.
+   فالعرض مطلق: ٨٫٥ بوصة ناقص هامشَين نصفِ بوصة. */
+/* الشريطان أضيق من المتن قليلاً ومتوسّطان، وحولهما فسحة — أهدأ من أن
+   يمتدّا بعرض الورقة كلّها ويلتصقا بحوافّها. */
+#sheet-header { position: running(sheet-header); width: 7.5in; padding: 0.14in 0; }
+#sheet-footer { position: running(sheet-footer); width: 7.5in; padding: 0.14in 0; }
+#sheet-header img, #sheet-footer img { width: 6.8in; display: block; margin: 0 auto; }
+
+/* عنوانٌ نصّيّ لمن لم يرفع ترويسته — لا ترويسة مدرسةٍ أخرى */
+.plain-head { text-align: center; border-bottom: 2pt solid {% brand_color "FORM_BAND" %}; padding-bottom: 4pt; }
+.plain-head .ministry { font-size: 10pt; color: {% brand_color "PRINT_INK_SOFT" %}; }
+.plain-head .school { font-size: 14pt; font-weight: 700; color: {% brand_color "FORM_BAND" %}; }
+.plain-foot {
+  text-align: center;
+  border-top: 1pt solid {% brand_color "FORM_BAND" %};
+  padding-top: 3pt;
+  font-size: 9pt;
+  color: {% brand_color "FORM_BAND" %};
+}
+
+.form-title {
+  text-align: center;
+  font-size: 14.5pt;
+  font-weight: 700;
+  margin: 2pt 0 5pt;
+}
+.form-title .subject { color: {% brand_color "FORM_BAND" %}; }
+
+table { width: 100%; border-collapse: collapse; direction: rtl; margin-bottom: 3pt; }
+td {
+  border: 0.5pt solid {% brand_color "PRINT_INK" %};
+  padding: 1pt 3.5pt;
+  font-size: 10.7pt;
+  vertical-align: middle;
+  text-align: right;
+}
+
+/* شريط القسم: أبيضُ على العنّابي */
+.band { background: {% brand_color "FORM_BAND" %}; color: {% brand_color "ON_FILL" %}; font-weight: 700; text-align: center; }
+
+/* كل خليّة عنوان: أرضيّةٌ رمليّة — عناوين الحقول والأعمدة معاً */
+.key { background: {% brand_color "FORM_KEY_BG" %}; font-weight: 700; white-space: nowrap; }
+.head {
+  background: {% brand_color "FORM_KEY_BG" %};
+  font-weight: 700;
+  font-size: 8.2pt;
+  line-height: 1.1;
+  text-align: center;
+  vertical-align: middle;
+  /* رؤوسٌ ضيّقةٌ بنصٍّ طويل: بلا هذا يفيض النصّ خارج خليّته ويتراكب مع
+     جارته — وهو ما خرج في أوّل نسخةٍ من الإنتاج. */
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+}
+.center { text-align: center; }
+
+/* خطٌّ أسمك يفصل مجالاً عن مجال — الحدُّ العاديّ نصفُ نقطة،
+   فلا تكاد العينُ ترى أين ينتهي «التخطيط» ويبدأ «تنفيذ الدرس». */
+.domain-start td { border-top: 1.5pt solid {% brand_color "PRINT_INK" %}; }
+
+/* خانتا العنوان في سطر المدرسة: عرضُهما يثبّت ما تحتهما من أعمدة. */
+.key.is-school { width: 8%; }
+.key.is-date { width: 11%; }
+
+/* الأصل يكتب رؤوس الأعمدة وعمود المجال عمودياً. وجُرّب
+   `writing-mode: vertical-rl` فأخرج WeasyPrint حروفاً عربيةً مُشوَّهة
+   ونفخ الجدول إلى خمس صفحات — فالكتابة العمودية ليست في وسعه مع العربية.
+   فبقيت أفقيةً في أعمدةٍ ضيّقة: أقربُ ما يُنال بلا تشويه. */
+.vert { text-align: center; vertical-align: middle; padding: 2pt 1pt; }
+
+.rate { text-align: center; font-weight: 700; }
+.crit { font-size: 9.7pt; line-height: 1.1; }
+.rec { font-size: 9.5pt; }
+
+/* عرضٌ مثبَّت: الخليّة الضيّقة لا تسحب عرض جارتها، وعمودُ المعايير
+   يحتفظ بعرضه فلا تنكسر كل كلمةٍ على سطر. */
+.grid { table-layout: fixed; }
+.c-domain { width: 8%; }
+.c-crit   { width: 26%; }
+.c-rate   { width: 8.4%; }
+.c-rec    { width: 24%; }
+
+/* صندوق الملاحظات يمتصّ ما يفضل من الصفحة: هو موضع الكتابة
+   باليد، فكِبَرُه نفعٌ لا فراغ. */
+.notes { height: 38pt; vertical-align: top; }
+.sign { height: 22pt; }
+/* ختمُ التوقيع الإلكترونيّ (F55E): يملأ الخانةَ حين توجد بياناتُه، وإلّا تبقى فارغةً للتوقيع اليدويّ. سطران صغيران
+   فلا تزيد الخانةُ ارتفاعاً إلّا بقدر الختم، والصفحةُ واحدة. */
+.e-sign {
+  border: 0.6pt solid {% brand_color "FORM_BAND" %};
+  padding: 0.5pt 2pt;
+  text-align: center;
+  line-height: 1.05;
+  font-size: 7.2pt;
+}
+.e-sign .title { font-weight: 700; color: {% brand_color "FORM_BAND" %}; }
+/* الخانةُ المختومةُ أطولُ بنحو ستّ نقاطٍ (ثلاثةُ أسطرٍ في الخانة الضيّقة)، فيردّ صندوقُ الملاحظات — وهو موضعُ الكتابة باليد
+   وأدنى ارتفاعِه فسحةٌ لا محتوى — القدرَ نفسَه: فلا تنزل صفحةٌ عن الصفحة الواحدة بسبب الختم (F55E). */
+.notes.stamped { height: 32pt; }
+</style>
+</head>
+<body data-pdf-own-page>
+
+<div id="sheet-header">
+  {% if letterhead %}
+    <img src="{{ letterhead }}" alt="">
+  {% else %}
+    <div class="plain-head">
+      <div class="ministry">وزارة التربية والتعليم والتعليم العالي — دولة قطر</div>
+      <div class="school">{{ obs.school.name }}</div>
+    </div>
+  {% endif %}
+</div>
+
+<div id="sheet-footer">
+  {% if letterfoot %}
+    <img src="{{ letterfoot }}" alt="">
+  {% else %}
+    {# تذييل المدرسة صورةٌ ترفعها هي، وفيها رؤيتها. ومن لم يرفعها يُذيَّل باسمه ورؤية الوزارة. #}
+    <div class="plain-foot">
+      {{ obs.school.name }} — {% include "components/ministry_vision.html" with school=obs.school %}
+    </div>
+  {% endif %}
+</div>
+
+<h1 class="form-title">
+  استمارة <span class="subject">{{ form_subject }}</span> – العام الأكاديميّ {{ academic_year }}
+</h1>
+
+{# ══ المعلومات الأساسيّة ══ #}
+<table>
+  <tr><td class="band" colspan="12">المعلومات الأساسيّة</td></tr>
+  <tr>
+    <td class="key is-school">المــدرسة</td>
+    <td colspan="5">{{ obs.school.name }}</td>
+    <td class="key is-date" colspan="2">اليوم/التاريخ</td>
+    <td colspan="4">{{ obs.observation_date|date:"Y/m/d" }}</td>
+  </tr>
+  <tr>
+    <td class="key">المادّة</td>
+    <td colspan="3">{{ obs.subject.name_ar|default:"" }}</td>
+    <td class="key">الصّف</td>
+    <td colspan="3">{{ obs.class_group|default:"" }}</td>
+    <td class="key">الحصة</td>
+    <td colspan="3">{{ obs.period|default:"" }}</td>
+  </tr>
+  <tr>
+    <td class="key">الموضوع</td>
+    <td colspan="6">{{ obs.topic }}</td>
+    <td class="key">الزائر</td>
+    <td colspan="4">{{ obs.observer.full_name }}</td>
+  </tr>
+  {# الأصل يجمع الأربعة في صفٍّ واحد، ويُفرد الصفَّ الذي يليه لخياري البثّ #}
+  <tr>
+    <td class="key" rowspan="2">المعلّم</td>
+    <td colspan="2" rowspan="2">{{ obs.teacher.full_name }}</td>
+    <td class="key">نوع المتابعة</td>
+    <td class="key center">ميدانيّة</td>
+    <td class="center">{% if obs.follow_up_mode == 'field' %}✓{% endif %}</td>
+    <td class="key center">عن بُعد</td>
+    <td class="center">{% if obs.follow_up_mode == 'remote' %}✓{% endif %}</td>
+    <td class="key center">جزئيّة</td>
+    <td class="center">{% if obs.follow_up_scope == 'partial' %}✓{% endif %}</td>
+    <td class="key center">كلّيّة</td>
+    <td class="center">{% if obs.follow_up_scope == 'full' %}✓{% endif %}</td>
+  </tr>
+  <tr>
+    <td class="key">ملاحظات</td>
+    <td class="key center" colspan="2">بث مباشر مدمج</td>
+    <td class="center">{% if obs.broadcast_note == 'بث مباشر مدمج' %}✓{% endif %}</td>
+    <td class="key center" colspan="3">بث مباشر غير مدمج</td>
+    <td class="center" colspan="2">{% if obs.broadcast_note == 'بث مباشر غير مدمج' %}✓{% endif %}</td>
+  </tr>
+</table>
+
+{# ══ المجالات ومعايير الأداء — جدولٌ واحدٌ في صفحةٍ واحدة ══ #}
+<table class="grid">
+  <tr>
+    <td class="head c-domain">المجال</td>
+    <td class="head c-crit">معايير الأداء</td>
+    {% for value, label in ratings %}
+      <td class="head c-rate">{{ label }}</td>
+    {% endfor %}
+    <td class="head c-rec">التوصيات<br>(تتضمن توجيهات لزيادة أثر الممارسات في تعلم الطلاب)</td>
+  </tr>
+  {% for domain, rows in domains %}
+    {% for row in rows %}
+      <tr{% if forloop.first %} class="domain-start"{% endif %}>
+        {% if forloop.first %}
+          <td class="head vert" rowspan="{{ rows|length }}">{{ domain }}</td>
+        {% endif %}
+        <td class="crit">{{ row.criterion.text }}</td>
+        {% for value, label in ratings %}
+          <td class="rate">{% if row.score and row.score.rating == value %}✓{% endif %}</td>
+        {% endfor %}
+        <td class="rec">{% if row.score %}{{ row.score.recommendation|linebreaksbr }}{% endif %}</td>
+      </tr>
+    {% endfor %}
+  {% endfor %}
+  <tr><td class="head" colspan="8">ملاحظات وتوصيات عامّة</td></tr>
+  <tr><td class="notes{% if signatures.teacher or signatures.visitor %} stamped{% endif %}" colspan="8">{{ obs.general_notes|linebreaksbr }}</td></tr>
+  <tr>
+    <td class="band sign" colspan="2">توقيع المعلم</td>
+    <td class="sign" colspan="2">{% with stamp=signatures.teacher %}{% include "quality/_pdf_e_sign.html" %}{% endwith %}</td>
+    <td class="band sign" colspan="2">توقيع الزائر</td>
+    <td class="sign" colspan="2">{% with stamp=signatures.visitor %}{% include "quality/_pdf_e_sign.html" %}{% endwith %}</td>
+  </tr>
+</table>
+
+</body>
+</html>

@@ -1,0 +1,131 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}التقرير السلوكي — {{ student.full_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/behavior/dashboard/" parent_label="السلوك" current="التقرير السلوكي" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash beh-narrow">
+
+  {% page_header "التقرير السلوكي الدوري" subtitle=report_subtitle icon="behavior" %}
+    <nav class="period-switch" aria-label="الفترة">
+      {% for p, label in period_choices %}
+        <a href="?year={{ year }}&period={{ p }}" class="period-switch__item{% if period == p %} is-current{% endif %}"{% if period == p %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <a href="{% url 'behavior:student_profile' student.id %}" class="btn-secondary btn-sm">{% icon "behavior" %} الملف السلوكي</a>
+  {% endpage_header %}
+
+  {# نظامُ النقاط ملغى — الأرقامُ عددُ مخالفات الفترة. #}
+  {% kpi_strip label="مخالفات الفترة" %}
+    {% kpi "إجمالي المخالفات" infractions|length tone="maroon" %}
+    {% kpi "الدرجة الأولى" by_level.1|length tone="blue" %}
+    {% kpi "الدرجة الثانية" by_level.2|length tone="amber" %}
+    {% kpi "الدرجة الثالثة" by_level.3|length tone="orange" %}
+    {% kpi "الدرجة الرابعة" by_level.4|length tone="red" %}
+  {% endkpi_strip %}
+
+  {% if infractions %}
+  {% filter_bar "ترشيحُ المخالفات" id="infraction-filters" live=True %}
+    {% field "q" "بحث في الوصف" type="search" id="filter-description" hide_label=True grow=True placeholder="بحث في الوصف..." %}
+    {% field "date_from" "من تاريخ" type="date" id="filter-date-from" hide_label=True title="من تاريخ" %}
+    {% field "date_to" "إلى تاريخ" type="date" id="filter-date-to" hide_label=True title="إلى تاريخ" %}
+    {% field "level" "الدرجة" type="select" id="filter-level" choices="1=درجة 1|2=درجة 2|3=درجة 3|4=درجة 4" blank="كل الدرجات" hide_label=True %}
+    <button type="button" id="btn-reset-filters" class="btn-ghost btn-sm" title="إعادة تعيين">مسح</button>
+  {% endfilter_bar %}
+  {% endif %}
+
+  {% section_card "تفاصيل المخالفات" icon="behavior_violation" empty="لا توجد مخالفات في هذه الفترة" %}{% if infractions %}
+    <ul class="plain-list" id="infractions-list">
+      {% for inf in infractions %}
+        <li class="plain-list__row" data-filter-row data-description="{{ inf.description }}" data-date="{{ inf.date|date:'Y-m-d' }}" data-level="{{ inf.level }}">
+          <span class="plain-list__main">
+            <span class="beh-case__text">{{ inf.description }}</span>
+            <span class="plain-list__sub"{% if inf.action_taken %} title="{{ inf.action_taken }}"{% endif %}>{{ inf.date|date:"d/m/Y" }}{% if inf.action_taken %} · الإجراء: {{ inf.action_taken }}{% endif %}</span>
+          </span>
+          <span class="beh-badges">
+            <span class="status-badge {% if inf.level == 1 %}status-info{% elif inf.level == 4 %}status-danger{% else %}status-warning{% endif %}">درجة {{ inf.level }}</span>
+            {% if inf.is_resolved %}<span class="status-badge status-success">محلولة</span>{% endif %}
+          </span>
+        </li>
+      {% endfor %}
+    </ul>
+    <div id="no-results-msg" hidden>{% empty_state "لا توجد نتائج مطابقة" sub="غيّر كلمة البحث أو وسّع التاريخ" icon="search" %}</div>
+  {% endif %}{% endsection_card %}
+
+  {% if parent_links %}
+  {% section_card "إرسال التقرير لوليّ الأمر" meta="بالبريد الإلكتروني" icon="parents" %}
+    <ul class="chip-row beh-parents" aria-label="أولياء الأمور">
+      {% for link in parent_links %}
+        <li class="status-badge {% if link.parent.email %}status-success{% else %}status-gray{% endif %}">{{ link.parent.full_name }}{% if not link.parent.email %} · لا بريد{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% callout "warning" %}يُرسَل التقرير فوراً بالبريد إلى وليّ أمر قاصر ولا يُسحب بعد الإرسال؛ ولا يصل إلّا من له بريدٌ مسجَّل.{% endcallout %}
+    <form method="post" class="form-actions" data-confirm="يُرسَل التقرير السلوكي فوراً بالبريد إلى وليّ الأمر ولا يُسحب. أتابع؟">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="send">
+      <button type="submit" class="btn-primary btn-sm">{% icon "messages" %} إرسال التقرير بالبريد الإلكتروني</button>
+    </form>
+  {% endsection_card %}
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  var descInput  = document.getElementById('filter-description');
+  var dateFrom   = document.getElementById('filter-date-from');
+  var dateTo     = document.getElementById('filter-date-to');
+  var levelSel   = document.getElementById('filter-level');
+  var resetBtn   = document.getElementById('btn-reset-filters');
+  var noMsg      = document.getElementById('no-results-msg');
+  var list       = document.getElementById('infractions-list');
+  if (!list) return;
+  var rows = list.querySelectorAll('[data-filter-row]');
+
+  function applyFilters(){
+    var q     = (descInput.value || '').trim();
+    var from  = dateFrom.value || '';
+    var to    = dateTo.value   || '';
+    var level = levelSel.value || '';
+    var visible = 0;
+
+    rows.forEach(function(row){
+      var desc = row.getAttribute('data-description') || '';
+      var date = row.getAttribute('data-date') || '';
+      var lvl  = row.getAttribute('data-level') || '';
+      var show = true;
+      if (q) {
+        show = typeof window.smartMatch === 'function'
+          ? window.smartMatch(q, desc)
+          : desc.toLowerCase().indexOf(q.toLowerCase()) !== -1;
+      }
+      if (show && from && date < from) show = false;
+      if (show && to   && date > to)   show = false;
+      if (show && level && lvl !== level) show = false;
+      row.hidden = !show;
+      if (show) visible++;
+    });
+
+    if (noMsg) noMsg.hidden = visible > 0;
+  }
+
+  descInput.addEventListener('input', applyFilters);
+  dateFrom.addEventListener('change', applyFilters);
+  dateTo.addEventListener('change', applyFilters);
+  levelSel.addEventListener('change', applyFilters);
+  resetBtn.addEventListener('click', function(){
+    descInput.value = '';
+    dateFrom.value  = '';
+    dateTo.value    = '';
+    levelSel.value  = '';
+    applyFilters();
+  });
+});
+</script>
+{% endblock %}

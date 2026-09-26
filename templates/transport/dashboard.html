@@ -1,0 +1,85 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+{% block title %}لوحة النقل المدرسي{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/transport/" parent_label="النقل المدرسي" current="لوحة النقل" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "لوحة النقل المدرسي" subtitle="الحافلات وإشغالها ومشرفوها" icon="transport" %}
+    <a href="{% url 'transport:student_assignments' %}" class="btn-primary btn-sm">{% icon "workload" %} إسناد الطلاب</a>
+    <a href="{% url 'transport:buses_list' %}" class="btn-secondary btn-sm">{% icon "transport" %} الحافلات</a>
+    <a href="{% url 'transport:statistics' %}" class="btn-secondary btn-sm">{% icon "stats" %} الإحصائيات</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام النقل" %}
+    {% kpi "الحافلات" total_buses tone="maroon" %}
+    {% kpi "الطلاب المسجّلون" total_assigned|default:0 sub=capacity_label tone="green" %}
+    {% kpi "الإشغال" occupancy_label tone=occupancy_tone title="الطلابُ المسجّلون من مجموع المقاعد" %}
+    {% kpi "فوق الطاقة" overcapacity_count|default:0 tone=overcapacity_tone title="حافلاتٌ طلابُها أكثرُ من مقاعدها" %}
+    {% kpi "بلا مشرف" no_supervisor|default:0 tone=no_supervisor_tone %}
+  {% endkpi_strip %}
+
+  {% if bus_data %}
+  {% section_card "إشغالُ كلّ حافلة" meta="من سعتها" icon="transport" %}
+    <div class="dash-chart-wrap">
+      <canvas id="chartBusOccupancy" role="img" aria-label="رسم بياني: نسبة إشغال كل حافلة"></canvas>
+    </div>
+  {% endsection_card %}
+  {% endif %}
+
+  {% section_card "الحافلات" meta=bus_data|length icon="transport" empty="لا حافلاتٍ مسجّلة" %}{% if bus_data %}
+    <div class="ui-entity-grid">
+      {% for item in bus_data %}
+        {% entity_card item.bus.bus_number who=item.bus.driver_name count=item.seats_label href=item.url tone=item.tone %}
+          {% entity_chips %}{% if item.bus.supervisor %}<span class="chip">{{ item.bus.supervisor.full_name }}</span>{% else %}<span class="chip">بلا مشرف</span>{% endif %}{% if item.bus.karwa_id %}<span class="chip">كروة {{ item.bus.karwa_id }}</span>{% endif %}{% endentity_chips %}
+          {% entity_status tone=item.status_tone %}{{ item.status_label }}{% endentity_status %}
+        {% endentity_card %}
+      {% endfor %}
+    </div>
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/vendor/chart.umd.min.js' %}"></script>
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  Chart.defaults.font.family='Tajawal,sans-serif';
+  Chart.defaults.font.size=11;
+
+  var busLabels = [{% for b in bus_data %}'{{ b.bus.bus_number }}'{% if not forloop.last %},{% endif %}{% endfor %}];
+  var busOccupancy = [{% for b in bus_data %}{{ b.occupancy_rate|default:0 }}{% if not forloop.last %},{% endif %}{% endfor %}];
+  var busColors = busOccupancy.map(function(v){ return v > 100 ? chartColor('status-danger') : v > 80 ? chartColor('status-warning') : chartColor('chart-2'); });
+
+  var el = document.getElementById('chartBusOccupancy');
+  if(el && busLabels.length){
+    new Chart(el, {
+      type:'bar',
+      data:{
+        labels: busLabels,
+        datasets:[{
+          label:'الإشغال %',
+          data: busOccupancy,
+          backgroundColor: busColors
+        }]
+      },
+      options:{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins:{ legend:{ display:false } },
+        scales:{
+          y:{ min:0, max: Math.max(120, Math.max.apply(null, busOccupancy)+10), ticks:{ callback:function(v){return v+'%';} } },
+          x:{ ticks:{ font:{ size:9 } } }
+        }
+      }
+    });
+  }
+});
+</script>
+{% endblock %}

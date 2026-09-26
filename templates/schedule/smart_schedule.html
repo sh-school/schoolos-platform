@@ -1,0 +1,335 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load schedule_filters ui %}
+
+{% block title %}الجدولة الذكية — {{ year }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current="الجدولة الذكية" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+{% page_header "الجدولة الذكية" subtitle=page_subtitle icon="generate" %}
+  <a href="{% url 'academic_management:assignments' %}?year={{ year }}" class="btn-secondary btn-sm">{% icon "workload" %} الإسناد</a>
+  <a href="{% url 'schedule_settings' %}" class="btn-secondary btn-sm">{% icon "settings" %} الإعدادات</a>
+  <a href="{% url 'schedule_quality_lab' %}?year={{ year }}" class="btn-secondary btn-sm">{% icon "quality" %} مختبر الجودة</a>
+  <a href="{% url 'weekly_schedule' %}" class="btn-secondary btn-sm">{% icon "schedule" %} الجدول الحالي</a>
+  {% if assignments_count and not pending_generation %}
+  <form method="post" action="{% url 'smart_generate' %}" class="gen-inline-form"
+        data-confirm="بدء توليد مسودّة جدول جديدة؟ الجدول القائم يبقى كما هو حتى تعتمدها.">
+    {% csrf_token %}
+    <input type="hidden" name="year" value="{{ year }}">
+    <button type="submit" class="btn-primary btn-sm">{% icon "generate" %} بدء التوليد</button>
+  </form>
+  {% endif %}
+{% endpage_header %}
+
+{% comment %}
+رقمان لا واحد في «الحصص الأسبوعية»: التوازي حصّتان تُدرَّسان في التوقيت الواحد
+لمعلّمَي المادّتين، وخانةٌ واحدةٌ تُشغَل من أسبوع الشعبة —
+`InstructionalPeriods ≠ OccupiedSlots`. وخلطُهما هو ما يجعل تحذيرَ السعة يبدو
+فائضاً وليس بفائض. فالخاناتُ في تفصيل البطاقة، والتوازي في تلميحها.
+{% endcomment %}
+{% kpi_strip label="أرقام التوليد" %}
+  {% kpi "توزيعات المواد" assignments_count %}
+  {% kpi "حصص أسبوعية" total_weekly sub=weekly_sub tone="sky" title=weekly_title %}
+  {% kpi "الشُّعب" classes_count tone="blue" %}
+  {% kpi "المعلّمون" teachers_count tone="blue" %}
+  {% if feasibility.minimum_unplaceable %}
+  {% kpi "لن تجد موضعاً" feasibility.minimum_unplaceable tone="red" title="حصصٌ لن تجد موضعاً — بالعدّ لا بالبحث، فما عجز هنا لا يجده بحثٌ مهما طال" %}
+  {% endif %}
+{% endkpi_strip %}
+
+{# ══ فحصُ الجدوى: يعدّ ولا يبحث — فما عجز هنا لا يجده بحثٌ مهما طال ══ #}
+{% section_card "فحصُ الجدوى قبل التوليد" meta=feasibility_verdict icon="checklist" %}
+  <div class="smart-notes">
+    {% if feasibility.blocking %}
+    {% callout "warning" %}<strong>{{ feasibility.minimum_unplaceable }} حصّةً على الأقلّ لن تجد موضعاً مهما طال البحث.</strong>
+      والعلاجُ في التوزيعات لا في المولّد: راجع ما دونه ثمّ أعد الفحص.{% endcallout %}
+    {% else %}
+    {% callout "info" %}لا عجزَ في العدّ: الطلبُ يسعه ما في الأسبوع من خانات. وبقيّةُ التعذّر — إن وقع —
+      من تشابك القيود لا من ضيق الطاقة.{% endcallout %}
+    {% endif %}
+    {% if constraint_overrides %}
+    {% callout "info" %}قيودٌ خُولف فيها افتراضُ الشيفرة هذا العام:
+      {% for code, title in constraint_overrides %}<strong>{{ code }} · {{ title }}</strong>{% if not forloop.last %}، {% endif %}{% endfor %}.
+      وأثرُ الرتبة لا يكشفه عدٌّ — فوَلِّد وقِس بالمختبر قبل الاعتماد.{% endcallout %}
+    {% endif %}
+  </div>
+
+  <div class="feas-chips">
+    {% for f in feasibility.findings %}
+    <span class="feas-chip"{% if f.status != "fail" and f.status != "warn" %} title="{{ f.summary }}"{% endif %}>
+      {% if f.status == "fail" %}
+      <span class="status-badge status-danger">عجزٌ يقينيّ</span>
+      {% elif f.status == "warn" %}
+      <span class="status-badge status-warning">تنبيه</span>
+      {% else %}
+      <span class="status-badge status-success">سليم</span>
+      {% endif %}
+      <b>{{ f.title }}</b>
+      {% if f.status == "fail" or f.status == "warn" %}<span class="feas-chip__note">{{ f.summary }}</span>{% endif %}
+      {% if f.rows %}
+      <details class="feas-details">
+        <summary>التفصيل ({{ f.rows|length }})</summary>
+        <ul class="feas-list">
+          {% for r in f.rows %}
+          <li>
+            <b>{{ r.name }}</b> —
+            مطلوب {{ r.demand }}، ويسعه {{ r.capacity }}
+            {% if r.gap %}<span class="text-status-danger">(عجز {{ r.gap }})</span>{% endif %}
+            {% if r.note %}<span class="text-muted">· {{ r.note }}</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+    </span>
+    {% endfor %}
+  </div>
+{% endsection_card %}
+
+{# ── زر التوليد + سجلّه: بطاقةٌ واحدة — لوحةُ التحكّم أعلاها، والسجلُّ أسفلها ── #}
+{% if assignments_count %}
+{% section_card "توليد الجدول التلقائي" icon="generate" flush=True %}
+  {% comment %}
+  التوليدُ يستغرق دقائقَ لا ثوانيَ — قِيس في هذه المدرسة بين ٤٢ و٢٧٩ ثانية.
+  فلا يُترك المستخدمُ أمام صفحةٍ جامدةٍ يظنّ الزرَّ لم يعمل: الحالةُ معروضةٌ
+  وتُسأل كلَّ ثلاثِ ثوانٍ. والزرُّ نفسُه في ترويسة الصفحة — بجانب «الجدول الحالي» —
+  ويختفي ما دام هناك توليدٌ جارٍ.
+  {% endcomment %}
+  {% if pending_generation %}
+  <div class="gen-panel">
+    {% comment %}قابلٌ للطيّ — التوليدُ قد يستغرق دقائق، ومن لا يحتاج قراءةَ
+    حالته سطراً سطراً يطويه؛ الاستطلاعُ يواصل عمله خلفَ الطيّ فتظهر النتيجةُ
+    فورَ فتحه أو انتهاء التوليد (الصفحةُ تُعاد تحميلُها تلقائيّاً حينها).{% endcomment %}
+    <details id="gen-running" class="gen-running" open>
+      <summary class="gen-running__summary">
+        <span class="gen-running__label" id="gen-running-label" aria-live="polite">
+          {{ pending_generation.get_status_display }} — قد يستغرق عدّة دقائق…
+        </span>
+      </summary>
+      <p class="gen-running__sub">
+        تُحدَّث الحالةُ تلقائيّاً، ويصلك إشعارٌ عند الانتهاء. يمكنك مغادرةُ الصفحة.
+      </p>
+    </details>
+  </div>
+  {% endif %}
+
+  {% if generations %}
+  {% if can_approve %}
+  {% callout "warning" %}اعتماد مسوّدة يؤرشف الجدولَ المعتمَد ويحذف من المؤرشف ما زاد على حدّ الإبقاء، ويصالح جلساتِ الأسبوع الجاري (يحذف ما لا يطابق ولا حضورَ عليه)، ويُشعِر المعلّمين، ولا رجوعَ عنه.{% endcallout %}
+  {% endif %}
+  {% comment %}
+  بوّابةُ الاعتماد (SCH-05): ما بقي مكسوراً بعد السداد يُعرض بموضعه — شعبةً ومادّةً
+  ويوماً — والاعتمادُ معه هنا لا في سطر السجلّ، فمن يعتمد يرى ما يُقرّ به. وكان
+  المختبرُ يلخّصه في «98.2% مطابقة» فاعتُمد جدولٌ باثنتي عشرةَ مخالفةً لم يرها أحد.
+  {% endcomment %}
+  {% for g in generations %}{% if g.status == "draft" and g.breaches.count %}
+  <div class="gen-panel" id="gen-breaches-{{ g.id }}">
+    {% callout "warning" %}مسودّةُ {{ g.generated_at|date:"d/m H:i" }} تخالف قيوداً صلبةً لم يسدّدها التوليد
+      (عددُها <strong>{{ g.breaches.count }}</strong>) — ولا تُعتمد إلّا بإقرارٍ صريحٍ بها.{% endcallout %}
+    {% for grp in g.breaches.groups %}
+    <details class="feas-details">
+      <summary>{{ grp.code }} · {{ grp.title }} ({{ grp.count }})</summary>
+      <div class="auto-grid">
+        {% for col in grp.cols %}
+        <ul class="feas-list">
+          {% for b in col %}
+          <li><b>{{ b.class }}</b> · {{ b.subject }} · {{ b.teacher }} — {{ b.day_name }}، الحصّة {{ b.period }}</li>
+          {% endfor %}
+        </ul>
+        {% endfor %}
+      </div>
+    </details>
+    {% endfor %}
+    {% if can_approve %}
+    <form method="post" action="{% url 'approve_schedule' g.id %}" class="form-actions"
+          data-confirm="اعتماد هذه المسودّة بمخالفاتها؟ ستحلّ محلّ الجدول القائم ويُشعَر المعلّمون.">
+      {% csrf_token %}
+      {% with gid=g.id|stringformat:"s" %}
+      {% field "acknowledge_breaches" "أُقرّ بالمخالفات المذكورة وأعتمد الجدول" type="checkbox" required=True id="ack-"|add:gid %}
+      {% endwith %}
+      <button type="submit" class="btn-primary btn-xs">اعتماد مع الإقرار</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}{% endfor %}
+  <div class="table-wrap">
+    {% comment %}
+    سجلُّ التوليد يُفرَز من ترويسته (`base.js`) ويبدأ تصاعديّاً بتاريخ التوليد ووقته، وصفّان
+    يكفيان له (`data-sort-min-rows`). والتاريخُ والزمنُ يُفرزان بقيمةٍ صريحة: نصُّ «24/09/2026 14:53»
+    يُقرأ عدداً فيُفرَز باليوم وحدَه، و«6:14 د» أكبرُ من «25.6 ث» في النصّ وأصغرُ في الواقع.
+    {% endcomment %}
+    <table class="gen-log-table" data-sort-min-rows="2">
+      <thead>
+        <tr data-plain-head>
+          <th scope="col" data-sort="num" data-sort-first="asc" data-sort-default="asc">التاريخ</th>
+          <th scope="col" class="text-center">الحالة</th>
+          <th scope="col" class="num" data-sort="num" title="منسوبةً إلى الأساس المعتمَد">الجودة</th>
+          <th scope="col" class="num" data-sort="num">الحصص</th>
+          <th scope="col" class="num" data-sort="num">الزمن</th>
+          <th scope="col">بواسطة</th>
+          <th scope="col" class="text-center">إجراءات</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in generations %}
+        <tr>
+          <td data-sort-value="{{ g.generated_at|date:'U' }}">{{ g.generated_at|date:"d/m/Y H:i" }}</td>
+          <td class="text-center">
+            <span class="status-badge {% if g.status == 'approved' %}status-success{% elif g.status == 'draft' %}status-warning{% elif g.status == 'failed' %}status-danger{% elif g.is_pending %}status-info{% else %}status-gray{% endif %}">
+              {{ g.get_status_display }}
+            </span>
+            {% comment %}
+            الفشلُ يُقال بسببه لا بكلمة «فشل» وحدَها — فمن لا يعرف السببَ
+            يعيد الضغطَ على الزرّ نفسه منتظراً نتيجةً أخرى.
+            {% endcomment %}
+            {% if g.error_message %}
+            <div class="gen-error">{{ g.error_message|truncatechars:160 }}</div>
+            {% endif %}
+          </td>
+          {# الأرقامُ لا تُعرض قبل وجودها: «0%» على توليدٍ لم ينتهِ رقمٌ كاذب. #}
+          <td class="num">
+            {% comment %}
+              الدرجةُ منسوبةٌ إلى الأساس المعتمَد: مئةٌ تعني «بمستوى ما اعتمدناه».
+              والمطلقةُ تقيس بُعداً عن كمالٍ لا تبلغه مدرسة — «سابعةٌ واحدةٌ
+              للمعلّم» مستحيلةٌ حين تكون خاناتُ السابعة أكثرَ من عدد المعلّمين —
+              فتُقرأ حكماً بالرداءة وهي ليست كذلك. فإن لم يُثبَّت أساسٌ بعد
+              عُرضت المطلقةُ موسومةً بأنّها مطلقة.
+            {% endcomment %}
+            {% if g.is_pending or g.status == 'failed' %}<span class="text-muted">—</span>
+            {% elif g.lab_relative %}
+            <b class="text-status-{{ g.lab_tone }}" title="من الأساس">{{ g.lab_relative|floatformat:0 }}%</b>
+            {% elif g.lab_absolute %}
+            <span class="text-muted" title="مطلقة — لا أساسَ معتمَد">{{ g.lab_absolute|floatformat:0 }}% مطلقة</span>
+            {% else %}<span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td class="num">
+            {% if g.is_pending or g.status == 'failed' %}<span class="text-muted">—</span>{% else %}
+            <b>{{ g.placed }}/{{ total_weekly }}</b>
+            <span class="text-xs text-muted">({{ g.placed_ratio }}%)</span>
+            {% endif %}
+          </td>
+          <td class="num text-muted" data-sort-value="{% if g.is_pending or g.status == 'failed' %}{% else %}{{ g.generation_time_ms }}{% endif %}">{% if g.is_pending or g.status == 'failed' %}—{% else %}{{ g.generation_time_ms|duration_ms }}{% endif %}</td>
+          <td>{{ g.generated_by.full_name|default:"—" }}</td>
+          <td class="text-center">
+            {% if g.status == "draft" %}
+            <a href="{% url 'weekly_schedule' %}?year={{ year }}&amp;generation={{ g.id }}" class="btn-secondary btn-xs">معاينة</a>
+            {% include "schedule/partials/discard_generation.html" %}
+            {% if g.breaches.count %}
+            <a href="#gen-breaches-{{ g.id }}" class="btn-secondary btn-xs">المخالفات ({{ g.breaches.count }})</a>
+            {% elif can_approve %}
+            <form method="post" action="{% url 'approve_schedule' g.id %}" data-confirm="اعتماد هذه المسودّة؟ ستحلّ محلّ الجدول القائم ويُشعَر المعلّمون." class="gen-inline-form">
+              {% csrf_token %}
+              <button type="submit" class="btn-primary btn-xs">اعتماد</button>
+            </form>
+            {% endif %}
+            {% elif g.status == "approved" %}
+            <a href="{% url 'weekly_schedule' %}?year={{ year }}" class="btn-secondary btn-xs">الجدول الحيّ</a>
+            {% elif g.is_pending %}
+            <form method="post" action="{% url 'stop_schedule_generation' g.id %}" data-confirm="إيقافُ التوليد الجاري؟ يقف عند أقرب حدٍّ آمن ولا يُكتب منه شيء، ثمّ تحذفه من السجلّ." class="gen-inline-form">
+              {% csrf_token %}
+              <button type="submit" class="btn-danger btn-xs">إيقاف التوليد</button>
+            </form>
+            {% elif g.status == "failed" %}
+            {% include "schedule/partials/discard_generation.html" %}
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+{% endsection_card %}
+{% else %}
+{% section_card "توليد الجدول التلقائي" icon="generate" %}
+  {% empty_state "لا توجد توزيعات مواد" sub="لا يمكن التوليد قبل تسجيل توزيعات المواد على الشُّعب: أيّ معلّم يدرّس أيّ مادّة لأيّ شعبة وكم حصّة." icon="stats" %}
+  <div class="smart-empty-action">
+    <a href="{% url 'academic_management:assignments' %}?year={{ year }}" class="btn-primary btn-sm">{% icon "academic" %} شاشة توزيعات المواد</a>
+  </div>
+{% endsection_card %}
+{% endif %}
+
+{% comment %}
+مؤشّراتُ المختبر: كلُّ مؤشّرٍ بقيمته في كلّ توليدٍ وبقيمة الأساس والفرق — الرقمُ
+الواحدُ لا يقول لماذا. والأفضلُ من الأساس أخضر والأسوأُ أحمر.
+{% endcomment %}
+{% if lab_matrix %}
+{% comment %}قابلٌ للطيّ بالضغط على عنوانه (قرارُ 2026-09-18): جدولٌ بعمود لكلّ
+توليدٍ يطول بطول السجلّ، فيُطوى عمّن لا يقارن الآن — عبر `foldable=True` في
+الوسم نفسِه، لا ببناء الشريط يدويّاً.{% endcomment %}
+{% section_card "مؤشرات التوليد" meta=baseline.label|default:"لا أساسَ معتمَد" icon="kpi" flush=True foldable=True %}
+  <div class="auto-grid">
+    {% for col in lab_matrix_cols %}
+    <div class="table-wrap">
+      <table class="lab-table">
+        <thead>
+          <tr>
+            <th scope="col">المؤشر</th>
+            {% if baseline %}<th scope="col" class="num">الأساس</th>{% endif %}
+            {% for g in lab_columns %}
+            <th scope="col" class="num"><a href="{% url 'schedule_quality_lab' %}?year={{ year }}&amp;schedule={{ g.id }}" title="في المختبر">{{ g.generated_at|date:"d/m H:i" }}</a></th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in col %}
+          <tr>
+            <td>{{ row.label }} <span class="text-muted">({{ row.unit }})</span></td>
+            {% if baseline %}<td class="num" dir="ltr">{{ row.baseline|default_if_none:"—" }}</td>{% endif %}
+            {% for cell in row.cells %}
+            <td class="num lab-cell{% if cell.verdict %} is-{{ cell.verdict }}{% endif %}" dir="ltr">
+              {% if cell %}{{ cell.value|default_if_none:"—" }}{% if baseline and cell.delta is not None %} <small>({{ cell.delta }}{% if cell.verdict == 'better' %} ▲{% elif cell.verdict == 'worse' %} ▼{% endif %})</small>{% endif %}{% else %}—{% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </div>
+{% endsection_card %}
+{% endif %}
+
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  /* استطلاعُ حالة التوليد — يبدأ فقط إن كان هناك توليدٌ جارٍ، ويتوقّف عند
+     انتهائه فيُعاد تحميلُ الصفحة مرّةً واحدةً لتظهر النتيجةُ في السجلّ.
+     ولا استطلاعَ في صفحةٍ ساكنة: طلبٌ كلَّ ثلاثِ ثوانٍ بلا سببٍ ثمنُه خادم. */
+  var running = document.getElementById('gen-running');
+  if (!running || running.hidden) return;
+
+  var label = document.getElementById('gen-running-label');
+  var url = "{% url 'smart_generate_status' %}?year={{ year|escapejs }}";
+  var misses = 0;
+
+  function poll() {
+    fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) { if (++misses < 5) setTimeout(poll, 5000); return; }
+        misses = 0;
+        if (data.pending) {
+          if (label && data.status_label) {
+            label.textContent = data.status_label + ' — قد يستغرق عدّة دقائق…';
+          }
+          setTimeout(poll, 3000);
+        } else {
+          window.location.reload();
+        }
+      })
+      .catch(function () { if (++misses < 5) setTimeout(poll, 5000); });
+  }
+  setTimeout(poll, 3000);
+});
+</script>
+
+{% endblock %}

@@ -1,0 +1,89 @@
+{% load icons %}
+{% load sorting %}
+{% load privacy ui %}
+{% comment %}
+جدولُ الطلاب — والفرزُ **من الخادم** لا من المتصفّح.
+
+كانت الشاشةُ تقطع السجلَّ عند مئتين بلا تقسيمِ صفحاتٍ ولا كلمةٍ تقول ذلك، ثمّ
+تفرز المئتين في المتصفّح. فمن فتحها ظنّ المدرسةَ مئتَي طالب، ومن بحث عن طالبٍ
+ترتيبُه بعدهم لم يجده فظنّه غيرَ مقيَّد، ومن فرز بالصفّ رأى أوّلَ صفحةٍ وحسبه
+أوّلَ السجلّ.
+
+والغلافُ يحمل معرّفَه فيستبدل نفسَه — و`outerHTML` يمحو ما يستبدله، فلو بقي
+المعرّفُ في الصفحة الأمّ محته أوّلُ نقرةِ فرز.
+{% endcomment %}
+
+<div class="sa-panel sa-flush" id="student-table-container">
+  {% if students %}
+  {# العددُ والصفحاتُ خارج صندوق التمرير: كانا داخله فلا يُريان إلّا بتمريره. #}
+  <div class="table-wrap-scroll">
+  <table class="sa-students">
+    <thead>
+      <tr>
+        {% sort_th sort "name" "الاسم" target="#student-table-container" %}
+        {% sort_th sort "national" "الرقم الشخصي" "col-center" target="#student-table-container" %}
+        {% sort_th sort "class" "الصف/الشعبة" "col-center" target="#student-table-container" %}
+        {% sort_th sort "guardian" "وليّ الأمر" target="#student-table-container" %}
+        <th class="col-center">جوّال وليّ الأمر</th>
+        <th class="col-center">الدخول</th>
+        <th class="col-actions">الإجراءات</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in students %}
+      <tr>
+        <td>
+          <a href="{% url 'student_affairs:student_profile' s.id %}" class="font-semibold text-maroon sa-link">
+            {{ s.full_name }}
+          </a>
+        </td>
+        {# آخرُ أربعِ خاناتٍ وما قبلها مستور — والرقمُ كاملاً في ملفّ صاحبه. #}
+        <td class="col-num col-center sa-mono"
+            title="الرقم كاملاً في ملفّ الطالب">{{ s.national_id|mask_id|default:"—" }}</td>
+        <td class="col-center">
+          <span class="status-badge status-info">{{ s.class_label }}</span>
+        </td>
+        <td class="text-xs">
+          {% if s.guardian_name %}
+            {{ s.guardian_name }}
+            {% if s.guardian_relation %}<span class="text-muted">· {{ s.guardian_relation }}</span>{% endif %}
+          {% else %}
+            <span class="text-muted">بلا وليّ أمرٍ مرتبط</span>
+          {% endif %}
+        </td>
+        {# نقرةٌ تتّصل: الفعلُ المقصودُ من هذه الشاشة الاتّصالُ بالأسرة. #}
+        <td class="col-num col-center sa-small">
+          {% if s.guardian_phone %}
+            <a href="tel:{{ s.guardian_phone }}" class="sa-link">{{ s.guardian_phone }}</a>
+          {% else %}—{% endif %}
+        </td>
+        <td class="col-center">
+          {% if s.can_sign_in %}
+            <span class="status-badge status-success">يدخل</span>
+          {% else %}
+            <span class="status-badge status-warning">بلا كلمة مرور</span>
+          {% endif %}
+        </td>
+        <td class="col-actions">
+          <div class="sa-row-actions">
+            <a href="{% url 'student_affairs:student_profile' s.id %}" class="btn-secondary btn-xs" title="الملف الشامل">
+              {% icon "student_info" %}
+            </a>
+            {% if can_edit %}
+            <a href="{% url 'student_affairs:student_edit' s.id %}" class="btn-secondary btn-xs" title="تعديل">
+              {% icon "edit_record" %}
+            </a>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="table-empty sa-table-count">{{ total }} طالباً — صفحة {{ page_obj.number }} من {{ page_obj.paginator.num_pages }}</div>
+  {% include "components/pagination.html" with page_obj=page_obj target="#student-table-container" swap="outerHTML" %}
+  {% else %}
+  {% empty_state "لا يوجد طلاب مطابقون للبحث" icon="search" %}
+  {% endif %}
+</div>

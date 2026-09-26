@@ -1,0 +1,83 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block title %}الأنشطة والإنجازات{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-affairs/" parent_label="شؤون الطلاب" current="الأنشطة والإنجازات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-page">
+  {% page_header "الأنشطة والإنجازات" subtitle=year icon="activities" %}
+    <a href="{% url 'student_affairs:activity_add' %}" class="btn-primary btn-sm">{% icon "edit_record" %} تسجيل نشاط جديد</a>
+    <a data-app-file href="{% url 'student_affairs:activities_export' %}" class="btn-secondary btn-sm">{% icon "export_excel" %} تصدير Excel</a>
+  {% endpage_header %}
+
+  {# فلتر #}
+  {% filter_bar "ترشيحُ الأنشطة" %}
+    {% field "type" "النوع" type="select" choices=type_choices value=type_filter blank="— الكل —" data_autosubmit=True %}
+    {% field "scope" "النطاق" type="select" choices=scope_choices value=scope_filter blank="— الكل —" data_autosubmit=True %}
+    <div class="filter-actions">
+      <a href="{% url 'student_affairs:activity_list' %}" class="btn-secondary btn-xs">إعادة ضبط</a>
+    </div>
+  {% endfilter_bar %}
+
+  {# الجدول #}
+  <div class="table-wrap">
+    {% if activities %}
+    <div class="table-wrap-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>الطالب</th>
+            <th>النشاط</th>
+            <th class="col-center">النوع</th>
+            <th class="col-center">النطاق</th>
+            <th class="num">التاريخ</th>
+            <th class="col-actions">إجراءات</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for act in activities %}
+          <tr>
+            <td>
+              <a href="{% url 'student_affairs:student_profile' act.student_id %}" class="sa-link">
+                {{ act.student.full_name }}
+              </a>
+            </td>
+            <td>{{ act.title }}</td>
+            <td class="col-center">
+              <span class="status-badge status-info">{{ act.get_activity_type_display }}</span>
+            </td>
+            <td class="col-center">
+              <span class="status-badge
+                {% if act.scope == 'international' %}status-maroon
+                {% elif act.scope == 'national' %}status-success
+                {% elif act.scope == 'district' %}status-warning
+                {% else %}status-gray{% endif %}">
+                {{ act.get_scope_display }}
+              </span>
+            </td>
+            <td class="num">{{ act.date|date:"d/m/Y" }}</td>
+            <td class="col-actions">
+              <div class="sa-row-actions">
+                <a href="{% url 'student_affairs:activity_edit' act.pk %}" class="btn-secondary btn-xs" title="تعديل">{% icon "edit_record" %}</a>
+                <form method="post" action="{% url 'student_affairs:activity_delete' act.pk %}" class="sa-inline-form" data-confirm="حذف النشاط «{{ act.title }}»؟">
+                  {% csrf_token %}
+                  <button type="submit" class="btn-secondary btn-xs sa-btn-danger" title="حذف">{% icon "status_error" %}</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    {% empty_state "لا أنشطة مسجّلة لهذا العام" icon="stats" %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

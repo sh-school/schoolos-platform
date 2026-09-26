@@ -1,0 +1,84 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}رد على طلب تبديل{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/teacher/schedule/swaps/" parent_label="طلبات التبديل" current="الرد على طلب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash respond-page">
+  {% page_header "طلب تبديل حصة" subtitle=request_label icon="refresh" %}
+    <a href="{% url 'swap_list' %}" class="btn-secondary btn-sm">{% icon "back" %} قائمة التبديلات</a>
+  {% endpage_header %}
+
+  {% section_card "الحصّتان" meta=swap.get_status_display icon="refresh" %}
+      <div class="swap-detail">
+        <div class="swap-side">
+          <div class="swap-side-label">حصة المعلم أ</div>
+          <div class="swap-side-teacher">{{ swap.teacher_a.full_name }}</div>
+          <div class="swap-side-info">
+            <strong>{{ swap.slot_a.subject|default:"—" }}</strong><br>
+            {{ swap.slot_a.class_group.short_label }}<br>
+            {{ swap.slot_a.get_day_of_week_display }} &mdash; ح{{ swap.slot_a.period_number }}
+          </div>
+        </div>
+
+        <div class="swap-arrow-col">&harr;</div>
+
+        <div class="swap-side">
+          <div class="swap-side-label">حصتك</div>
+          <div class="swap-side-teacher">{{ swap.teacher_b.full_name }}</div>
+          <div class="swap-side-info">
+            <strong>{{ swap.slot_b.subject|default:"—" }}</strong><br>
+            {{ swap.slot_b.class_group.short_label }}<br>
+            {{ swap.slot_b.get_day_of_week_display }} &mdash; ح{{ swap.slot_b.period_number }}
+          </div>
+        </div>
+      </div>
+
+      {% if swap.reason %}
+      <p class="ui-note"><strong>سبب الطلب:</strong> {{ swap.reason }}</p>
+      {% endif %}
+
+      {% if swap.status == "pending_b" %}
+      <div class="reject-reason" id="reject-section" hidden>
+        <label for="rejection_reason">سبب الرفض (اختياري):</label>
+        <textarea name="rejection_reason" id="rejection_reason" form="reject-form" placeholder="اكتب سبب الرفض إن وجد..."></textarea>
+      </div>
+
+      <div class="respond-actions">
+        <form method="post">{% csrf_token %}
+          <input type="hidden" name="action" value="accept">
+          <button type="submit" class="btn-success" data-loading>قبول التبديل</button>
+        </form>
+        <form method="post" id="reject-form">{% csrf_token %}
+          <input type="hidden" name="action" value="reject">
+          <button type="button" id="reject-btn" class="btn-danger">رفض التبديل</button>
+        </form>
+      </div>
+      {% else %}
+      {% callout "info" %}هذا الطلب بحالة: <strong>{{ swap.get_status_display }}</strong> &mdash; لا يمكن الرد عليه الآن.{% endcallout %}
+      {% endif %}
+  {% endsection_card %}
+</div>
+{% endblock %}
+
+{% comment %}
+رفضٌ على مرحلتين: النقرة الأولى تكشف حقل السبب وتقلب الزرّ إلى زرّ إرسال،
+والثانية تُرسل. نُقل من `onclick` لأن CSP تحجب معالِجات الأحداث الداخلية.
+{% endcomment %}
+<script nonce="{{ request.csp_nonce }}">
+  (function () {
+    var btn = document.getElementById("reject-btn");
+    var section = document.getElementById("reject-section");
+    if (!btn || !section) return;
+    btn.addEventListener("click", function () {
+      if (!section.hidden) return;
+      section.hidden = false;
+      btn.textContent = "تأكيد الرفض";
+      btn.type = "submit";
+    });
+  })();
+</script>

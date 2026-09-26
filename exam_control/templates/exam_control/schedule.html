@@ -1,0 +1,39 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}جدول الاختبارات{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/exam-control/" parent_label="كنترول الاختبارات" current="جدول الاختبارات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "جدول الاختبارات" subtitle=session.name icon="schedule" %}
+    <a href="{% url 'exam_control:session_detail' session.pk %}" class="btn-ghost btn-sm">رجوع إلى الدورة</a>
+  {% endpage_header %}
+
+  <div class="ui-split">
+    {% section_card "إضافة اختبار" icon="add" %}
+      <form method="post" class="form-stack">{% csrf_token %}
+        <div class="form-group"><label class="form-label" for="ex-room">القاعة</label>
+          <select id="ex-room" name="room_id" class="form-control" required>{% for r in rooms %}<option value="{{ r.pk }}">{{ r.name }}</option>{% endfor %}</select></div>
+        <div class="form-group"><label class="form-label" for="ex-subject">المادة</label><input id="ex-subject" name="subject" class="form-control" required></div>
+        <div class="form-group"><label class="form-label" for="ex-grade">الصف</label><input id="ex-grade" name="grade_level" class="form-control" required></div>
+        <div class="form-group"><label class="form-label" for="ex-date">التاريخ</label><input id="ex-date" name="exam_date" type="date" class="form-control" required></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label" for="ex-start">البداية</label><input id="ex-start" name="start_time" type="time" class="form-control" required></div>
+          <div class="form-group"><label class="form-label" for="ex-end">النهاية</label><input id="ex-end" name="end_time" type="time" class="form-control" required></div>
+        </div>
+        <div class="form-group"><label class="form-label" for="ex-count">عدد الطلاب</label><input id="ex-count" name="students_count" type="number" min="0" class="form-control" value="0"></div>
+        <button type="submit" class="btn-primary">إضافة</button>
+      </form>
+    {% endsection_card %}
+
+    {% section_card "الاختبارات المجدولة" meta=schedules|length icon="schedule" flush=True empty="لا جدولَ بعد" %}{% if schedules %}
+      {% include "exam_control/_schedule_table.html" %}
+    {% endif %}{% endsection_card %}
+  </div>
+
+</div>
+{% endblock %}

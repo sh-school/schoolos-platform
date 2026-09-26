@@ -1,0 +1,57 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}ربط مادة بفصل{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/assessments/" parent_label="التقييمات" current="ربط مادة بفصل" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash asm-form-page">
+
+  {% page_header "ربط مادة بفصل ومعلم" subtitle="سيُنشئ النظام الباقات الأربع تلقائياً بعد الحفظ" icon="academic" %}{% endpage_header %}
+
+  {% section_card "بيانات الربط" icon="library" %}
+    <form method="post">
+      {% csrf_token %}
+      <div class="form-group">
+        <label class="form-label" for="asm-subject">المادة <span class="required">*</span></label>
+        <select id="asm-subject" name="subject" required class="form-control">
+          <option value="">اختر المادة</option>
+          {% for s in subjects %}
+          <option value="{{ s.id }}">{{ s.name_ar }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="asm-class">الفصل الدراسي <span class="required">*</span></label>
+        <select id="asm-class" name="class_group" required class="form-control">
+          <option value="">اختر الفصل</option>
+          {% regroup classes by grade as grade_groups %}
+          {% for grade_group in grade_groups %}
+          <optgroup label="{{ grade_group.grouper|slice:'1:' }}">
+            {% for c in grade_group.list %}
+            <option value="{{ c.id }}">{{ c.short_label }}</option>
+            {% endfor %}
+          </optgroup>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="asm-teacher">المعلم المسؤول <span class="required">*</span></label>
+        <select id="asm-teacher" name="teacher" required class="form-control">
+          <option value="">اختر المعلم</option>
+          {% for t in teachers %}
+          <option value="{{ t.id }}">{{ t.full_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-actions">
+        <a href="{% url 'assessments_dashboard' %}" class="btn-ghost">إلغاء</a>
+        <button type="submit" class="btn-primary">حفظ وإنشاء الباقات</button>
+      </div>
+    </form>
+  {% endsection_card %}
+
+</div>
+{% endblock %}

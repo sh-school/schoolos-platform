@@ -1,0 +1,65 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}إعدادات الموافقة على البيانات{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/parents/" parent_label="بوابة ولي الأمر" current="إعدادات الموافقة" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash consent-page">
+
+  {% page_header "الموافقة على معالجة البيانات" subtitle="قانون حماية البيانات الشخصية القطري رقم 13 لسنة 2016" icon="policy" %}{% endpage_header %}
+
+  <form method="post" class="consent-form">
+    {% csrf_token %}
+
+    {% for link in links %}
+      {% section_card link.student.full_name meta="اختر ما تسمح بمعالجته" icon="profile" %}
+        <ul class="plain-list">
+          {% for dt, label in data_types %}
+            <li class="plain-list__row">
+              <label class="ui-switch">
+                <span class="ui-switch__label">{{ label }}</span>
+                <input type="hidden" name="consent_{{ link.student_id }}_{{ dt }}" value="0">
+                <input type="checkbox" role="switch" class="ui-switch__input" name="consent_{{ link.student_id }}_{{ dt }}" value="1">
+                <span class="ui-switch__track" aria-hidden="true"></span>
+              </label>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endsection_card %}
+    {% empty %}
+      {% section_card "الأبناء" icon="children" empty="لا طلابَ مرتبطين بحسابك" %}{% endsection_card %}
+    {% endfor %}
+
+    {% if links %}
+      {% callout "warning" %}لا تصلك إشعاراتُ نوعٍ من البيانات إلّا إذا وافقتَ عليه صراحةً هنا، وسحبُ الموافقة يوقفها، ولا يحجب عنك الاطّلاعَ عليه في البوّابة. وإخطاراتُ الغياب واستدعاءِ ولي الأمر وإرسالِ الطالب إلى البيت تصلك دائماً لأن المدرسة ملزَمةٌ بها.{% endcallout %}
+      <div class="form-actions">
+        {# الكادرُ الذي هو وليُّ أمرٍ يعود إلى عمله؛ فبوّابتُه تردّه إلى هنا ما لم يوافق. #}
+        <a href="{% if request.user.is_staff_member %}{% url 'dashboard' %}{% else %}{% url 'parent_dashboard' %}{% endif %}" class="btn-ghost">إلغاء</a>
+        <button type="submit" class="btn-primary">{% icon "confirm" %} حفظ الإعدادات</button>
+      </div>
+    {% elif request.user.is_staff_member %}
+      {# كادرٌ عضويّتُه وليُّ أمرٍ بلا ابنٍ مربوطٍ بعد: لا شيءَ يوافق عليه، فلا يُحبس هنا. #}
+      <div class="form-actions">
+        <a href="{% url 'dashboard' %}" class="btn-ghost">العودة إلى عملي</a>
+      </div>
+    {% endif %}
+  </form>
+
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+// حالةُ المفاتيح من الموافقات المحفوظة — وما لم يُحفظ بعدُ غيرُ موافَقٍ عليه (موافقةٌ صريحة لا افتراضيّة).
+const consentData = JSON.parse('{{ consent_data_json|escapejs }}');
+document.querySelectorAll('.ui-switch__input').forEach(cb => {
+  const parts = cb.name.split('_');
+  if (parts.length < 3) return;
+  const dt  = parts[parts.length - 1];
+  const sid = parts.slice(1, parts.length - 1).join('_');
+  cb.checked = !!(consentData[sid] && consentData[sid][dt] === true);
+});
+</script>
+{% endblock %}

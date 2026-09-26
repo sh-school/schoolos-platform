@@ -1,0 +1,40 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block title %}مركز معلومات الطلبة{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}page-noscroll{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-info/" parent_label="مركز معلومات الطلبة" current="الشُّعب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+  {% page_header "مركز معلومات الطلبة" subtitle=subtitle icon="student_info" %}
+    {# المستوياتُ والأنشطةُ ليست من مهامّ المشرف الإداريّ — والشاشتان تردّانه 404 #}
+    {% if not wing_bound %}
+    <a href="{% url 'student_info:levels' %}?year={{ year }}" class="btn-secondary btn-sm">{% icon "grades" %} المستويات التعليمية</a>
+    <a href="{% url 'student_info:activities' %}?year={{ year }}" class="btn-secondary btn-sm">{% icon "activities" %} الأنشطة</a>
+    {% endif %}
+  {% endpage_header %}
+
+  {% comment %}
+  كلُّ شعبةٍ كيان: رمزُها ومشرفُها وعددُ طلابها في السطر الأوّل، والصفُّ
+  والمسارُ رقاقتان. ورمزُ الشعبة رابطٌ إلى طلابها.
+  {% endcomment %}
+  {% if cards %}
+  <div class="ui-entity-grid">
+    {% for c in cards %}
+      {% entity_card c.title who=c.group.supervisor.full_name count=c.count href=c.href %}
+        {% if c.group.track %}{% entity_chips %}<span class="chip">{{ c.group.get_track_display }}</span>{% endentity_chips %}{% endif %}
+      {% endentity_card %}
+    {% endfor %}
+  </div>
+  {% else %}
+  {% empty_state "لا شُعب في نطاقك لهذا العام" %}
+  {% endif %}
+</div>
+{% endblock %}

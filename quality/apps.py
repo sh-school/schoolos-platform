@@ -1,0 +1,89 @@
+from django.apps import AppConfig
+
+
+class QualityConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "quality"
+    verbose_name = "الجودة والخطة التشغيلية"
+
+    def ready(self):
+        from core.module_registry import register_module
+
+        # الوحدة الفرعية أولاً (أطول مسار)
+        register_module(
+            name="quality_evaluations",
+            label="تقييمات الجودة",
+            url_prefix="/quality/evaluations/",
+            allowed_roles={
+                "principal",
+                "vice_admin",
+                "vice_academic",
+                "coordinator",
+                "teacher",
+                "ese_teacher",
+                "specialist",
+                "social_worker",
+                "psychologist",
+                "academic_advisor",
+                "nurse",
+                "librarian",
+                "bus_supervisor",
+                "admin_supervisor",
+                "admin",
+                "secretary",
+                "it_technician",
+                # v7 — كل الموظفين يُقيَّمون
+                "activities_coordinator",
+                "e_projects_coordinator",
+                "teacher_assistant",
+                "ese_assistant",
+                "speech_therapist",
+                "occupational_therapist",
+                "receptionist",
+                "transport_officer",
+                # أدوارٌ تسمّيها الاستماراتُ الوزاريّةُ نصّاً وتُبذر قوالبُها — فبلا هذه تُقيَّم
+                # ولا ترى تقريرَها ولا تُقرّ به، فلا تبدأ مهلةُ التظلّم (المادة 20).
+                "student_observer",
+                "services_worker",
+                "support_companion",
+                "messenger",
+                "storekeeper",
+                "canteen_supervisor",
+                "accountant",
+                "lab_technician",
+            },
+            sort_order=21,
+            parent="quality",
+        )
+        register_module(
+            name="quality",
+            label="الجودة والتطوير",
+            url_prefix="/quality/",
+            # بوّابةُ الوحدة يجب أن تسع من تسمّيه صلاحياتُها: كان
+            # `academic_advisor` في `OBSERVATION_CREATE` — أي يُنشئ زيارةً
+            # إشرافية — و`activities_coordinator` في `OBSERVATION_SELF_CREATE`،
+            # وكلاهما محجوبٌ عن `/quality/` كلّها. فالإذنُ مكتوبٌ في موضعٍ
+            # وممنوعٌ في آخر، والوسيطُ يسبق الدالّة فيردّهما قبل أن تُقرأ.
+            allowed_roles={
+                "principal",
+                "vice_admin",
+                "vice_academic",
+                "coordinator",
+                "activities_coordinator",
+                "e_projects_coordinator",
+                "academic_advisor",
+                "teacher",
+                "ese_teacher",
+                "specialist",
+                "social_worker",
+                # وأخصائيّا النطق والعلاج الوظائفيّ ومساعدا المعلّم في
+                # `QUALITY_VIEW` — «يتابعون أهدافهم في الخطة» — وكانت
+                # البوّابةُ تردّهم قبل أن تُقرأ صلاحيّتُهم.
+                "speech_therapist",
+                "occupational_therapist",
+                "teacher_assistant",
+                "ese_assistant",
+                "psychologist",
+            },
+            sort_order=20,
+        )

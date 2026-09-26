@@ -1,0 +1,481 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags %}
+
+{% block extra_styles %}
+/* ════════════════════════════════════════
+   بطاقة معلومات الطالب
+════════════════════════════════════════ */
+.student-info-card {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 12px;
+  border: 1.5px solid {% brand_color "MAROON" %};
+  border-radius: 4px;
+}
+.student-info-card td {
+  padding: 6px 12px;
+  font-size: 10.5px;
+  border: 1px solid {% brand_color "MAROON_BORDER" %};
+  background: {% brand_color "SURFACE_ALT" %};
+  text-align: right;
+  vertical-align: middle;
+}
+.student-info-card .lbl {
+  font-weight: 600;
+  color: {% brand_color "MAROON" %};
+  white-space: nowrap;
+  width: 1%;
+}
+.student-info-card .val {
+  font-weight: 700;
+  color: {% brand_color "TEXT_PRIMARY" %};
+}
+
+/* ════════════════════════════════════════
+   جدول الدرجات — رأس مزدوج
+════════════════════════════════════════ */
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 10px;
+}
+.results-table thead tr.header-top th {
+  background: {% brand_color "MAROON" %};
+  color: {% brand_color "ON_FILL" %};
+  padding: 7px 5px;
+  text-align: center;
+  border: 1px solid {% brand_color "MAROON_DARK" %};
+  font-size: 10.5px;
+  font-weight: 700;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.results-table thead tr.header-sub th {
+  background: {% brand_color "PAGE_BG" %};
+  color: {% brand_color "MAROON_DARK" %};
+  padding: 4px 4px;
+  text-align: center;
+  border: 1px solid {% brand_color "BORDER_STRONG" %};
+  font-size: 9px;
+  font-weight: 600;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.results-table tbody td {
+  padding: 5px 5px;
+  border: 1px solid {% brand_color "BORDER" %};
+  text-align: center;
+  vertical-align: middle;
+  font-size: 10px;
+}
+.results-table tbody tr:nth-child(even) td {
+  background: {% brand_color "SURFACE_ALT" %};
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.results-table thead tr.header-top th.th-subject {
+  text-align: right;
+  padding-right: 8px;
+}
+.results-table tbody td.results-empty {
+  text-align: center;
+  color: {% brand_color "TEXT_MUTED" %};
+  padding: 16px;
+}
+.results-table .subject-name {
+  text-align: right;
+  font-weight: 600;
+  font-size: 10px;
+  padding-right: 8px;
+  white-space: nowrap;
+}
+.results-table .bold-grade {
+  font-weight: 700;
+}
+.results-table .pkg-scores {
+  font-size: 8.5px;
+  color: {% brand_color "TEXT_MUTED" %};
+  line-height: 1.5;
+}
+
+/* ════════════════════════════════════════
+   صف ملخص النتائج (أسفل الجدول)
+════════════════════════════════════════ */
+.summary-row td {
+  background: {% brand_color "PAGE_BG" %} !important;
+  font-weight: 700;
+  border-top: 2px solid {% brand_color "MAROON" %};
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.summary-row .summary-label  { color: {% brand_color "MAROON" %}; }
+.summary-row .summary-counts { font-size: 9.5px; color: {% brand_color "TEXT_MUTED" %}; text-align: center; }
+.summary-row .summary-avg    { color: {% brand_color "MAROON" %}; font-size: 12px; }
+.summary-row .summary-unit   { color: {% brand_color "TEXT_SECONDARY" %}; font-size: 9px; text-align: center; }
+
+/* ════════════════════════════════════════
+   قسم القرار (انتقل / أعيد / دور ثانٍ)
+════════════════════════════════════════ */
+.decision-section {
+  margin-top: 14px;
+  border: 2px solid {% brand_color "MAROON" %};
+  border-radius: 4px;
+  padding: 10px 14px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.decision-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: {% brand_color "MAROON" %};
+  margin-bottom: 8px;
+  border-bottom: 1px dashed {% brand_color "MAROON_BORDER" %};
+  padding-bottom: 5px;
+}
+.decision-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.decision-table td {
+  width: 33%;
+  padding: 5px 10px;
+  border: none;
+  background: transparent;
+  font-size: 10.5px;
+  vertical-align: middle;
+}
+.decision-checkbox {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid {% brand_color "MAROON" %};
+  border-radius: 2px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.decision-checkbox.checked {
+  background: {% brand_color "MAROON" %};
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.decision-label {
+  font-weight: 600;
+  color: {% brand_color "TEXT_PRIMARY" %};
+}
+.decision-note {
+  font-size: 9.5px;
+  color: {% brand_color "TEXT_MUTED" %};
+  margin-top: 6px;
+}
+
+/* ════════════════════════════════════════
+   إحصائيات ملخصة
+════════════════════════════════════════ */
+.stats-bar {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 5px;
+  margin: 10px 0 8px;
+}
+.stats-bar td {
+  background: {% brand_color "SURFACE" %};
+  border: 1px solid {% brand_color "MAROON_BORDER" %};
+  border-top: 3px solid {% brand_color "MAROON" %};
+  padding: 8px 6px;
+  text-align: center;
+  vertical-align: middle;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.stats-bar .sv {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.stats-bar .sv.is-maroon    { color: {% brand_color "MAROON" %}; }
+.stats-bar .sv.is-warning   { color: {% brand_color "STATUS_WARNING" %}; }
+.stats-bar .sv.is-secondary { color: {% brand_color "TEXT_SECONDARY" %}; }
+.stats-bar .sl {
+  font-size: 8.5px;
+  color: {% brand_color "TEXT_MUTED" %};
+  margin-top: 2px;
+}
+
+/* النتيجةُ غيرُ المحسومة (دورٌ ثانٍ، غيرُ مكتمل) — أختُ `badge-pass/fail` في الأساس.
+   كانت بلا تعريفٍ فتُكتب بلون النصّ وأختاها ملوّنتان. */
+.badge-warn { color: {% brand_color "STATUS_WARNING_DARK" %}; font-weight: 700; font-size: 10px; }
+
+/* ════════════════════════════════════════
+   التوقيعات — كانت أصنافُها بلا تعريف، فتلتصق الصفاتُ الثلاثُ في طرف
+   السطر بلا خطٍّ يُوقَّع عليه.
+════════════════════════════════════════ */
+.signature-section { margin-top: 18px; }
+.signature-table { width: 100%; border-collapse: collapse; }
+.signature-table td { width: 33.33%; padding: 0 10px; vertical-align: top; }
+.signature-box { text-align: center; }
+.signature-box .line { border-top: 1px solid {% brand_color "TEXT_PRIMARY" %}; margin: 28px 12% 5px; }
+
+/* ألوان الدرجات — النغمةُ `row.annual_grade` من `reports.views._annual_result_presentation`. */
+.grade-a   { color: {% brand_color "STATUS_SUCCESS_DARK" %}; }
+.grade-b   { color: {% brand_color "STATUS_INFO_FG" %}; }
+.grade-c   { color: {% brand_color "STATUS_WARNING" %}; }
+.grade-f   { color: {% brand_color "STATUS_DANGER" %}; }
+.grade-na  { color: {% brand_color "TEXT_MUTED" %}; }
+{% endblock %}
+
+{% block report_title_bar %}
+<h1 class="report-title-bar">
+  كشف النتائج السنوي — العام الدراسي {{ year }}
+</h1>
+{% endblock %}
+
+{% block report_meta %}
+{# ── بطاقة معلومات الطالب ── #}
+<table class="student-info-card">
+  <tr>
+    <td class="lbl">اسم الطالب</td>
+    <td class="val">{{ student.full_name }}</td>
+    <td class="lbl">الرقم الشخصي</td>
+    <td class="val">{{ student.national_id|default:"—" }}</td>
+    {% if enrollment %}
+    <td class="lbl">الفصل الدراسي</td>
+    <td class="val">{{ enrollment.class_group.short_label }}</td>
+    {% endif %}
+  </tr>
+  <tr>
+    <td class="lbl">العام الدراسي</td>
+    <td class="val">{{ year }}</td>
+    <td class="lbl">المدرسة</td>
+    <td class="val" colspan="3">{{ school.name }}</td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block content %}
+
+{# ── إحصائيات ملخصة ── #}
+<table class="stats-bar">
+  <tr>
+    <td>
+      <div class="sv is-maroon">{{ total }}</div>
+      <div class="sl">إجمالي المواد</div>
+    </td>
+    <td>
+      <div class="sv grade-a">{{ passed }}</div>
+      <div class="sl">مواد ناجح</div>
+    </td>
+    <td>
+      <div class="sv grade-f">{{ failed }}</div>
+      <div class="sl">مواد راسب</div>
+    </td>
+    <td>
+      <div class="sv is-maroon">{{ avg|default:"—" }}</div>
+      <div class="sl">المعدل السنوي / 100</div>
+    </td>
+    <td>
+      <div class="sv is-warning">{{ absent_total }}</div>
+      <div class="sl">أيام الغياب</div>
+    </td>
+    <td>
+      <div class="sv is-secondary">{{ late_total }}</div>
+      <div class="sl">حالات التأخر</div>
+    </td>
+  </tr>
+</table>
+
+{# ── جدول الدرجات التفصيلي ── #}
+<table class="results-table">
+  <thead>
+    <tr class="header-top">
+      <th scope="col" rowspan="2" class="col-w-17 th-subject">المادة</th>
+      <th scope="col" colspan="3">الفصل الأول (من 40)</th>
+      <th scope="col" colspan="3">الفصل الثاني (من 60)</th>
+      <th scope="col" rowspan="2" class="col-w-8">المجموع<br>/100</th>
+      <th scope="col" rowspan="2" class="col-w-6">التقدير</th>
+      <th scope="col" rowspan="2" class="col-w-8">النتيجة</th>
+    </tr>
+    <tr class="header-sub">
+      <th scope="col" class="col-w-8">أعمال<br>مستمرة</th>
+      <th scope="col" class="col-w-8">منتصف<br>الفصل</th>
+      <th scope="col" class="col-w-7">نهاية<br>الفصل</th>
+      <th scope="col" class="col-w-8">أعمال<br>مستمرة</th>
+      <th scope="col" class="col-w-8">منتصف<br>الفصل</th>
+      <th scope="col" class="col-w-8">نهاية<br>العام</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      {# اسم المادة #}
+      <td class="subject-name">{{ row.subject }}</td>
+
+      {# ─── الفصل الأول: أعمال مستمرة (P1) ─── #}
+      <td class="pkg-scores">
+        {% if row.s1 and row.s1.p1_score is not None %}
+          {{ row.s1.p1_score }}
+        {% else %}—{% endif %}
+      </td>
+
+      {# الفصل الأول: اختبار منتصف الفصل (P3) #}
+      <td class="pkg-scores">
+        {% if row.s1 and row.s1.p3_score is not None %}
+          {{ row.s1.p3_score }}
+        {% else %}—{% endif %}
+      </td>
+
+      {# الفصل الأول: اختبار نهاية الفصل (P4) → إجمالي ف1 #}
+      <td class="bold-grade">
+        {% if row.s1 and row.s1.p4_score is not None %}
+          {{ row.s1.p4_score }}
+        {% else %}—{% endif %}
+      </td>
+
+      {# ─── الفصل الثاني: أعمال مستمرة (P1) ─── #}
+      <td class="pkg-scores">
+        {% if row.s2 and row.s2.p1_score is not None %}
+          {{ row.s2.p1_score }}
+        {% else %}—{% endif %}
+      </td>
+
+      {# الفصل الثاني: اختبار منتصف الفصل (P3) #}
+      <td class="pkg-scores">
+        {% if row.s2 and row.s2.p3_score is not None %}
+          {{ row.s2.p3_score }}
+        {% else %}—{% endif %}
+      </td>
+
+      {# الفصل الثاني: اختبار نهاية العام (P4) #}
+      <td class="pkg-scores">
+        {% if row.s2 and row.s2.p4_score is not None %}
+          {{ row.s2.p4_score }}
+        {% else %}—{% endif %}
+      </td>
+
+      {# المجموع السنوي #}
+      <td class="bold-grade grade-{{ row.annual_grade }}">
+        {% if row.annual and row.annual.annual_total %}
+          {{ row.annual.annual_total }}
+        {% else %}—{% endif %}
+      </td>
+
+      {# التقدير الحرفي #}
+      <td class="bold-grade">
+        {% if row.annual %}{{ row.annual.letter_grade }}{% else %}—{% endif %}
+      </td>
+
+      {# النتيجة #}
+      <td>
+        {% if row.annual %}
+          {% if row.annual.status == "pass" %}<span class="badge-pass">ناجح</span>
+          {% elif row.annual.status == "fail" %}<span class="badge-fail">راسب</span>
+          {% elif row.annual.status == "second_round" %}<span class="badge-warn">دور ثانٍ</span>
+          {% else %}<span class="badge-warn">غير مكتمل</span>
+          {% endif %}
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% empty %}
+    <tr>
+      <td colspan="10" class="results-empty">
+        لا توجد درجات مسجّلة لهذا الطالب
+      </td>
+    </tr>
+    {% endfor %}
+
+    {# ── صف المجاميع ── #}
+    {% if rows %}
+    <tr class="summary-row">
+      <td class="subject-name summary-label">المجموع والمعدل</td>
+      <td colspan="6" class="summary-counts">
+        إجمالي المواد: {{ total }} &nbsp;|&nbsp;
+        ناجح: {{ passed }} &nbsp;|&nbsp;
+        راسب: {{ failed }}
+      </td>
+      <td class="bold-grade summary-avg">
+        {{ avg|default:"—" }}
+      </td>
+      <td colspan="2" class="summary-unit">
+        المعدل<br>من 100
+      </td>
+    </tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{# ── قسم القرار ── #}
+<div class="decision-section">
+  <div class="decision-title">قرار مجلس المعلمين</div>
+  <table class="decision-table">
+    <tr>
+      {# انتقل #}
+      <td>
+        {% if failed == 0 and passed > 0 %}
+          <span class="decision-checkbox checked"></span>
+        {% else %}
+          <span class="decision-checkbox"></span>
+        {% endif %}
+        <span class="decision-label">انتقل إلى الصف التالي</span>
+      </td>
+      {# أعيد #}
+      <td>
+        {% if failed > 0 %}
+          <span class="decision-checkbox checked"></span>
+        {% else %}
+          <span class="decision-checkbox"></span>
+        {% endif %}
+        <span class="decision-label">أعيد في نفس الصف</span>
+      </td>
+      {# دور ثانٍ #}
+      <td>
+        <span class="decision-checkbox"></span>
+        <span class="decision-label">دور ثانٍ</span>
+      </td>
+    </tr>
+  </table>
+  <div class="decision-note">
+    * درجة النجاح 50 من 100 في كل مادة &nbsp;—&nbsp;
+    صدر هذا الكشف بتاريخ: {{ print_date }}
+  </div>
+</div>
+
+{% endblock %}
+
+{% block signatures %}
+<div class="signature-section">
+  <table class="signature-table">
+    <tr>
+      <td>
+        <div class="signature-box">
+          <div class="sig-title">مدير المدرسة</div>
+          <div class="line"></div>
+          <div class="sig-name">الاسم: ___________________</div>
+        </div>
+      </td>
+      <td>
+        <div class="signature-box">
+          <div class="sig-title">المعلم المشرف / وكيل المدرسة</div>
+          <div class="line"></div>
+          <div class="sig-name">الاسم: ___________________</div>
+        </div>
+      </td>
+      <td>
+        <div class="signature-box">
+          <div class="sig-title">ولي الأمر</div>
+          <div class="line"></div>
+          <div class="sig-name">الاسم: ___________________</div>
+        </div>
+      </td>
+    </tr>
+  </table>
+</div>
+
+{% if exported_by %}
+<div class="export-stamp">
+  <p><strong>صدر بواسطة:</strong> {{ exported_by }} — {{ exporter_role }}</p>
+  <p>التاريخ: {{ export_datetime }}</p>
+  <p>{{ school.name }} — وثيقة رسمية — SchoolOS</p>
+</div>
+{% endif %}
+{% endblock %}

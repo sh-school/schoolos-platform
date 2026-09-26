@@ -1,0 +1,191 @@
+"""[BRAND] رؤية الوزارة في ذيل الوثائق وفوتر المنصّة — من مصدرٍ واحد.
+
+كانت مكتوبةً نصّاً في قالبَي طباعة وغائبةً عن الباقي. وتكرار النصّ يعني أن
+تعديله لاحقاً يُصيب بعض الوثائق دون بعض — فوُحِّد في `components/ministry_vision.html`.
+
+ومنذ SOS-20260910-3643 (2026-09-17) صار النصُّ حقلاً في `core.models.School`
+(هجرة) لا ثابتاً في القالب — فتحديثُ صياغة الوزارة يُحرَّر من لوحة الإدارة
+بلا نشر كود. والجزئيّةُ تبقى المصدرَ الوحيد الذي يُقرأ منه، ونصُّها الحرفيُّ
+فيها احتياطٌ لمن استُدعي بلا `school` فقط — لا نسخةٌ ثانية تُصاغ.
+"""
+
+import pathlib
+import re
+
+import pytest
+from django.template.loader import render_to_string
+from django.urls import reverse
+
+from tests.test_week_page import world  # noqa: F401 — fixture مشتركةٌ مع اختبارات الجدول
+from tests.test_week_paper import _paper
+
+#: نصُّ رؤية الوزارة كما تنشره في صفحة «مهام ومسؤوليات الوزارة»
+#: (edu.gov.qa) ضمن استراتيجيتها 2024-2030 — لا الرسالة، فهما نصّان
+#: مختلفان في الصفحة نفسها. ونصٌّ يُنسب إلى وزارةٍ يُؤخذ عنها لا يُصاغ.
+VISION = "مُتَعَلِّمٌ رِيَادِيٌّ لِتَنْمِيَةٍ مُسْتَدَامَةٍ"
+
+PARTIAL = pathlib.Path("templates/components/ministry_vision.html")
+
+#: قوالب الطباعة المستقلّة — لا ترث ذيلاً من غيرها.
+STANDALONE_DOCS = [
+    "templates/quality/observation_pdf.html",
+    "templates/schedule/print_schedule.html",
+    "templates/behavior/pdf/base_form.html",
+    "templates/reports/base_qatar_report.html",
+]
+
+
+def _plain(rendered: str) -> str:
+    """النصُّ بلا الوسم الذي يلفّه (`vision-text`)."""
+    return re.sub(r"<[^>]+>", "", rendered).strip()
+
+
+def test_the_vision_is_vowelled_in_the_blue_tashkeel_font():
+    """قرارُ المالك 2026-09-20: الرؤيةُ مشكولةٌ بحركاتٍ زرقاء، في كلّ موضعٍ تظهر فيه."""
+    rendered = render_to_string("components/ministry_vision.html").strip()
+
+    assert 'class="vision-text"' in rendered
+    assert re.search("[ً-ْ]", VISION), "نصُّ الرؤية بلا حركات"
+    css = pathlib.Path("static/css/custom/20-components.css").read_text(encoding="utf-8")
+    assert ".vision-text" in css and "Tajawal Tashkeel" in css
+
+
+def test_the_vision_has_one_source():
+    """النصّ يُكتب مرّةً واحدة — في الجزئيّة وحدها."""
+    holders = [
+        f.as_posix()
+        for f in pathlib.Path("templates").rglob("*.html")
+        if VISION in f.read_text(encoding="utf-8", errors="ignore")
+    ]
+
+    assert holders == [PARTIAL.as_posix()], f"النصّ مكرّر في: {holders}"
+
+
+@pytest.mark.parametrize("doc", STANDALONE_DOCS)
+def test_every_standalone_document_footer_carries_the_vision(doc):
+    assert 'include "components/ministry_vision.html"' in pathlib.Path(doc).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_the_partial_falls_back_without_a_school():
+    """بلا `school` في السياق — نداءٌ لم يُحدَّث بعد، أو مكانٌ عارض لا مدرسةَ
+    فيه — يبقى النصّ الافتراضيّ نفسُه ظاهراً، لا فراغاً في الفوتر."""
+    rendered = render_to_string("components/ministry_vision.html").strip()
+
+    assert _plain(rendered) == VISION
+
+
+@pytest.mark.django_db
+def test_the_partial_reads_the_schools_vision_field(school):
+    """SOS-20260910-3643: النصُّ حقلٌ في `School` — يُقرأ منه لا يُكتب هنا."""
+    school.vision = "نصٌّ مخصَّصٌ اعتمدته هذه المدرسة"
+    school.save(update_fields=["vision"])
+
+    rendered = render_to_string("components/ministry_vision.html", {"school": school}).strip()
+
+    assert _plain(rendered) == "نصٌّ مخصَّصٌ اعتمدته هذه المدرسة"
+
+
+@pytest.mark.django_db
+def test_a_school_gets_the_current_vision_by_default(school):
+    """مدرسةٌ لم تُحرِّر الحقل بعد — قيمتُه الافتراضية نصُّ الرؤية الحاليّ،
+    لا فراغ. الهجرةُ تملأ به كلَّ مدرسةٍ قائمة أيضاً."""
+    assert school.vision == VISION
+
+
+@pytest.mark.django_db
+def test_the_platform_footer_carries_the_vision(client, principal_user):
+    """يُقاس على صفحةٍ مُصيَّرة عبر مكدّس العرض، لا على نصّ القالب.
+
+    فوتر المنصّة في `base.html`، ولا يظهر إلا لمستخدمٍ داخل النظام.
+    """
+    client.force_login(principal_user)
+
+    html = client.get(reverse("observation_list")).content.decode()
+
+    assert VISION in html
+    assert "site-footer-vision" in html
+
+
+@pytest.mark.django_db
+def test_the_field_is_actually_editable_from_the_admin_panel(client, school):
+    """«تُحرَّر من لوحة الإدارة بلا نشر كود» ادّعاءٌ — وكاد يكذب: الحقلُ كان
+    مضافاً إلى النموذج ولم يُضَف إلى `SchoolAdmin.fieldsets`، فـModelAdmin
+    لا يعرض من الحقول إلّا ما ذُكر صراحةً فيها — فيختفي من الشاشة رغم وجوده
+    في القاعدة، ولا طريقة لتحريره سوى القذيفة. هذا الاختبار يفتح شاشة
+    التعديل نفسَها ويتحقّق من وجود الحقل، لا من مصدر القالب."""
+    from core.models import CustomUser
+
+    admin_user = CustomUser.objects.create(
+        national_id="90000000099",
+        full_name="مدير النظام",
+        is_superuser=True,
+        is_staff=True,
+        must_change_password=False,
+    )
+    client.force_login(admin_user)
+
+    html = client.get(f"/admin/core/school/{school.pk}/change/").content.decode()
+
+    assert 'name="vision"' in html, "الحقل غائبٌ عن شاشة تعديل المدرسة في لوحة الإدارة"
+
+
+@pytest.mark.django_db
+def test_the_platform_footer_reflects_a_customised_vision(client, principal_user):
+    """تحرير الحقل من لوحة الإدارة ينعكس على الفوتر بلا نشر كود."""
+    school = principal_user.get_school()
+    school.vision = "رؤيةٌ خاصّةٌ بهذه المدرسة"
+    school.save(update_fields=["vision"])
+    client.force_login(principal_user)
+
+    html = client.get(reverse("observation_list")).content.decode()
+
+    assert "رؤيةٌ خاصّةٌ بهذه المدرسة" in html
+    assert VISION not in html
+
+
+def _matrix_sub(**extra):
+    from types import SimpleNamespace
+
+    context = {
+        "year": "2026-2027",
+        "source": "actual",
+        "nav": SimpleNamespace(range="27/9 – 1/10"),
+        **extra,
+    }
+    rendered = render_to_string("schedule/pdf/matrix_sub.html", context)
+    text = re.sub(r"<[^>]+>", "", rendered).replace("&nbsp;", " ")
+    return " ".join(text.split())
+
+
+def test_the_general_schedule_sub_line_carries_the_vision_between_two_vertical_bars():
+    """بلاغُ المالك (2026-09-25): في سطر الجدول العامّ بعد «دولة قطر» بين خطّين رأسيّين."""
+    assert _matrix_sub() == (
+        f"وزارة التربية والتعليم والتعليم العالي — دولة قطر | {VISION} | العام الدراسي 2026-2027 | الأسبوع 27/9 – 1/10"
+    )
+
+
+def test_the_general_schedule_sub_line_reads_the_schools_own_vision():
+    from types import SimpleNamespace
+
+    line = _matrix_sub(school=SimpleNamespace(vision="رؤيةٌ اعتمدتها هذه المدرسة"))
+    assert "دولة قطر | رؤيةٌ اعتمدتها هذه المدرسة | العام الدراسي" in line
+    assert VISION not in line
+
+
+def test_the_general_schedule_sub_line_keeps_the_year_only_for_a_planned_week():
+    line = _matrix_sub(source="plan")
+    assert line.endswith(f"| {VISION} | العام الدراسي 2026-2027") and "الأسبوع" not in line
+
+
+@pytest.mark.django_db
+def test_the_general_schedule_paper_says_the_vision_once_in_the_sub_line_not_the_footer(
+    world, client
+):
+    """قرارُ المالك (2026-09-25): الرؤيةُ في سطر تحت الجدول فقط وتُنقل من ذيل الورقة — فلا تتكرّر."""
+    body = _paper(client, world, view="all_teachers")
+
+    assert body.count(VISION) == 1
+    foot = body.split('<div class="matrix-foot">', 1)[1].split("</div>", 1)[0]
+    assert VISION not in foot and "تاريخ الطباعة" in foot and "المعلّمون" in foot

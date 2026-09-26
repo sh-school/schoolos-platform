@@ -1,0 +1,134 @@
+{% extends "base/base.html" %}
+{% load static %}
+{% load icons %}
+{% load ui %}
+{% comment %}
+شاشةُ «الإسناد» الواحدة (قرار 2026-09-06): لكلّ معلّمٍ بطاقة — نصابُه وما يدرّسه
+ومن يحضّر — والحفظُ في لحظته بلا زرٍّ ولا صفحةٍ وسيطة. المنسّقُ يُدخل لقسمه ثمّ
+يرفع، والنائبُ يراجع، والمديرُ يعتمد. والبطاقةُ تُعاد وحدَها بعد كلّ حفظ (HTMX)،
+فلا تُعاد الصفحةُ كلُّها لصفٍّ واحد.
+{% endcomment %}
+{% block title %}{{ page_title }} — {{ module_name }}{% endblock %}
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_label=module_name current=page_title %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+  {% page_header page_title subtitle=page_subtitle icon="checklist" %}
+    <div class="asg-tools">
+    <div class="search-wrap asg-search">
+      <span class="search-icon" aria-hidden="true">{% icon "search" %}</span>
+      <input type="search" id="asg-teacher-search" class="form-control" autocomplete="off"
+             placeholder="ابحث باسم المعلّم…" aria-label="ابحث باسم المعلّم">
+    </div>
+    <button type="button" class="btn-secondary btn-sm" data-asg-fold-toggle="dept" aria-pressed="false">فتحُ الأقسام</button>
+    <button type="button" class="btn-secondary btn-sm" data-asg-fold-toggle="all" aria-pressed="false">فتحُ الكلّ</button>
+    {% comment %}مفتاحُ الوقف: للمدير والنائب الأكاديميّ والمطوّر (`caps.toggle`). القيمةُ صريحة (paused=1|0) لا قلب.{% endcomment %}
+    {% if caps.toggle %}
+    <form method="post" action="{% url 'academic_management:assignment_entry_toggle' %}">
+      {% csrf_token %}
+      <input type="hidden" name="year" value="{{ year }}">
+      {% if governance.coordinator_entry_paused %}
+      <input type="hidden" name="paused" value="0">
+      <button type="submit" class="btn-primary btn-sm">فتحُ الإسناد للمنسّقين</button>
+      {% else %}
+      <input type="hidden" name="paused" value="1">
+      <button type="submit" class="btn-secondary btn-sm">وقفُ الإسناد عن المنسّقين</button>
+      {% endif %}
+    </form>
+    {% endif %}
+    </div>
+  {% endpage_header %}
+
+  {% if governance.coordinator_entry_paused %}
+  {% callout "warning" show=True %}الإسنادُ موقوفٌ عن المنسّقين{% if governance.entry_changed_at %} منذ {{ governance.entry_changed_at|date:"Y-m-d H:i" }}{% endif %} — يرون الشاشةَ ولا يكتبون فيها.{% if caps.review or caps.approve %} وأنت غيرُ مشمولٍ بالوقف فتكتب كالمعتاد؛ ولترى أثرَه جرّب بحساب منسّق.{% endif %}{% endcallout %}
+  {% endif %}
+
+  {% comment %}
+  حارسُ المدرسة: الحملُ الفرديُّ لا يكشف شعبةً بلا معلّم. فيُقاس المطلوبُ من
+  الخطّة بالمُسنَد فعلاً، ويُسمّى موضعُ الفرق باسمه — شعبةً ومادّةً ورقمين.
+  {% endcomment %}
+  {% if coverage %}
+  <section class="asg-guard {% if coverage.complete %}ok{% else %}bad{% endif %}">
+    <div class="asg-guard-head">
+      {% if coverage.complete %}
+      <strong>الإسنادُ مكتمل</strong>
+      <span>الخطّةُ تطلب {{ coverage.planned }} حصّةً، والمُسنَدُ {{ coverage.assigned }} — تطابقٌ تامّ (100%).</span>
+      {% else %}
+      <strong>الإسنادُ غيرُ مكتمل — {{ coverage.percent }}%</strong>
+      <span>
+        الخطّةُ تطلب {{ coverage.planned }} حصّةً والمُسنَدُ {{ coverage.assigned }}
+        ({% if coverage.delta < 0 %}ناقصٌ {{ coverage.delta|cut:"-" }}{% elif coverage.delta > 0 %}زائدٌ {{ coverage.delta }}{% else %}المجموعُ مطابقٌ والمواضعُ مختلّة{% endif %})
+        · {{ coverage.problem_count }} موضعاً يحتاج عملاً
+        · {{ coverage.summary.clean_sections }} من {{ coverage.summary.sections }} شعبةً سليمة.
+      </span>
+      {% endif %}
+    </div>
+    {% if coverage.problems %}
+    <details>
+      <summary>أين الخلل؟</summary>
+      <div class="asg-guard-scroll">
+        <table class="asg-guard-table" data-no-sort>
+          <thead><tr><th>الشعبة</th><th>المادّة</th><th>الخطّة</th><th>المُسنَد</th><th>الحالة</th><th>المعلّم</th></tr></thead>
+          <tbody>
+            {% for p in coverage.problems %}
+            <tr>
+              <td>{{ p.section }}</td>
+              <td>{{ p.subject }}</td>
+              <td>{{ p.planned }}</td>
+              <td>{{ p.assigned }}</td>
+              <td>{{ p.status_label }}</td>
+              <td>{{ p.teacher|default:"—" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if coverage.problem_count > coverage.problems|length %}
+        <p class="asg-hint">وأكثرُ من ذلك — عُرض أوّلُ {{ coverage.problems|length }} موضعاً من {{ coverage.problem_count }}.</p>
+        {% endif %}
+      </div>
+    </details>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if registry_empty %}
+  <p class="asg-hint">لا أقسامَ مسجَّلةً في هذه المدرسة — فالتجميعُ مشتقٌّ من حصص كلّ معلّم. ومتى سُجّلت الأقسامُ صارت هي المصدر.</p>
+  {% endif %}
+
+  {% if not groups %}
+    {% include "components/empty_state.html" with title="لا معلّمين في هذا النطاق" %}
+  {% else %}
+  {% comment %}أربعةَ عشرَ قسماً بعرض الصفحة كلٍّ كانت تُطيل التمرير — عمودان
+  متتابعان لا متبادلان (قرارُ تخطيط الصفحات في CLAUDE.md): القسمُ الأوّل حتى
+  السابع في العمود الأوّل، والثامن حتى الرابع عشر في الثاني.{% endcomment %}
+  {% comment %}الأقسامُ كلُّها في بطاقةٍ مركزيّةٍ واحدة (`section_card`) لا مبعثرةً على الصفحة العارية.{% endcomment %}
+  {% section_card "الأقسام" meta=totals.teachers|stringformat:"s"|add:" معلّماً" icon="departments" %}
+  <div class="auto-grid asg-dept-cols">
+  {% for column in dept_cols %}
+    <div class="asg-dept-col">
+    {% for department in column %}
+      <details class="asg-dept-fold dept-{{ department.color }}">
+        <summary class="asg-dept-summary">
+          <h2 class="asg-dept">{{ department.name }} <small>— {{ department.cards|length }} معلّماً</small></h2>
+        </summary>
+        <div class="asg-grid">
+        {% for card in department.cards %}
+          {% include "academic_management/partials/assignment_teacher.html" %}
+        {% endfor %}
+        </div>
+      </details>
+    {% endfor %}
+    </div>
+  {% endfor %}
+  </div>
+  {% endsection_card %}
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/assignment-fold.js' %}" defer></script>
+<script src="{% static 'js/assignment-search.js' %}" defer></script>
+{% endblock %}

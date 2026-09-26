@@ -1,0 +1,59 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}الرخص المهنية{% endblock %}
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/staff-affairs/" parent_label="شؤون الموظفين" current="الرخص المهنية" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+  {% page_header "الرخص المهنية" subtitle="تتبّع رخص المعلمين — rukhsa.edu.gov.qa" icon="security" %}{% endpage_header %}
+
+  {% kpi_strip label="أرقام الرخص" %}
+    {% kpi "منتهية" expired_count tone=expired_tone %}
+    {% kpi "تنتهي قريباً" expiring_count sub="90 يوماً" tone=expiring_tone title="رخصٌ تنتهي خلال تسعين يوماً" %}
+    {% kpi "سارية" valid_count tone="green" %}
+    {% kpi "بلا رخصة" no_license_count tone=no_license_tone title="معلّمون ومنسّقون لا رقمَ رخصةٍ لهم" %}
+  {% endkpi_strip %}
+
+  {% comment %}
+  البطاقاتُ الثلاثُ في سطرٍ واحد، وكلٌّ منها يُرسم ولو فرغت — كانت في شبكة
+  عمودين تُخفي الفارغةَ فتبقى الثالثةُ وحيدة، ولا تقول الصفحةُ شيئاً إن
+  فرغت كلُّها.
+  {% endcomment %}
+  <div class="auto-grid">
+    {% section_card "رخص منتهية" icon="status_error" empty="لا رخصَ منتهية" %}{% if expired %}
+      <ul class="plain-list is-scroll">
+        {% for u in expired %}
+        <li class="plain-list__row">
+          <a href="{% url 'staff_affairs:staff_profile' u.id %}" class="plain-list__title sa-link">{{ u.full_name }}</a>
+          <span class="status-badge status-danger">{{ u.professional_license_expiry|date:"d/m/Y" }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "تنتهي قريباً" icon="status_warning" empty="لا رخصَ تنتهي خلال تسعين يوماً" %}{% if expiring_soon %}
+      <ul class="plain-list is-scroll">
+        {% for u in expiring_soon %}
+        <li class="plain-list__row">
+          <a href="{% url 'staff_affairs:staff_profile' u.id %}" class="plain-list__title sa-link">{{ u.full_name }}</a>
+          <span class="status-badge status-warning">{{ u.professional_license_expiry|date:"d/m/Y" }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "معلمون بلا رخصة مهنية" icon="licences" empty="لكلّ معلّمٍ رقمُ رخصةٍ مسجَّل" %}{% if no_license %}
+      <ul class="plain-list is-scroll">
+        {% for m in no_license %}
+        <li class="plain-list__row">
+          <a href="{% url 'staff_affairs:staff_profile' m.user_id %}" class="plain-list__title sa-link">{{ m.user.full_name }}</a>
+          <span class="status-badge status-gray">غير مسجّلة</span>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+</div>
+{% endblock %}

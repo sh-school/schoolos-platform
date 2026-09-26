@@ -1,0 +1,213 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+{% block title %}الإشعارات{% endblock %}
+
+{# الصفحةُ لا تُمرَّر رأسيّاً: كلُّ البطاقات في صفحةٍ واحدة بشبكةٍ من صفّين — السجلُّ والرسمان، ثمّ إعداداتُ البريد وقوالبُه وSMS — وما طال يُمرَّر داخل بطاقته عند حافّتها (`flush`). #}
+{% block main_class %}{% page_layout "dashboard" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/notifications/" parent_label="الإشعارات" current="لوحة الإشعارات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "لوحة الإشعارات" subtitle=subtitle icon="notifications" %}
+    <form method="post" action="{% url 'send_absence_alerts' %}">
+      {% csrf_token %}
+      <button type="submit" class="btn-primary btn-sm" {% if not pending_absence %}disabled{% endif %}>{% icon "absence" %} إرسال تنبيهات الغياب</button>
+    </form>
+    <form method="post" action="{% url 'send_fail_alerts' %}">
+      {% csrf_token %}
+      <input type="hidden" name="year" value="{{ year }}">
+      <button type="submit" class="btn-secondary btn-sm" {% if not failing_students %}disabled{% endif %}>{% icon "failing_students" %} إرسال إشعارات الرسوب</button>
+    </form>
+    <a href="{% url 'notification_inbox' %}" class="btn-secondary btn-sm">{% icon "notifications" %} صندوق الإشعارات</a>
+    <a href="{% url 'notification_preferences' %}" class="btn-secondary btn-sm">{% icon "settings" %} التفضيلات</a>
+  {% endpage_header %}
+
+  {% if pending_absence_count or failing_students %}
+  {% callout "warning" %}
+    زرّا الإرسال يُرسلان بريداً أو SMS إلى أولياء الأمور ولا يُسحب ما أُرسل. ووليُّ الأمر الذي يقع الآن ضمن ساعات هدوئه لا يصله شيءٌ الآن: يُؤجَّل إرسالُه إلى انتهائها ولا يضيع، ويُذكر عددُ المؤجَّل في رسالة النتيجة.
+    {% if pending_absence_count %}تنبيهات الغياب: {{ pending_absence_count }} تنبيهٌ معلّق إلى {{ recipients.absence }} من أولياء الأمور.{% endif %}
+    {% if failing_students %}إشعارات الرسوب: أولياءُ {{ failing_students }} طالباً راسباً — {{ recipients.fail }} وليَّ أمرٍ.{% endif %}
+  {% endcallout %}
+  {% endif %}
+
+  {% kpi_strip label="أرقام الإشعارات" %}
+    {% kpi "أُرسلت بنجاح" total_sent|default:0 tone="green" %}
+    {% kpi "فشل الإرسال" total_failed|default:0 tone=failed_tone %}
+    {% kpi "في الانتظار" total_pending|default:0 tone=pending_tone title="إشعاراتٌ لم تُرسل بعد" %}
+    {% kpi "تنبيهات غياب معلّقة" pending_absence_count|default:0 tone=absence_alerts_tone title="يرسلها زرُّ «إرسال تنبيهات الغياب»" %}
+    {% kpi "الراسبون" failing_students|default:0 tone=failing_tone title="طلابٌ لهم نتيجةُ رسوبٍ هذا العام — يُشعَر أولياؤهم بزرّ «إرسال إشعارات الرسوب»" %}
+  {% endkpi_strip %}
+
+  {# النموذجُ فارغٌ: حقولُ بطاقات الإعدادات ترتبط به بالسمة form= فتبقى البطاقاتُ أبناءَ الشبكة مباشرةً، وزرُّ الحفظ في أسفل آخر بطاقة #}
+  <form id="notif-settings-form" method="post" action="{% url 'save_notif_settings' %}">{% csrf_token %}</form>
+
+  <div class="fill-grid is-stretch" style="--flow: row; --rows: 2; --tc: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr)">
+
+  {% section_card "سجل الإشعارات الأخيرة" meta=logs_page.paginator.count icon="notifications" empty="لا توجد إشعارات مُرسَلة بعد" flush=True %}{% if logs %}
+    <div class="notif-log-search">
+      <input type="text" id="notif-log-search" class="form-control form-control-sm" placeholder="بحث بالطالب أو المستلم أو النوع..." aria-label="بحث في السجلّ">
+    </div>
+    {% include "notifications/partials/log_panel.html" %}
+  {% endif %}{% endsection_card %}
+
+    {% section_card "حركة الإرسال" meta="آخر 14 يوماً" icon="stats" %}
+      <div class="dash-chart-wrap">
+        <canvas id="chartNotifTrend" role="img" aria-label="رسم بياني: الإشعارات الناجحة والفاشلة آخر 14 يوماً"></canvas>
+      </div>
+    {% endsection_card %}
+
+    {% section_card "التوزيع حسب القناة" icon="stats" %}
+      <div class="dash-chart-wrap">
+        <canvas id="chartChannels" role="img" aria-label="رسم بياني: الإشعارات حسب القناة"></canvas>
+      </div>
+    {% endsection_card %}
+
+    {% section_card "إعدادات البريد الإلكتروني" icon="settings" flush=True %}
+      <div class="p-3 notif-settings">
+        <label class="ui-switch">
+        <span class="ui-switch__label">تفعيل البريد الإلكتروني</span>
+        <input form="notif-settings-form" type="checkbox" role="switch" class="ui-switch__input" name="email_enabled" {% if cfg.email_enabled %}checked{% endif %}>
+        <span class="ui-switch__track" aria-hidden="true"></span>
+        </label>
+        <div class="df-row-2">
+        <label class="ui-switch">
+                <span class="ui-switch__label">إشعارات الغياب</span>
+                <input form="notif-settings-form" type="checkbox" role="switch" class="ui-switch__input" name="absence_email_enabled" {% if cfg.absence_email_enabled %}checked{% endif %}>
+                <span class="ui-switch__track" aria-hidden="true"></span>
+                </label>
+                <label class="ui-switch">
+                <span class="ui-switch__label">إشعارات الرسوب</span>
+                <input form="notif-settings-form" type="checkbox" role="switch" class="ui-switch__input" name="fail_email_enabled" {% if cfg.fail_email_enabled %}checked{% endif %}>
+                <span class="ui-switch__track" aria-hidden="true"></span>
+                </label>
+      </div>
+        <div class="form-group">
+        <label class="form-label" for="cfg-from-name">اسم المُرسِل</label>
+        <input form="notif-settings-form" type="text" id="cfg-from-name" name="from_name" value="{{ cfg.from_name }}" class="form-control">
+        </div>
+        <div class="form-group">
+        <label class="form-label" for="cfg-reply-to">بريد للرد عليه</label>
+        <input form="notif-settings-form" type="email" id="cfg-reply-to" name="reply_to" value="{{ cfg.reply_to }}" class="form-control">
+        </div>
+      </div>
+    {% endsection_card %}
+
+    {% section_card "قوالب الرسائل وحدّ الغياب" icon="settings" flush=True %}
+      <div class="p-3 notif-settings">
+        <div class="form-group">
+        <label class="form-label" for="cfg-threshold">حد الغياب (عدد الحصص)</label>
+        <input form="notif-settings-form" type="number" inputmode="numeric" id="cfg-threshold" name="absence_threshold" value="{{ cfg.absence_threshold }}" min="1" max="20" class="form-control">
+        </div>
+        <div class="form-group">
+        <label class="form-label" for="cfg-absence-subject">موضوع رسالة الغياب</label>
+        <input form="notif-settings-form" type="text" id="cfg-absence-subject" name="absence_email_subject" value="{{ cfg.absence_email_subject }}" class="form-control">
+        <p class="ui-field-hint">متغيرات: {student_name} {absence_count}</p>
+        </div>
+        <div class="form-group">
+        <label class="form-label" for="cfg-fail-subject">موضوع رسالة الرسوب</label>
+        <input form="notif-settings-form" type="text" id="cfg-fail-subject" name="fail_email_subject" value="{{ cfg.fail_email_subject }}" class="form-control">
+        <p class="ui-field-hint">متغيرات: {student_name} {fail_count}</p>
+        </div>
+      </div>
+    {% endsection_card %}
+
+    {% section_card "إعدادات SMS (Twilio)" icon="settings" flush=True %}
+      <div class="p-3 notif-settings">
+        <label class="ui-switch">
+        <span class="ui-switch__label">تفعيل SMS</span>
+        <input form="notif-settings-form" type="checkbox" role="switch" class="ui-switch__input" name="sms_enabled" {% if cfg.sms_enabled %}checked{% endif %}>
+        <span class="ui-switch__track" aria-hidden="true"></span>
+        </label>
+        <div class="form-group">
+        <label class="form-label" for="cfg-sms-from">رقم المُرسِل (Twilio)</label>
+        <input form="notif-settings-form" type="text" id="cfg-sms-from" name="sms_from_number" value="{{ cfg.sms_from_number }}" placeholder="+974XXXXXXXX" class="form-control" dir="ltr">
+        </div>
+        <div class="form-group">
+        <label class="form-label" for="cfg-sid">Account SID</label>
+        <input form="notif-settings-form" type="text" id="cfg-sid" name="twilio_account_sid" value="{{ cfg.twilio_account_sid }}" class="form-control" dir="ltr">
+        </div>
+        <div class="form-group">
+        <label class="form-label" for="cfg-token">Auth Token</label>
+        <input form="notif-settings-form" type="password" id="cfg-token" name="twilio_auth_token" autocomplete="new-password" placeholder="{% if cfg.twilio_auth_token %}--------{% else %}أدخل Auth Token{% endif %}" class="form-control" dir="ltr">
+        <p class="ui-field-hint">اتركه فارغاً للإبقاء على القيمة الحالية</p>
+        </div>
+        <div class="form-actions">
+          <button type="submit" form="notif-settings-form" class="btn-primary btn-sm">{% icon "save" %} حفظ الإعدادات</button>
+        </div>
+      </div>
+    {% endsection_card %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/vendor/chart.umd.min.js' %}"></script>
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  /* smartFilter for log search */
+  if (typeof window.smartFilter === 'function') {
+    window.smartFilter('notif-log-search', '#notif-log-tbody tr[data-filter-row]', { textAttr: 'data-text' });
+  }
+
+  /* Chart defaults */
+  Chart.defaults.font.family = 'Tajawal, sans-serif';
+  Chart.defaults.font.size = 11;
+
+  /* ── 14-day trend (stacked bar) ── */
+  var trendLabels = [{% for d in daily_notifs %}'{{ d.day|date:"d/m" }}'{% if not forloop.last %},{% endif %}{% endfor %}];
+  var trendSuccess = [{% for d in daily_notifs %}{{ d.success }}{% if not forloop.last %},{% endif %}{% endfor %}];
+  var trendFailed = [{% for d in daily_notifs %}{{ d.failed }}{% if not forloop.last %},{% endif %}{% endfor %}];
+
+  var el1 = document.getElementById('chartNotifTrend');
+  if (el1 && trendLabels.length) {
+    new Chart(el1, {
+      type: 'bar',
+      data: {
+        labels: trendLabels,
+        datasets: [
+          { label: 'ناجح', data: trendSuccess, backgroundColor: chartColor('chart-2'), maxBarThickness: 24 },
+          { label: 'فاشل', data: trendFailed, backgroundColor: chartColor('status-danger'), maxBarThickness: 24 }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        layout: { padding: { top: 8, bottom: 0, left: 8, right: 8 } },
+        scales: {
+          x: { stacked: true, ticks: { font: { size: 10 } } },
+          y: { stacked: true, beginAtZero: true, ticks: { precision: 0, font: { size: 10 } } }
+        },
+        plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } }
+      }
+    });
+  }
+
+  /* ── Channel distribution (doughnut) ── */
+  var chLabels = [{% for c in channel_stats %}'{{ c.channel }}'{% if not forloop.last %},{% endif %}{% endfor %}];
+  var chData = [{% for c in channel_stats %}{{ c.total }}{% if not forloop.last %},{% endif %}{% endfor %}];
+  var chColors = chartPalette();
+
+  var el2 = document.getElementById('chartChannels');
+  if (el2 && chLabels.length) {
+    new Chart(el2, {
+      type: 'doughnut',
+      data: {
+        labels: chLabels,
+        datasets: [{ data: chData, backgroundColor: chColors.slice(0, chData.length) }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } }
+      }
+    });
+  }
+});
+</script>
+{% endblock %}

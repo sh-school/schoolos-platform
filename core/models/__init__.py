@@ -1,0 +1,98 @@
+# ══════════════════════════════════════════════════════════════════════
+# core/models/__init__.py
+# تجميع كل نماذج core في مكان واحد للتوافق الخلفي الكامل
+# ══════════════════════════════════════════════════════════════════════
+
+# نماذجُ behavior وclinic وlibrary وtransport تُستورد من تطبيقاتها لا من هنا:
+# النواةُ لا تستورد من التطبيقات النازلة (البند 9).
+from ._crypto import _get_fernet, decrypt_field, encrypt_field, hmac_field  # noqa: F401
+from .academic import (  # noqa: F401
+    AcademicYear,
+    CalendarEvent,
+    ClassGroup,
+    ParentStudentLink,
+    Semester,
+    StudentEnrollment,
+    TimeBand,
+    Wing,
+    WingCoverage,
+)
+from .access import (  # noqa: F401
+    ACADEMIC_ROLES,
+    ADMIN_ROLES,
+    ALL_STAFF_ROLES,
+    LEADERSHIP,
+    TIER_1_LEADERSHIP,
+    TIER_2_DEPUTIES,
+    TIER_3_SUPERVISORS,
+    TIER_4_STAFF,
+    TIER_5_BENEFICIARIES,
+    Membership,
+    Role,
+)
+from .audit import AuditLog, BreachReport, ConsentRecord, ErasureRequest  # noqa: F401
+from .base import (  # noqa: F401
+    AuditedModel,
+    SchoolScopedModel,
+    SoftDeleteModel,
+    TimeStampedModel,
+)
+from .capability_grant import DELEGABLE_CAPABILITIES, CapabilityGrant  # noqa: F401
+from .department import Department  # noqa: F401
+from .export_job import ExportJob  # noqa: F401
+from .permission_audit import PermissionAuditLog  # noqa: F401
+from .school import School, _uuid  # noqa: F401
+from .stored_file import StoredFile  # noqa: F401
+from .user import (  # noqa: F401
+    CustomUser,
+    Profile,
+    _national_id_validator,
+    _phone_validator,
+)
+
+__all__ = [
+    # abstract base models
+    "TimeStampedModel",
+    "AuditedModel",
+    "SoftDeleteModel",
+    "SchoolScopedModel",
+    # crypto utils
+    "_get_fernet",
+    "encrypt_field",
+    "decrypt_field",
+    "hmac_field",
+    # core
+    "_uuid",
+    "School",
+    "CustomUser",
+    "Profile",
+    "Role",
+    "Membership",
+    "AcademicYear",
+    "CalendarEvent",
+    "Semester",
+    "Wing",
+    "WingCoverage",
+    "ClassGroup",
+    "StudentEnrollment",
+    "ParentStudentLink",
+    "AuditLog",
+    "ConsentRecord",
+    "BreachReport",
+    "ErasureRequest",
+    "Department",
+    "PermissionAuditLog",
+    "CapabilityGrant",
+    "DELEGABLE_CAPABILITIES",
+    "ExportJob",
+    # re-exported from sub-apps
+    "HealthRecord",
+    "ClinicVisit",
+    "BehaviorInfraction",
+    "BehaviorPointRecovery",
+    "SchoolBus",
+    "BusRoute",
+    "LibraryBook",
+    "BookBorrowing",
+    "LibraryActivity",
+]

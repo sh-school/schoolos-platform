@@ -1,0 +1,111 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load privacy ui %}
+{% block title %}السجل الصحي — {{ student.full_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/clinic/" parent_label="العيادة" current="السجل الصحي" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {# ── ترويسةُ الصفحة: الطالبُ ورقمُه المستور في السطر الوصفيّ ── #}
+  {% with masked=student.national_id|mask_id %}
+  {% page_header "السجل الصحي" subtitle=student.full_name|add:" · "|add:masked icon="clinic" %}
+    <a href="{% url 'clinic:record_visit_student' student.id %}" class="btn-primary btn-sm no-underline">+ تسجيل زيارة جديدة</a>
+    <a href="{% url 'clinic:dashboard' %}" class="btn-secondary btn-sm no-underline">← رجوع</a>
+  {% endpage_header %}
+  {% endwith %}
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    {# ── البيانات الصحية ── #}
+    <div class="lg:col-span-1">
+      {% section_card "البيانات الصحية" icon="clinic" %}
+        <form method="post" action="">
+          {% csrf_token %}
+          <div class="form-stack">
+            {% field "blood_type" "فصيلة الدم" type="select" choices=health_record.BLOOD_TYPES value=health_record.blood_type blank="غير محدد" %}
+            {% field "allergies" "الحساسية" type="textarea" rows=2 value=health_record.allergies placeholder="لا يوجد" %}
+            {% field "chronic_diseases" "الأمراض المزمنة" type="textarea" rows=2 value=health_record.chronic_diseases placeholder="لا يوجد" %}
+            {% field "medications" "الأدوية المستمرة" type="textarea" rows=2 value=health_record.medications placeholder="لا يوجد" %}
+            {% field "emergency_contact_name" "اسم جهة الطوارئ" value=health_record.emergency_contact_name placeholder="اسم ولي الأمر" %}
+            {% field "emergency_contact_phone" "هاتف الطوارئ" type="tel" inputmode="tel" value=health_record.emergency_contact_phone placeholder="+974XXXXXXXX" %}
+          </div>
+          {% callout "warning" %}بياناتٌ صحّيّةٌ ذاتُ طبيعةٍ خاصّة، وكلُّ اطّلاعٍ عليها وتعديلٍ فيها يُسجَّل باسمك في سجلّ المراجعة.{% endcallout %}
+          <button type="submit" class="btn-danger mt-4 w-full py-2 text-sm font-bold">
+            {% icon "save" %} حفظ السجل الصحي
+          </button>
+        </form>
+
+        {% if health_record.updated_at %}
+        <p class="ui-field-hint text-center">آخر تحديث: {{ health_record.updated_at|date:"d/m/Y H:i" }}</p>
+        {% endif %}
+      {% endsection_card %}
+    </div>
+
+    {# ── سجل الزيارات ── #}
+    <div class="lg:col-span-2">
+      {% section_card "سجل الزيارات" meta=visits|length icon="observation" empty="لا توجد زيارات مسجلة لهذا الطالب" %}{% if visits %}
+        {% filter_bar "بحثٌ في الزيارات" live=True %}
+          {% field "visit_q" "بحث في الزيارات" type="search" id="visit-search" hide_label=True grow=True placeholder="بحث في الزيارات..." autocomplete="off" %}
+        {% endfilter_bar %}
+
+        <ul class="clinic-visits" id="visit-list">
+          {% for visit in visits %}
+          <li class="clinic-visit">
+            <div class="clinic-visit__head">
+              <span class="clinic-visit__date">{{ visit.visit_date|date:"d/m/Y — H:i" }}</span>
+              {% if visit.is_sent_home %}
+              <span class="status-badge status-warning">أُرسل للمنزل</span>
+              {% endif %}
+              {% if visit.parent_notified %}
+              <span class="status-badge status-success">{% icon "confirm" %} أُبلغ ولي الأمر</span>
+              {% elif visit.is_sent_home %}
+              <span class="status-badge status-danger">لم يُبلَّغ ولي الأمر</span>
+              {% endif %}
+              {% if visit.temperature %}
+              <span class="clinic-temp{% if visit.is_feverish %} is-fever{% endif %}">{{ visit.temperature }}°</span>
+              {% endif %}
+            </div>
+            <p class="clinic-visit__line"><strong>السبب:</strong> {{ visit.reason }}</p>
+            {% if visit.symptoms %}
+            <p class="clinic-visit__line is-muted"><strong>الأعراض:</strong> {{ visit.symptoms }}</p>
+            {% endif %}
+            {% if visit.treatment %}
+            <p class="clinic-visit__line is-muted"><strong>الإجراء:</strong> {{ visit.treatment }}</p>
+            {% endif %}
+            <p class="clinic-visit__nurse">الممرض: {{ visit.nurse.full_name|default:"—" }}</p>
+          </li>
+          {% endfor %}
+        </ul>
+      {% endif %}{% endsection_card %}
+    </div>
+
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  if (typeof window.smartFilter === 'function') {
+    window.smartFilter('visit-search', '#visit-list .clinic-visit');
+  } else {
+    var input = document.getElementById('visit-search');
+    if (!input) return;
+    var items = document.querySelectorAll('#visit-list .clinic-visit');
+    input.addEventListener('input', function(){
+      var q = this.value;
+      items.forEach(function(el){
+        var text = el.textContent || '';
+        var ok = !q || (typeof window.smartMatch === 'function' ? window.smartMatch(q, text) : text.toLowerCase().indexOf(q.toLowerCase()) !== -1);
+        el.style.display = ok ? '' : 'none';
+      });
+    });
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,129 @@
+"""Global search endpoint for the Command Palette (Ctrl+K)."""
+
+import re
+
+from django.contrib.auth.decorators import login_required
+from django.db.models import Q
+from django.http import JsonResponse
+
+from core.permissions import ALL_STAFF_ROLES, STUDENT_AFFAIRS_VIEW
+from core.privacy import mask_national_id
+
+# ✅ v5.1.1: regex للتحقق من صحة استعلامات البحث (عربي + لاتيني + أرقام + مسافات)
+_SEARCH_RE = re.compile(r"^[\w\s\u0600-\u06FF\u0750-\u077F\-_.@]+$")
+
+
+@login_required
+def global_search(request):
+    q = request.GET.get("q", "").strip()[:80]
+    if len(q) < 2:
+        return JsonResponse({"results": []})
+    if not _SEARCH_RE.match(q):
+        return JsonResponse({"results": []})
+
+    school = request.user.get_school()
+    if not school:
+        return JsonResponse({"results": []})
+
+    results = []
+    role = request.user.get_role()
+
+    # بحث في الطلاب (عبر StudentEnrollment → CustomUser)
+    # للكادر وحدَه: الطالبُ ووليُّ الأمر لا يبحثان في طلبة المدرسة. والرقمُ الشخصيُّ
+    # مفتاحُ بحثٍ لمن يدير سجلَّ الطلبة فقط — كان مفتوحاً لكلّ حساب، فمن يعرف رقماً
+    # يعرف صاحبَه، والإخفاءُ في النتيجة لا يحمي ما كتبه السائلُ بنفسه (ن٤).
+    from core.models import StudentEnrollment
+
+    student_enrollments = StudentEnrollment.objects.none()
+    if request.user.is_superuser or role in ALL_STAFF_ROLES:
+        match = Q(student__full_name__icontains=q)
+        if request.user.is_superuser or role in STUDENT_AFFAIRS_VIEW:
+            match |= Q(student__national_id__icontains=q)
+        # المقيَّدُ بجناحه يجد طلبةَ جناحه وحدَهم — قبل المطابقة والاقتطاع، فلا تملأ
+        # الخاناتِ الستَّ أسماءٌ من غير جناحه (قرارُ 2026-09-15). وغيرُه كما كان.
+        from wings.scope import student_scope_for
+
+        enrollments = student_scope_for(request).narrow(
+            StudentEnrollment.objects.filter(class_group__school=school, is_active=True),
+            "student_id",
+        )
+        student_enrollments = (
+            enrollments.filter(match)
+            .select_related("student")
+            .values("student__id", "student__full_name", "student__national_id")
+            .distinct()[:6]
+        )
+    students = [
+        {
+            "id": s["student__id"],
+            "full_name": s["student__full_name"],
+            "national_id": mask_national_id(s["student__national_id"]),
+        }
+        for s in student_enrollments
+    ]
+    for s in students:
+        results.append(
+            {
+                "type": "student",
+                "icon": "student",
+                "title": s["full_name"],
+                "sub": f"***{s['national_id'][-4:]}" if s["national_id"] else "",
+                "url": f"/behavior/student/{s['id']}/",
+            }
+        )
+
+    # بحث في المعلمين/الموظفين (فقط للمدير)
+    # `is_admin` دالّة: بلا قوسين كانت صادقةً دائماً فعُرضت أسماءُ الكادر وبريدُهم للجميع (ن٣).
+    if request.user.is_admin():
+        from core.models import CustomUser, Membership
+
+        staff_ids = (
+            Membership.objects.filter(school=school, is_active=True)
+            .exclude(role__name__in=["student", "parent"])
+            .values_list("user_id", flat=True)
+        )
+
+        staff = (
+            CustomUser.objects.filter(id__in=staff_ids, is_active=True)
+            .filter(Q(full_name__icontains=q) | Q(email__icontains=q))
+            .values("id", "full_name", "email")[:4]
+        )
+        for t in staff:
+            results.append(
+                {
+                    "type": "teacher",
+                    "icon": "teacher",
+                    "title": t["full_name"],
+                    "sub": t["email"] or "",
+                    "url": f"/staff-affairs/profile/{t['id']}/",
+                }
+            )
+
+    # صفحات سريعة (static)
+    pages = [
+        {"title": "لوحة التحكم", "url": "/dashboard/", "icon": "dashboard"},
+        {"title": "الجدول الأسبوعي", "url": "/schedule/weekly/", "icon": "schedule"},
+        {"title": "التقييمات", "url": "/assessments/", "icon": "assessments"},
+        {"title": "حصصي اليوم", "url": "/teacher/schedule/", "icon": "periods_today"},
+        {"title": "غياب اليوم", "url": "/teacher/reports/daily/", "icon": "attendance_register"},
+        {"title": "الإشعارات", "url": "/notifications/inbox/", "icon": "notifications"},
+        {"title": "التقارير", "url": "/reports/", "icon": "reports"},
+        {"title": "العيادة", "url": "/clinic/", "icon": "clinic"},
+        {"title": "المكتبة", "url": "/library/", "icon": "library"},
+        {"title": "السلوك", "url": "/behavior/", "icon": "behavior"},
+        {"title": "الجودة", "url": "/quality/", "icon": "quality"},
+        {"title": "التحليلات", "url": "/analytics/", "icon": "stats"},
+    ]
+    for p in pages:
+        if q in p["title"]:
+            results.append(
+                {
+                    "type": "page",
+                    "icon": p["icon"],
+                    "title": p["title"],
+                    "sub": "صفحة",
+                    "url": p["url"],
+                }
+            )
+
+    return JsonResponse({"results": results[:12]})

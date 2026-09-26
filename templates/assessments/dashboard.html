@@ -1,0 +1,169 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+{% block title %}التقييمات — {{ current_school.name|default:"المدرسة" }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/assessments/" parent_label="التقييمات" current="لوحة التقييمات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "لوحة التقييمات" subtitle=subtitle icon="assessments" %}
+    <form method="get">
+      <select name="semester" data-autosubmit class="exec-year-select" aria-label="الفصل الدراسي">
+        {% for val, label in SEMESTERS %}
+        <option value="{{ val }}" {% if semester == val %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    {% if request.user.is_admin or request.user.is_superuser %}
+    <a href="{% url 'setup_subject' %}" class="btn-primary btn-sm">{% icon "add" %} ربط مادة بفصل</a>
+    {% endif %}
+  {% endpage_header %}
+
+  {% if request.user.is_admin or request.user.is_superuser %}
+  {% kpi_strip label="أرقام التقييمات" %}
+    {% kpi "نسبة النجاح" pass_pct_label tone="green" title="الناجحون من النتائج السنويّة المحسومة" %}
+    {% kpi "ناجح" passed tone="green" %}
+    {% url 'failing_students' as failing_url %}{% kpi "راسب" failed tone=failed_tone href=failing_url title="نتائجُ سنويّةٌ راسبة — افتح قائمة الراسبين" %}
+    {% kpi "مادة × فصل" setups|length tone="maroon" title="إعداداتُ التقييم النشطة هذا العام" %}
+  {% endkpi_strip %}
+
+  <div class="ui-grid-2">
+    {% section_card "توزيع الدرجات" icon="grades" %}
+      <div class="dash-chart-wrap">
+        <canvas id="chartGradeDist" role="img" aria-label="رسم بياني: توزيع الدرجات"></canvas>
+      </div>
+    {% endsection_card %}
+
+    {% section_card "مقارنة الفصول" meta="المعدّل" icon="stats" %}
+      <div class="dash-chart-wrap">
+        <canvas id="chartClassComp" role="img" aria-label="رسم بياني: معدّل كل فصل"></canvas>
+      </div>
+    {% endsection_card %}
+
+    {% section_card "أداء المواد" meta="المعدّل ونسبة الرسوب" icon="academic" %}
+      <div class="dash-chart-wrap">
+        <canvas id="chartSubjects" role="img" aria-label="رسم بياني: معدّل كل مادة ونسبة الرسوب فيها"></canvas>
+      </div>
+    {% endsection_card %}
+
+    {% section_card "نتائج راسبة" meta=failing_list|length icon="failing_students" empty="لا نتائجَ راسبةً هذا العام" %}{% if failing_list %}
+      <ul class="plain-list is-scroll">
+        {% for r in failing_list %}
+          <li class="plain-list__row">
+            <span class="plain-list__main"><a class="plain-list__title" href="{% url 'student_report' r.student.id %}?year={{ year }}">{{ r.student.full_name }}</a><span class="plain-list__sub">{{ r.setup.subject.name_ar }} · {{ r.setup.class_group.short_label }}</span></span>
+            <span class="status-badge status-danger">{{ r.annual_total|default:"—" }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+  {% endif %}
+
+  {% filter_bar "بحثٌ في المواد" live=True %}
+    {% field "q" "بحث في المواد" id="subject-search" hide_label=True grow=True placeholder="بحث بالمادة أو المعلم أو الفصل..." %}
+  {% endfilter_bar %}
+
+  <div id="subjects-container" class="asm-groups">
+  {% regroup setups by class_group as grouped %}
+  {% for group in grouped %}
+    <div data-filter-row data-text="{{ group.grouper }}{% for s in group.list %} {{ s.subject.name_ar }} {{ s.teacher.full_name }}{% endfor %}">
+    {% section_card group.grouper meta=group.list|length icon="library" %}
+      <div class="ui-entity-grid">
+        {% for setup in group.list %}
+          {% url 'setup_detail' setup.id as detail_url %}
+          {% entity_card setup.subject.name_ar who=setup.teacher.full_name href=detail_url|add:"?semester="|add:semester %}
+            {% entity_chips %}<span class="chip">{{ setup.packages_count }} باقة</span><a class="chip" href="{% url 'class_gradebook' setup.id %}?semester={{ semester }}">كشف الدرجات</a>{% endentity_chips %}
+          {% endentity_card %}
+        {% endfor %}
+      </div>
+    {% endsection_card %}
+    </div>
+  {% empty %}
+    {% if request.user.is_admin or request.user.is_superuser %}
+      {% section_card "كل المواد" icon="academic" empty="لا توجد مواد مُعدَّة بعد" empty_sub="اربط المادةَ بفصلها أوّلاً من «ربط مادة بفصل»" %}{% endsection_card %}
+    {% else %}
+      {% section_card "موادي" icon="academic" empty="لا توجد مواد مُسندةٌ إليك بعد" empty_sub="تظهر هنا حين تربط الإدارةُ موادَّك بفصولها" %}{% endsection_card %}
+    {% endif %}
+  {% endfor %}
+  </div>
+
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  var input = document.getElementById('subject-search');
+  if (!input) return;
+  var items = document.querySelectorAll('#subjects-container [data-filter-row]');
+  input.addEventListener('input', function(){
+    var q = this.value;
+    var count = 0;
+    items.forEach(function(el){
+      var text = el.getAttribute('data-text') || '';
+      var ok = !q || (typeof window.smartMatch === 'function' ? window.smartMatch(q, text) : text.toLowerCase().indexOf(q.toLowerCase()) !== -1);
+      el.style.display = ok ? '' : 'none';
+      if (ok) count++;
+    });
+  });
+});
+</script>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/vendor/chart.umd.min.js' %}"></script>
+<script nonce="{{ request.csp_nonce }}">
+Chart.defaults.font.family='Tajawal,sans-serif';
+Chart.defaults.font.size=10;
+
+const OPTS={responsive:true,maintainAspectRatio:false};
+
+async function fc(u){try{return await(await fetch(u)).json()}catch(e){return null}}
+(async()=>{
+  // الرسومُ للإدارة وحدَها — ولا جلبَ بلا لوحةٍ ترسمها.
+  if(!document.getElementById('chartGradeDist'))return;
+  const d=await fc('/assessments/api/charts/');
+  if(!d)return;
+  // Grade Distribution - Bar
+  new Chart(document.getElementById('chartGradeDist'),{
+    type:'bar',
+    data:{labels:d.grade_distribution.labels,datasets:[{
+      label:'عدد الطلاب',data:d.grade_distribution.data,
+      /* سلّمُ درجاتٍ يحمل معنى: الأحمرُ أدنى والأخضرُ أعلى — لا لوحةٌ فئويّة. */
+      backgroundColor:[chartColor('status-danger'),chartColor('status-warning'),chartColor('chart-4'),chartColor('chart-2'),chartColor('status-success'),chartColor('status-success')]
+    }]},
+    options:{...OPTS,plugins:{legend:{display:false}},
+      scales:{y:{beginAtZero:true,ticks:{precision:0,font:{size:9}}},x:{ticks:{font:{size:9}}}}}
+  });
+  // Class Comparison - Horizontal Bar
+  if(d.class_comparison.labels.length){
+    new Chart(document.getElementById('chartClassComp'),{
+      type:'bar',
+      data:{labels:d.class_comparison.labels,datasets:[{
+        label:'المعدل',data:d.class_comparison.data,
+        backgroundColor:chartColor('chart-1')
+      }]},
+      options:{...OPTS,indexAxis:'y',plugins:{legend:{display:false}},
+        scales:{x:{min:0,max:100,ticks:{font:{size:9}}},y:{ticks:{font:{size:9}}}}}
+    });
+  }
+  // Subject Performance - Bar + Line
+  if(d.subject_comparison.labels.length){
+    new Chart(document.getElementById('chartSubjects'),{
+      type:'bar',
+      data:{labels:d.subject_comparison.labels,datasets:[
+        {label:'المعدل',data:d.subject_comparison.avgs,backgroundColor:chartColor('chart-3'),order:2},
+        {label:'نسبة الرسوب %',data:d.subject_comparison.fail_rates,type:'line',
+         borderColor:chartColor('status-danger'),backgroundColor:'transparent',yAxisID:'y1',order:1,borderWidth:1.5,pointRadius:2}
+      ]},
+      options:{...OPTS,
+        scales:{y:{beginAtZero:true,max:100,ticks:{font:{size:9}}},y1:{position:'left',beginAtZero:true,max:100,display:false},x:{ticks:{font:{size:9}}}},
+        plugins:{legend:{position:'bottom',labels:{padding:6,font:{size:9}}}}}
+    });
+  }
+})();
+</script>
+{% endblock %}

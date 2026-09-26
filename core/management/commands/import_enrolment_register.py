@@ -1,0 +1,522 @@
+"""
+يقيّد طلاب العام من «سجلّ القيد» الرسميّ الصادر عن النظام الوزاريّ.
+
+    python manage.py import_enrolment_register "سجل_القيد.xlsx" \\
+        --year 2026-2027 [--create-missing] [--fix-tracks] [--apply]
+
+الملفُّ يقول بالاسم أين يجلس كلُّ طالبٍ هذا العام، فلا حاجة إلى محرّك ترفيعٍ
+يجتهد: قواعدُ الترفيع طُبِّقت في الوزارة، وهذا مخرجُها. ومن كان في خانة شعبته
+«‑» فقرارُه لم يُتّخذ بعد — يُعرَض ولا يُقيَّد.
+
+بنيةُ الملفّ شكلان، وكلاهما مقروء:
+
+    ورقةٌ لكلّ صفّ («الصف- 07») ورؤوسُها في السطر الثالث   — تصديرُ 2025-2026
+    ورقةٌ واحدةٌ «الجميع» ورؤوسُها في السطر الأوّل          — تصديرُ 2026-2027
+
+والأعمدةُ الأربعةُ واحدةٌ في الشكلين: الرقمُ الشخصيّ، الاسمُ، الصفُّ،
+الصفُّ/الشعبة. وموضعُ الرؤوس يُبحث عنه ولا يُفترض — واشتراطُ سطرٍ بعينه يجعل
+الأمرَ يقف بـ«لم يُقرأ طالبٌ واحد» كلَّما غيّرت الوزارةُ شكلَ تصديرها.
+
+**ولا يُؤخَذ المسارُ من هذا الملفّ.** أسماءُ أوراقه تكتب «11-2-Technology»
+و«11-4-Humanities»، والمسارُ يُضبط بـ`set_class_tracks` ويُقاس بما يُدرَّس
+فعلاً — وهذا الأمر يُنبّه على الخلاف ولا يكتبه.
+
+**وترقيمُ شُعب التكنولوجي حُسم 2026-09-10**: هي 11/2 و12/2 لا 11/4 و12/4.
+اتّفق على ذلك سجلُّ القيد الوزاريّ، والقاعدةُ المحلّيّة، وأحدثُ حصص الإنتاج
+(30 أغسطس مقابل 2–3 أغسطس للترقيم القديم) — وأكّدته المدرسة. فلا `--map`
+لهذه الشُّعب. وكان هنا قبل اليوم نصٌّ يقول عكسَه، فأُزيل: من قرأه بعد شهرٍ
+وضع طلابَ التكنولوجي في شعبةٍ لا يُدرَّس فيها تخصّصُهم.
+
+ولا يمسّ من كان في المنصّة وليس في السجلّ: خرّيجٌ أو منتقلٌ، وإغلاقُ قيده
+قرارٌ إداريٌّ لا يُتّخذ من سطر أوامر — يُعرَض عددُهم وحدَه.
+
+ولا يكتب شيئاً بلا `--apply`.
+"""
+
+import re
+from collections import Counter
+
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+
+from core.initial_passwords import write_credentials_csv
+from core.models import ClassGroup, CustomUser, School
+from core.models.academic import StudentEnrollment
+from core.privacy import mask_national_id
+
+#: رؤوسُ الجدول في السطر الثالث، فالبياناتُ تبدأ من الرابع.
+FIRST_DATA_ROW = 4
+
+#: صفٌّ مقبول: رقمٌ شخصيٌّ قطريٌّ من إحدى عشرة خانة.
+NATIONAL_ID = re.compile(r"^\d{11}$")
+
+#: «07/1» و«08/ESE» — والشعبةُ ما بعد الشرطة المائلة.
+SECTION_LABEL = re.compile(r"^(\d{1,2})/(.+)$")
+
+
+def canonical(label):
+    """صيغةٌ واحدة للشعبة يتّفق عليها الملفُّ والقاعدة.
+
+    السجلُّ يكتب «07/1» بصفرٍ بادئ، و`ClassGroup` يحفظ `G7` فيُنتج «7/1».
+    والمقارنةُ بينهما نصّاً تجعل كلَّ شُعب السابع إلى التاسع «مفقودة»،
+    فيُعاد إنشاؤها فوق القائم — وهو ما كشفه أوّلُ تشغيلٍ جافّ.
+    """
+    match = SECTION_LABEL.match(label)
+    if not match:
+        return label
+    grade, section = match.groups()
+    return f"{int(grade)}/{section.strip()}"
+
+
+#: ما يكتبه النظامُ الوزاريّ لمن لم تُحدَّد شعبتُه بعد.
+NO_SECTION = "-"
+
+#: المسارُ في اسم ورقة الشعبة: «الشعبة الصفية- 11-2-Technology-».
+SHEET_TRACK = re.compile(r"-\s*(\d{2})-(\S+?)-(Science|Technology|Humanities)-?\s*$")
+
+TRACKS = {"Science": "science", "Technology": "technology", "Humanities": "humanities"}
+
+PREP_GRADES = ("G7", "G8", "G9")
+
+
+class Command(BaseCommand):
+    help = "يقيّد طلاب العام من سجلّ القيد الوزاريّ (xlsx)"
+
+    def add_arguments(self, parser):
+        parser.add_argument("path", nargs="?", default="", help="مسار ملفّ سجلّ القيد")
+        parser.add_argument(
+            "--emit-b64",
+            action="store_true",
+            help="اطبع السجلَّ محزوماً ولا تكتب شيئاً — لتُمرَّر إلى --rows-b64 على قاعدةٍ أخرى",
+        )
+        parser.add_argument(
+            "--rows-b64",
+            default="",
+            help=(
+                "السجلُّ محزوماً gzip+base64 بدل الملفّ — لقاعدةٍ لا يصلها الملفّ."
+                " و«-» تقرأ الحزمةَ من المدخل القياسيّ، وهو الأسلم"
+            ),
+        )
+        parser.add_argument("--year", required=True, help="مثال: 2026-2027")
+        parser.add_argument("--school", default=None, help="كود المدرسة")
+        parser.add_argument(
+            "--create-missing",
+            action="store_true",
+            help="يُنشئ حساباً لمن في السجلّ ولا حسابَ له",
+        )
+        parser.add_argument(
+            "--map",
+            nargs="+",
+            default=[],
+            dest="section_map",
+            metavar="شعبةُ‑السجلّ=شعبةُ‑المدرسة",
+            help="مطابقةُ ترقيمٍ صريحة، مثل 12/2=12/4",
+        )
+        parser.add_argument("--apply", action="store_true", help="بدونه يعرض ولا يكتب")
+        parser.add_argument(
+            "--credentials-out",
+            default="",
+            help=(
+                "مسارُ CSV لكلمات المرور الأوّليّة العشوائيّة للحسابات المُنشأة — إلزاميٌّ "
+                "مع --create-missing --apply. الملفُّ سرٌّ يُوزَّع ثمّ يُحذف."
+            ),
+        )
+
+    # ── التنفيذ ──────────────────────────────────────────────────────
+
+    def handle(self, *args, **options):
+        if bool(options["path"]) == bool(options["rows_b64"]):
+            raise CommandError("حدّد مسارَ الملفّ أو --rows-b64 — واحداً منهما.")
+
+        if options["rows_b64"]:
+            roster, tracks = _unpack(_payload(options["rows_b64"]))
+        else:
+            roster, tracks = self._read(options["path"])
+
+        if options["emit_b64"]:
+            self.stdout.write(_pack(roster, tracks))
+            self.stderr.write(f"حُزم {len(roster)} طالباً — مرّرها إلى --rows-b64 -")
+            return
+
+        school = self._school(options["school"])
+        year = options["year"]
+
+        # ترقيمُ السجلّ قد يخالف ترقيم المدرسة — والمطابقةُ تُكتب ولا تُخمَّن.
+        mapping = self._mapping(options["section_map"])
+        roster = {
+            nid: (name, mapping.get(section, section)) for nid, (name, section) in roster.items()
+        }
+
+        self.stdout.write(f"\n{school.name} · العام {year}")
+        self.stdout.write("═" * 60)
+        self.stdout.write(f"  في السجلّ: {len(roster)} طالباً")
+        for register_label, school_label in sorted(mapping.items()):
+            self.stdout.write(f"  مطابقة: {register_label} في السجلّ ← {school_label} في المدرسة")
+
+        sections = self._plan_sections(school, year, roster, tracks)
+        students = self._plan_students(school, year, roster, sections["labels"])
+
+        self._report(sections, students, options)
+
+        if not options["apply"]:
+            self.stdout.write("\nعرضٌ فقط. أضف --apply للكتابة.\n")
+            return
+
+        if students["unknown"] and not options["create_missing"]:
+            raise CommandError(
+                f"{len(students['unknown'])} طالباً في السجلّ بلا حساب — أضف "
+                "--create-missing لإنشائها، أو أنشئها أوّلاً."
+            )
+        if students["unknown"] and options["create_missing"] and not options["credentials_out"]:
+            raise CommandError(
+                "الحساباتُ المُنشأة تنال كلماتِ مرورٍ عشوائيّةً — حدّد --credentials-out "
+                "لملفٍّ تُكتب إليه، وإلّا ضاعت."
+            )
+
+        self._write(school, year, roster, sections, students, options)
+
+    # ── قراءة الملفّ ─────────────────────────────────────────────────
+
+    def _read(self, path):
+        """يُعيد سجلّ الطلاب من أوراق الصفوف، ومساراتِ الشُّعب من أسماء أوراقها."""
+        try:
+            import openpyxl
+        except ImportError as exc:  # pragma: no cover - المكتبة في requirements
+            raise CommandError("openpyxl غير مثبّتة.") from exc
+
+        try:
+            wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        except FileNotFoundError as exc:
+            raise CommandError(f"لا ملفّ في هذا المسار: {path}") from exc
+
+        # أوراقُ الصفوف هي المرجعُ متى وُجدت لأنّها تضمّ من لا شعبةَ له، وأوراقُ
+        # الشُّعب تكرارٌ لها. فإن لم توجد فالملفُّ مسطَّحٌ وتُقرأ كلُّ ورقةٍ لها رؤوس.
+        grade_sheets = [ws for ws in wb.worksheets if ws.title.startswith("الصف-")]
+        data_sheets = grade_sheets or list(wb.worksheets)
+
+        roster, tracks, seen = {}, {}, Counter()
+        for ws in wb.worksheets:
+            match = SHEET_TRACK.search(ws.title)
+            if match:
+                grade, section, track = match.groups()
+                tracks[canonical(f"{grade}/{section}")] = TRACKS[track]
+        for ws in data_sheets:
+            start = self._data_start(ws)
+            if start is None:
+                continue
+            for row in ws.iter_rows(min_row=start, values_only=True):
+                cells = [("" if c is None else str(c).strip()) for c in row[:4]]
+                if len(cells) < 4 or not NATIONAL_ID.match(cells[0]):
+                    continue
+                national_id, name, _grade, section = cells
+                seen[national_id] += 1
+                roster[national_id] = (name, canonical(section))
+        wb.close()
+
+        if not roster:
+            raise CommandError("لم يُقرأ طالبٌ واحد — تأكّد أنّه سجلّ القيد.")
+        repeated = [k for k, n in seen.items() if n > 1]
+        if repeated:
+            raise CommandError(f"أرقامٌ مكرّرةٌ في السجلّ: {', '.join(repeated[:5])}")
+        return roster, tracks
+
+    #: رأسُ العمود الأوّل في الشكلين — به يُعرَف سطرُ الرؤوس.
+    ID_HEADER = "الرقم الشخصي"
+
+    def _data_start(self, worksheet):
+        """أوّلُ سطرِ بياناتٍ في الورقة، أو `None` إن لم تكن ورقةَ قيد.
+
+        أوراقُ الصفوف تضع رؤوسَها في الثالث، والورقةُ المسطّحةُ في الأوّل. ولا
+        يُفترض أحدُهما: يُبحث عن السطر الذي أوّلُ خليّةٍ فيه «الرقم الشخصي».
+        """
+        if worksheet.title.startswith("الصف-"):
+            return FIRST_DATA_ROW
+        for index, row in enumerate(worksheet.iter_rows(max_row=5, values_only=True), 1):
+            first = "" if not row or row[0] is None else " ".join(str(row[0]).split())
+            if first.replace("ى", "ي") == self.ID_HEADER:
+                return index + 1
+        return None
+
+    # ── الشُّعب ──────────────────────────────────────────────────────
+
+    def _plan_sections(self, school, year, roster, tracks):
+        """ما يجب أن يكون من شُعبٍ، وما هو قائمٌ، وأين خالف المسارُ السجلَّ."""
+        wanted = sorted({s for _, s in roster.values() if s != NO_SECTION})
+        existing = {
+            canonical(f"{g.grade[1:]}/{g.section}"): g
+            for g in ClassGroup.objects.filter(school=school, academic_year=year)
+        }
+
+        missing, wrong_track, labels = [], [], {}
+        for label in wanted:
+            group = existing.get(label)
+            expected = tracks.get(label, "")
+            if group is None:
+                missing.append((label, expected))
+                continue
+            labels[label] = group
+            if expected and group.track != expected:
+                wrong_track.append((label, group.track, expected, group))
+        return {
+            "wanted": wanted,
+            "missing": missing,
+            "wrong_track": wrong_track,
+            "labels": labels,
+            "tracks": tracks,
+        }
+
+    # ── الطلاب ───────────────────────────────────────────────────────
+
+    def _plan_students(self, school, year, roster, labels):
+        """يقسم السجلّ: من يُقيَّد، ومن لا حسابَ له، ومن لا شعبةَ له."""
+        # الطلابُ وحدهم: `absent` تُقارن السجلَّ بمن هم طلابٌ في المنصّة، ولو
+        # ضُمّ إليهم الطاقمُ لعُدّ كلُّ معلّمٍ «غائباً عن سجلّ القيد».
+        known = {
+            u.national_id: u
+            for u in CustomUser.objects.filter(
+                memberships__school=school,
+                memberships__role__name="student",
+                memberships__is_active=True,
+            ).distinct()
+        }
+        enrolled = {
+            e.student_id: e
+            for e in StudentEnrollment.objects.filter(
+                is_active=True, class_group__academic_year=year, class_group__school=school
+            ).select_related("class_group")
+        }
+
+        unknown, unplaced, to_enrol, already, moved, pending = [], [], [], [], [], []
+        for national_id, (name, section) in sorted(roster.items()):
+            if section == NO_SECTION:
+                unplaced.append((national_id, name))
+                continue
+            user = known.get(national_id)
+            if user is None:
+                unknown.append((national_id, name, section))
+                continue
+            group = labels.get(section)
+            current = enrolled.get(user.id)
+            if group is None:
+                # شعبتُه ستُنشأ في هذا التشغيل نفسه. ولولا هذا الدلو لسقط
+                # صامتاً — وهو ما كشفه أوّلُ تشغيلٍ جافّ: أربعةُ طلابٍ في
+                # شُعب الدعم لم يظهروا في أيّ خانة، ومجموعُ الخانات ٧٠٢ من ٧٠٦.
+                pending.append((national_id, name, section))
+                continue
+            if current is None:
+                to_enrol.append((user, group))
+            elif current.class_group_id == group.id:
+                already.append(national_id)
+            else:
+                moved.append((user, current, group))
+
+        absent = sorted(set(known) - set(roster))
+        return {
+            "pending": pending,
+            "unknown": unknown,
+            "unplaced": unplaced,
+            "to_enrol": to_enrol,
+            "already": already,
+            "moved": moved,
+            "absent": absent,
+            "known": known,
+        }
+
+    # ── العرض ────────────────────────────────────────────────────────
+
+    def _report(self, sections, students, options):
+        w = self.stdout.write
+        w("\n── الشُّعب ──")
+        w(f"  في السجلّ: {len(sections['wanted'])}")
+        if sections["missing"]:
+            w(self.style.WARNING(f"  تُنشأ ({len(sections['missing'])}):"))
+            for label, _track in sections["missing"]:
+                w(f"      {label}   (بلا مسار — يُضبط بـ set_class_tracks إن لزم)")
+        if sections["wrong_track"]:
+            w(
+                self.style.WARNING(
+                    f"  اسمُ ورقة السجلّ يخالف مسارَ المنصّة في "
+                    f"{len(sections['wrong_track'])} شعبة — ولا يُغيَّر شيء:"
+                )
+            )
+            for label, ours, theirs, _ in sections["wrong_track"]:
+                w(f"      {label}: المنصّة «{ours or '—'}» · ورقةُ السجلّ «{theirs}»")
+            w("      (الحَكَمُ ما يُدرَّس فعلاً — والضبطُ بـ set_class_tracks)")
+
+        w("\n── الطلاب ──")
+        w(f"  قيدُهم مطابقٌ أصلاً: {len(students['already'])}")
+        w(self.style.SUCCESS(f"  يُقيَّدون في شُعبهم: {len(students['to_enrol'])}"))
+        if students["moved"]:
+            w(self.style.WARNING(f"  يُنقلون من شعبةٍ إلى أخرى: {len(students['moved'])}"))
+            for user, current, group in students["moved"][:10]:
+                w(f"      {user.full_name}: {current.class_group} ← {group}")
+            if len(students["moved"]) > 10:
+                w(f"      … و{len(students['moved']) - 10} غيرهم")
+        if students["unknown"]:
+            style = self.style.SUCCESS if options["create_missing"] else self.style.ERROR
+            verb = "تُنشأ حساباتُهم" if options["create_missing"] else "بلا حساب — لن يُقيَّدوا"
+            w(style(f"  {verb}: {len(students['unknown'])}"))
+            by_section = Counter(s for _, _, s in students["unknown"])
+            for label, count in sorted(by_section.items()):
+                w(f"      {label}: {count}")
+        if students["pending"]:
+            w(self.style.SUCCESS(f"  يُقيَّدون في شُعبٍ تُنشأ الآن: {len(students['pending'])}"))
+            for _nid, name, label in students["pending"]:
+                w(f"      {label}: {name}")
+        if students["unplaced"]:
+            w(self.style.WARNING(f"  بلا شعبةٍ في السجلّ — يُتركون: {len(students['unplaced'])}"))
+            for national_id, name in students["unplaced"]:
+                w(f"      {national_id} — {name}")
+        if students["absent"]:
+            w(f"  في المنصّة وليسوا في السجلّ — لا يُمسّون: {len(students['absent'])}")
+
+    # ── الكتابة ──────────────────────────────────────────────────────
+
+    @transaction.atomic
+    def _write(self, school, year, roster, sections, students, options):
+        w = self.stdout.write
+
+        for label, _track in sections["missing"]:
+            grade, section = SECTION_LABEL.match(label).groups()
+            grade_key = f"G{grade}"
+            group = ClassGroup.objects.create(
+                school=school,
+                grade=grade_key,
+                section=section,
+                level_type="prep" if grade_key in PREP_GRADES else "sec",
+                academic_year=year,
+                is_active=True,
+            )
+            sections["labels"][label] = group
+        if sections["missing"]:
+            w(self.style.SUCCESS(f"أُنشئت {len(sections['missing'])} شعبة."))
+
+        # الشُّعبُ صارت قائمةً الآن — فيُعاد تخطيطُ الطلاب عليها كي يلحق بها من
+        # كانت شعبتُه معلَّقة. والتخطيطُ الأوّل كان للعرض، وهذا للكتابة.
+        students = self._plan_students(school, year, roster, sections["labels"])
+
+        created = 0
+        if options["create_missing"]:
+            from student_affairs.services import StudentService
+
+            issued = []
+            for national_id, name, section in students["unknown"]:
+                new_user = StudentService.create_student(
+                    school,
+                    {
+                        "national_id": national_id,
+                        "full_name": name,
+                        "class_group_id": sections["labels"][section].id,
+                    },
+                )
+                issued.append(
+                    {
+                        "role": "طالب",
+                        "nid": mask_national_id(new_user.national_id),
+                        "name": new_user.full_name,
+                        "password": new_user.initial_password,  # type: ignore[attr-defined]
+                    }
+                )
+                created += 1
+            w(self.style.SUCCESS(f"أُنشئ {created} حساباً وقُيّد أصحابُها."))
+            if issued:
+                write_credentials_csv(options["credentials_out"], issued)
+                w(
+                    f"كلماتُ المرور الأوّليّة العشوائيّة في: {options['credentials_out']} — "
+                    "الملفُّ سرٌّ: وزّعه ثمّ احذفه."
+                )
+
+        for user, group in students["to_enrol"]:
+            StudentEnrollment.objects.create(student=user, class_group=group, is_active=True)
+        for user, current, group in students["moved"]:
+            current.is_active = False
+            current.save(update_fields=["is_active"])
+            StudentEnrollment.objects.create(student=user, class_group=group, is_active=True)
+
+        total = len(students["to_enrol"]) + len(students["moved"]) + created
+        w(self.style.SUCCESS(f"\nاكتمل القيد: {total} طالباً في العام {year}."))
+        if students["unplaced"]:
+            w(
+                self.style.WARNING(
+                    f"وبقي {len(students['unplaced'])} بلا شعبة — قرارُهم لم يُتّخذ في السجلّ."
+                )
+            )
+
+    # ── مساعدات ──────────────────────────────────────────────────────
+
+    def _mapping(self, pairs):
+        """مطابقةُ ترقيمٍ صريحةٌ بين السجلّ والمدرسة: «12/2=12/4».
+
+        لا تُشتقّ من الأعداد ولا من المسار: اشتقاقٌ كهذا يضع سبعةَ طلابٍ في
+        جدول شعبةٍ أخرى إن أخطأ، ولا يُخبر أحداً. فمن أراد المطابقة كتبها.
+        """
+        mapping = {}
+        for pair in pairs:
+            if pair.count("=") != 1:
+                raise CommandError(f"مطابقةٌ بصيغةٍ غير مفهومة: «{pair}» — الصيغة 12/2=12/4")
+            register_label, school_label = (canonical(x) for x in pair.split("="))
+            if not SECTION_LABEL.match(register_label) or not SECTION_LABEL.match(school_label):
+                raise CommandError(f"مطابقةٌ بصيغةٍ غير مفهومة: «{pair}» — الصيغة 12/2=12/4")
+            mapping[register_label] = school_label
+        collisions = [v for v, n in Counter(mapping.values()).items() if n > 1]
+        if collisions:
+            raise CommandError(f"شعبتان في السجلّ تُطابقان شعبةً واحدة: {', '.join(collisions)}")
+        return mapping
+
+    def _school(self, code):
+        if code:
+            try:
+                return School.objects.get(code=code)
+            except School.DoesNotExist as exc:
+                raise CommandError(f"لا مدرسة بهذا الكود: {code}") from exc
+        schools = list(School.objects.all()[:2])
+        if len(schools) != 1:
+            raise CommandError("أكثرُ من مدرسة — حدّد --school بالكود.")
+        return schools[0]
+
+
+def _payload(value: str) -> str:
+    """الحزمةُ نفسُها، أو ما يقرؤه المدخلُ القياسيُّ إن كانت «-».
+
+    و«-» هي الصيغةُ الموصى بها: الحزمةُ في سطر الأوامر تضع بياناتِ 735 طالباً
+    في وسائط العمليّة — تُقرأ بـ`ps`، وتُسجَّل في سجلّات تشغيل الأوامر على
+    الخادم، وتبقى في تاريخ الصدَفة. وbase64 ترميزٌ لا تشفير.
+    """
+    if value != "-":
+        return value
+    import sys
+
+    data = sys.stdin.read().strip()
+    if not data:
+        raise CommandError("المدخلُ القياسيُّ فارغ — لم تصل حزمة.")
+    return data
+
+
+def _pack(roster, tracks) -> str:
+    import base64
+    import gzip
+    import json
+
+    payload = {
+        "roster": {nid: [name, section] for nid, (name, section) in roster.items()},
+        "tracks": dict(tracks),
+    }
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return base64.b64encode(gzip.compress(raw, 9)).decode("ascii")
+
+
+def _unpack(payload: str):
+    import base64
+    import gzip
+    import json
+
+    try:
+        data = json.loads(gzip.decompress(base64.b64decode(payload)).decode("utf-8"))
+    except (ValueError, OSError) as exc:
+        raise CommandError(f"حزمةُ --rows-b64 ليست gzip+base64 صالحة: {exc}") from exc
+    if not isinstance(data, dict) or "roster" not in data:
+        raise CommandError("الحزمةُ ليست سجلَّ قيد.")
+    roster = {nid: (row[0], row[1]) for nid, row in data["roster"].items()}
+    if not roster:
+        raise CommandError("الحزمةُ خالية.")
+    return roster, data.get("tracks", {})

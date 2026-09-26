@@ -1,0 +1,70 @@
+{% comment %}
+  مكوّن Skeleton Loading — SchoolOS v5.1
+  ════════════════════════════════════════
+  الاستخدام:
+    include "components/skeleton.html" with type="kpi" count=4
+    include "components/skeleton.html" with type="table" rows=5
+    include "components/skeleton.html" with type="card" count=3
+
+  المتغيرات:
+    type  — kpi | table | card | list
+    count — عدد العناصر (للـ kpi و card)
+    rows  — عدد الصفوف (للـ table)
+{% endcomment %}
+
+{% if type == "kpi" %}
+{# ── KPI Grid ── #}
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4" aria-hidden="true">
+  {% for i in "1234"|make_list|slice:count %}
+  <div class="kpi-card skeleton-kpi-card">
+    <div class="skeleton-pulse skeleton-text w-2/5 mb-3"></div>
+    <div class="skeleton-pulse skeleton-title w-3/4 mb-2"></div>
+    <div class="skeleton-pulse skeleton-text w-1/2"></div>
+  </div>
+  {% endfor %}
+</div>
+
+{% elif type == "table" %}
+{# ── Table Rows ── #}
+<div aria-hidden="true">
+  <div class="skeleton-pulse skeleton-header mb-1"></div>
+  {% for i in "12345"|make_list|slice:rows %}
+  <div class="skeleton-pulse skeleton-row"></div>
+  {% endfor %}
+</div>
+
+{% elif type == "card" %}
+{# ── Cards ── #}
+<div class="grid grid-cols-1 md:grid-cols-{{ count|default:3 }} gap-4" aria-hidden="true">
+  {% for i in "123"|make_list|slice:count %}
+  <div class="card-qatar p-4">
+    <div class="skeleton-pulse skeleton-title"></div>
+    <div class="skeleton-pulse skeleton-text"></div>
+    <div class="skeleton-pulse skeleton-text w-4/5"></div>
+    <div class="skeleton-pulse skeleton-text w-3/5"></div>
+  </div>
+  {% endfor %}
+</div>
+
+{% elif type == "list" %}
+{# ── List Items ── #}
+<div aria-hidden="true">
+  {% for i in "12345"|make_list %}
+  <div class="skeleton-list-item">
+    <div class="skeleton-pulse skeleton-list-avatar"></div>
+    <div class="skeleton-list-body">
+      <div class="skeleton-pulse skeleton-text w-1/2"></div>
+      <div class="skeleton-pulse skeleton-text w-4/5"></div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+{# ── Generic ── #}
+<div aria-hidden="true">
+  <div class="skeleton-pulse skeleton-title"></div>
+  <div class="skeleton-pulse skeleton-text"></div>
+  <div class="skeleton-pulse skeleton-text w-3/4"></div>
+</div>
+{% endif %}

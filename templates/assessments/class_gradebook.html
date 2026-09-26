@@ -1,0 +1,94 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui dict_filters %}
+{% block title %}كشف الدرجات — {{ setup.subject.name_ar }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/assessments/" parent_label="التقييمات" current="كشف الدرجات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "كشف الدرجات" subtitle=subtitle icon="grades" %}
+    <nav class="period-switch" aria-label="الفصل الدراسي">
+      {% for val, label in SEMESTERS %}
+        <a href="?semester={{ val }}" class="period-switch__item{% if semester == val %} is-current{% endif %}"{% if semester == val %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+      <a href="?semester=annual" class="period-switch__item{% if show_annual %} is-current{% endif %}"{% if show_annual %} aria-current="page"{% endif %}>السنوي (100)</a>
+    </nav>
+    <a data-app-file href="{% url 'export_gradebook' setup.id %}{% if not show_annual %}?semester={{ semester }}{% endif %}" class="btn-primary btn-sm">{% icon "export_excel" %} تصدير Excel</a>
+    <form method="post" action="{% url 'recalculate_class' setup.id %}" data-confirm="إعادة حساب جميع الدرجات؟">
+      {% csrf_token %}
+      <button type="submit" class="btn-secondary btn-sm">{% icon "refresh" %} إعادة الحساب</button>
+    </form>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام الكشف" %}
+    {% kpi "النتائج" summary.total tone="blue" title="النتائج السنويّة المحسوبة لهذه المادة" %}
+    {% kpi "ناجح" summary.passed tone="green" %}
+    {% kpi "راسب" summary.failed tone=failed_tone %}
+    {% kpi "المتوسط" summary.avg|default:"—" sub="من 100" tone="orange" title="متوسّط المجموع السنويّ" %}
+  {% endkpi_strip %}
+
+  {% filter_bar "بحثٌ في كشف الدرجات" live=True %}
+    {% field "q" "ابحث باسم الطالب" id="gradebook-search" hide_label=True grow=True placeholder="ابحث باسم الطالب..." autocomplete="off" %}
+  {% endfilter_bar %}
+
+  {% section_card "درجات الطلاب" meta=rows|length icon="students" flush=True empty="لا يوجد طلاب في هذا الفصل" %}{% if rows %}
+    <div class="table-wrap table-wrap-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">الطالب</th>
+            {% if not show_annual %}
+              {% for pkg in weighted_packages %}
+              <th scope="col" class="num" title="{{ pkg.get_package_type_display }}">{{ pkg.get_package_type_display|truncatechars:10 }} <small>/{{ pkg.effective_max_grade }}</small></th>
+              {% endfor %}
+              <th scope="col" class="num">المجموع <small>/{{ semester_max }}</small></th>
+            {% else %}
+              <th scope="col" class="num">الفصل الأول <small>/40</small></th>
+              <th scope="col" class="num">الفصل الثاني <small>/60</small></th>
+              <th scope="col" class="num">المجموع السنوي <small>/100</small></th>
+              <th scope="col" class="num">التقدير</th>
+            {% endif %}
+            <th scope="col" class="num">الحالة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr data-filter-row data-text="{{ row.student.full_name }}">
+            <td><a href="{% url 'student_report' row.student.id %}?year={{ setup.academic_year }}" class="link-maroon">{{ row.student.full_name }}</a></td>
+
+            {% if not show_annual %}
+              {% for cell in row.cells %}
+              <td class="num">{% if cell.score is not None %}<span class="grade-total is-{{ cell.tone }}">{{ cell.score }}</span>{% else %}<span class="grade-total is-muted">—</span>{% endif %}</td>
+              {% endfor %}
+              <td class="num">{% if row.semester_result and row.semester_result.total is not None %}<span class="grade-total is-{{ row.sem_tone }}">{{ row.semester_result.total }}</span>{% else %}<span class="grade-total is-muted">—</span>{% endif %}</td>
+              <td class="num">{% if row.sem_passed is None %}<span class="grade-total is-muted">—</span>{% elif row.sem_passed %}<span class="status-badge status-success">ناجح</span>{% else %}<span class="status-badge status-danger">راسب</span>{% endif %}</td>
+            {% else %}
+              <td class="num">{{ row.annual_result.s1_total|default:"—" }}</td>
+              <td class="num">{{ row.annual_result.s2_total|default:"—" }}</td>
+              <td class="num">{% if row.annual_result and row.annual_result.annual_total is not None %}<span class="grade-total is-{{ row.annual_tone }}">{{ row.annual_result.annual_total }}</span>{% else %}<span class="grade-total is-muted">—</span>{% endif %}</td>
+              <td class="num"><b>{{ row.annual_result.letter_grade|default:"—" }}</b></td>
+              <td class="num">{% if row.annual_result %}<span class="status-badge {{ status_tones|get_item:row.annual_result.status|default:'status-warning' }}">{{ row.annual_result.get_status_display }}</span>{% else %}<span class="grade-total is-muted">—</span>{% endif %}</td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  if (typeof window.smartFilter === 'function') {
+    window.smartFilter('gradebook-search', '[data-filter-row]', { textAttr: 'data-text' });
+  }
+});
+</script>
+{% endblock %}

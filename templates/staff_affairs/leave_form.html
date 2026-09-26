@@ -1,0 +1,42 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}طلب إجازة جديد{% endblock %}
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/staff-affairs/leave/" parent_label="الإجازات" current="طلب جديد" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-narrow">
+  {% page_header "طلب إجازة جديد" icon="leave" %}{% endpage_header %}
+
+  {% section_card "بيانات الطلب" icon="edit_record" %}
+    <form method="post" enctype="multipart/form-data">{% csrf_token %}
+      {% if form.non_field_errors %}{% callout "error" %}{{ form.non_field_errors|join:" · " }}{% endcallout %}{% endif %}
+
+      <div class="form-row">
+        {# الموظّف: قيمتُه معرّفُ المستخدم ونصُّه اسمُه الكامل — خياراتٌ مركّبةٌ لا تُعبَّر بـchoices، فالقائمةُ باليد بتسميتها #}
+        <div class="ui-field sa-span-2">
+          <label for="f-staff_id" class="ui-field__label">الموظف <span class="req-star" aria-hidden="true">*</span></label>
+          <select id="f-staff_id" name="staff_id" class="form-control" required>
+            <option value="">— اختر الموظف —</option>
+            {% for m in staff_members %}<option value="{{ m.user_id }}">{{ m.user.full_name }}</option>{% endfor %}
+          </select>
+        </div>
+        {% field "leave_type" "نوع الإجازة" type="select" choices=form.fields.leave_type.choices required=True %}
+        {% field "attachment" "مرفق" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" %}
+        {% field "start_date" "من" type="date" required=True %}
+        {% field "end_date" "إلى" type="date" required=True %}
+        {% field "reason" "السبب" type="textarea" rows=3 required=True placeholder="سبب الإجازة..." css="sa-span-2" %}
+      </div>
+
+      {% callout "warning" %}المرفق (كتقرير طبّي) بيانٌ صحّيّ ذو طبيعةٍ خاصّة؛ أرفِق ما يلزم لإثبات الإجازة فقط.{% endcallout %}
+
+      <div class="form-actions sa-form-footer">
+        <a href="{% url 'staff_affairs:leave_list' %}" class="btn-secondary btn-sm">إلغاء</a>
+        <button type="submit" class="btn-primary btn-sm">{% icon "status_success" %} تقديم الطلب</button>
+      </div>
+    </form>
+  {% endsection_card %}
+</div>
+{% endblock %}

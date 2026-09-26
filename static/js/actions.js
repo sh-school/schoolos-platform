@@ -1,0 +1,343 @@
+/* ══════════════════════════════════════════════════════════════════
+   actions.js — مفردات `data-*` معلنة بدل معالِجات الأحداث الداخلية
+   ══════════════════════════════════════════════════════════════════
+
+   سياسة أمن المحتوى تحمل `nonce` في `script-src`، ووجودُه يجعل المتصفّح
+   يتجاهل `'unsafe-inline'` تماماً — فتُحجب سمات `onclick` و`onchange`
+   وأمثالها، ولا ينفعها nonce لأنها سمات لا وسوم.
+
+   والبديل ليس نقل كل معالِج إلى سكربتٍ خاصّ به، بل مفرداتٌ معلنة يقرؤها
+   مستمعٌ مفوَّض واحد على `document`. فالسلوك يبقى في السمة كما كان — مقروءاً
+   بجانب العنصر — بلا شيفرةٍ قابلة للتنفيذ داخل الصفحة.
+
+   ولا `eval` هنا ولا `new Function`: كل فعلٍ مُسمّى ومُنفَّذ بشيفرةٍ ثابتة.
+
+   المفردات
+   ────────
+     data-autosubmit                 change  → يُرسل النموذج الحاضن
+     data-action="print|reload|back|stop"
+     data-loading                    submit  → دوّارةٌ على المفتاح المُرسِل (`is-loading`) حتى يُبدَّل المحتوى
+     data-confirm="نصّ"              submit  → يمنع الإرسال ما لم يُؤكَّد
+                                     (المُنفِّذ في `base.js` — نافذةٌ مخصّصة)
+     data-toggle="#sel"              click   → يقلب إخفاء الهدف (خاصية hidden)
+     data-toggle-class="#sel|صنف"    click   → يقلب صنفاً على الهدف
+     data-hide="#sel" / data-show="#sel"
+     data-remove="#sel|closest:.sel" click   → يحذف الهدف
+     data-click="#sel"               click   → ينقر الهدف نيابةً عنه
+     data-copy="نصّ"                 click   → ينسخ إلى الحافظة، و«تمّ النسخ» عائمةٌ ثانيتين
+     data-call="اسم"                 click   → يُنادي دالّةً من قائمةٍ بيضاء
+     data-arg="وسيط"                         → وسيطٌ واحد اختياريّ لـdata-call
+     data-mirror="#sel"              input   → يعكس القيمة نصّاً في الهدف
+     data-bulk                       الحاضنُ: نطاقُ اختيارٍ جماعيّ
+     data-bulk-all                   مربّعُ الرأس: يقلب مربّعات النطاق كلَّها
+     data-bulk-item                  مربّعُ سطر
+     data-bulk-count                 عنصرٌ يعرض عددَ المحدَّد
+     data-bulk-action                زرٌّ يُعطَّل ما لم يُحدَّد شيء
+     data-bulk-confirm="… {n} …"     نصُّ تأكيدٍ يحمل العدد (يكتب data-confirm)
+   ══════════════════════════════════════════════════════════════════ */
+
+(function () {
+  "use strict";
+
+  /* تحميلٌ مزدوج — صفحةٌ تُدرج الوحدة وترث قالباً يُدرجها كذلك — يعني تسجيل
+     المستمعات مرّتين، فيُنفَّذ كل فعلٍ مرّتين: تأكيدان متتاليان، وقلبٌ يعود
+     إلى ما كان. والحارس هنا يجعل الإدراج المكرّر بلا أثر. */
+  if (window.__schoolosActionsBound) return;
+  window.__schoolosActionsBound = true;
+
+  /* الدوالّ المسموح استدعاؤها بالاسم. القائمة بيضاء لا سوداء: اسمٌ غير مذكور
+     هنا لا يُنفَّذ — فلا تصير `data-call` باباً خلفياً لتنفيذٍ عشوائيّ. */
+  var CALLABLE = [
+    "goToSchedule",
+    "closeModal",
+    "toggleImportForm",
+    "toggleForm",
+    "toggleUpload",
+    "onFileSelected",
+    "fillJobTitle",
+    "filterProcs",
+    "applyFilter",
+    "submitScheduleView",
+    "installPWA",
+    "showToast",
+    "openPalette",
+  ];
+
+  function resolve(el, sel) {
+    if (!sel) return null;
+    if (sel.indexOf("closest:") === 0) return el.closest(sel.slice(8));
+    return document.querySelector(sel);
+  }
+
+  function on(type, attr, fn) {
+    document.addEventListener(
+      type,
+      function (e) {
+        var el = e.target.closest ? e.target.closest("[" + attr + "]") : null;
+        if (el) fn(el, e);
+      },
+      type === "submit" || type === "change" || type === "input",
+    );
+  }
+
+  /* ── إرسالٌ تلقائيّ عند تغيّر حقل داخل نموذج ───────────────────── */
+  on("change", "data-autosubmit", function (el) {
+    // `requestSubmit` يُطلق حدثَ submit فيلتقطه التنقّلُ بتبديل المحتوى (page-nav.js)؛ `submit()` كان يحمّل مستنداً كاملاً.
+    if (el.form) { if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit(); }
+  });
+
+  /* ── حالةُ التحميل: تُضاف بعد أن يستقرّ الإرسال (لم يُمنع بتأكيدٍ) وتُزال إن عاد المستند من ذاكرة التنقّل ── */
+  document.addEventListener("submit", function (e) {
+    var btn = e.submitter;
+    if (!btn || !btn.closest("[data-loading]") && !btn.hasAttribute("data-loading")) return;
+    setTimeout(function () { // مُنع الإرسال: تأكيدٌ معلَّق/مُلغى (لا دوّارة)، أو أخذه التنقّلُ بتبديل المحتوى (`#main-content.is-leaving` — فالدوّارة).
+      if (!e.defaultPrevented || document.querySelector("#main-content.is-leaving")) btn.classList.add("is-loading"); }, 0);
+  });
+  window.addEventListener("pageshow", function (e) {
+    if (e.persisted) document.querySelectorAll(".is-loading").forEach(function (b) { b.classList.remove("is-loading"); });
+  });
+
+  /* ── تأكيدٌ قبل الإرسال — مالكُه `base.js` وحدَه ──────────────────
+     كان هنا مستمعٌ في طور الالتقاط يستدعي `window.confirm` الأصليّ، وفي
+     `base.js` مستمعٌ في طور الفقاعة يبني نافذةً مخصّصة. والالتقاطُ يسبق
+     الفقاعة، و`preventDefault` لا يمنع الانتشار — فمن ضغط «إلغاء» في الأوّل
+     رأى الثانيَ يفتح، ومن أكّده أرسل الطلبَ الذي ألغاه للتوّ. وتأكيدان على
+     فعلٍ واحدٍ أسوأُ من واحد: أحدُهما يكذب.
+
+     فالمالكُ واحدٌ الآن: `base.js` — لأنّ النافذةَ المخصّصةَ عربيّةُ الاتّجاه
+     ومصمَّمةٌ للوضع الداكن، و`window.confirm` ليس كذلك. وهي تقرأ السمةَ من
+     النموذج ومن الزرّ المُرسِل كليهما، فلم يضع ما كان يعمل هنا. */
+
+  /* ── أفعالٌ مُسمّاة بلا وسيط ────────────────────────────────────── */
+  var ACTIONS = {
+    print: function () {
+      window.print();
+    },
+    reload: function () {
+      window.location.reload();
+    },
+    back: function () {
+      window.history.back();
+    },
+    stop: function (el, e) {
+      e.stopPropagation();
+    },
+  };
+
+  on("click", "data-action", function (el, e) {
+    var fn = ACTIONS[el.getAttribute("data-action")];
+    if (fn) fn(el, e);
+  });
+
+  /* ── إظهارٌ وإخفاءٌ وحذف ────────────────────────────────────────── */
+  on("click", "data-toggle", function (el) {
+    var t = resolve(el, el.getAttribute("data-toggle"));
+    if (t) t.hidden = !t.hidden;
+  });
+
+  on("click", "data-hide", function (el) {
+    var t = resolve(el, el.getAttribute("data-hide"));
+    if (t) t.hidden = true;
+  });
+
+  on("click", "data-show", function (el) {
+    var t = resolve(el, el.getAttribute("data-show"));
+    if (t) t.hidden = false;
+  });
+
+  on("click", "data-remove", function (el) {
+    var t = resolve(el, el.getAttribute("data-remove"));
+    if (t) t.remove();
+  });
+
+  /* صيغة "#sel|صنف" — الهدف والصنف مفصولان بشَرطة رأسية. */
+  on("click", "data-toggle-class", function (el) {
+    var spec = el.getAttribute("data-toggle-class").split("|");
+    var t = resolve(el, spec[0]);
+    if (t && spec[1]) t.classList.toggle(spec[1]);
+  });
+
+  on("click", "data-click", function (el) {
+    var t = resolve(el, el.getAttribute("data-click"));
+    if (t) t.click();
+  });
+
+  /* ── الحافظة ─── «تمّ النسخ» عائمةٌ عند العنصر نفسِه (لا عند المؤشّر —
+     لمسُ الجوّال بلا مؤشّر)، تختفي بعد ثانيتين. عنصرٌ واحدٌ مشتركٌ يُعاد
+     استعمالُه، لا عنصرٌ جديدٌ لكلّ نسخٍ — فلا تتراكم عند نقراتٍ متتالية. */
+  var copyFeedback = null;
+  var copyFeedbackTimer = null;
+  function showCopyFeedback(el) {
+    if (!copyFeedback) {
+      copyFeedback = document.createElement("span");
+      copyFeedback.className = "copy-feedback";
+      copyFeedback.setAttribute("role", "status");
+      copyFeedback.setAttribute("aria-live", "polite");
+      copyFeedback.textContent = "تمّ النسخ";
+      document.body.appendChild(copyFeedback);
+    }
+    var r = el.getBoundingClientRect();
+    copyFeedback.style.top = r.top + "px";
+    copyFeedback.style.insetInlineStart = r.left + r.width / 2 + "px";
+    copyFeedback.hidden = false;
+    if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = setTimeout(function () { copyFeedback.hidden = true; }, 2000);
+  }
+  on("click", "data-copy", function (el) {
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(el.getAttribute("data-copy")).then(function () {
+      showCopyFeedback(el);
+    });
+  });
+
+  /* ── نداءٌ بالاسم من القائمة البيضاء ───────────────────────────── */
+  on("click", "data-call", function (el) {
+    var name = el.getAttribute("data-call");
+    if (CALLABLE.indexOf(name) === -1) return;
+    var fn = window[name];
+    if (typeof fn !== "function") return;
+    var arg = el.getAttribute("data-arg");
+    fn(arg === null ? el : arg);
+  });
+
+  on("change", "data-call-change", function (el) {
+    var name = el.getAttribute("data-call-change");
+    if (CALLABLE.indexOf(name) === -1) return;
+    var fn = window[name];
+    if (typeof fn !== "function") return;
+    /* `data-filter` يعني توقيعاً من وسيطين: (المفتاح، القيمة). */
+    var key = el.getAttribute("data-filter");
+    if (key !== null) fn(key, el.value);
+    else fn(el);
+  });
+
+  /* ── عكسُ قيمة حقلٍ نصّاً ───────────────────────────────────────── */
+  on("input", "data-mirror", function (el) {
+    var t = resolve(el, el.getAttribute("data-mirror"));
+    if (t) t.textContent = el.value;
+  });
+
+  on("input", "data-mirror-next", function (el) {
+    if (el.nextElementSibling) el.nextElementSibling.textContent = el.value;
+  });
+
+  /* ── ضبط قيمة حقلٍ آخر: "#sel|قيمة" ────────────────────────────── */
+  on("click", "data-set-value", function (el) {
+    var spec = el.getAttribute("data-set-value").split("|");
+    var t = resolve(el, spec[0]);
+    if (t) t.value = spec.slice(1).join("|");
+  });
+
+  /* ── إغلاق نافذةٍ عائمة: ينادي closeModal إن وُجدت ثمّ يحذف الحاضن ── */
+  on("click", "data-close-modal", function (el) {
+    if (typeof window.closeModal === "function") window.closeModal();
+    var t = resolve(el, el.getAttribute("data-close-modal") || "closest:.q-modal-overlay");
+    if (t) t.remove();
+  });
+
+  /* ── الإغلاق بالنقر على الخلفية وحدها لا على محتواها ───────────── */
+  on("click", "data-close-on-backdrop", function (el, e) {
+    if (e.target !== el) return;
+    if (typeof window.closeModal === "function") window.closeModal();
+    el.remove();
+  });
+
+  /* ── قلبُ صنفٍ عند تغيّر مربّع اختيار: "#sel|صنف" ─────────────────
+     يُقلَب وفق حالة المربّع لا بالتناوب، فيبقى متّسقاً مع ما يراه المستخدم. */
+  on("change", "data-toggle-class-when", function (el) {
+    var spec = el.getAttribute("data-toggle-class-when").split("|");
+    var t = resolve(el, spec[0]);
+    if (t && spec[1]) t.classList.toggle(spec[1], !el.checked);
+  });
+
+  /* ── عرض اسم الملفّ المختار ─────────────────────────────────────── */
+  on("change", "data-file-name", function (el) {
+    var spec = el.getAttribute("data-file-name").split("|");
+    var t = resolve(el, spec[0]);
+    if (!t) return;
+    t.textContent = el.files && el.files[0] ? el.files[0].name : spec[1] || "";
+  });
+
+  /* ── إظهارُ حقلٍ حين تُطابق القيمة: "#sel|القيمة" ──────────────────
+     والهدفُ يُخفى بـ`hidden` في القالب لا بـ`display:none` داخليّ — فالنمطُ
+     الداخليّ أقوى من الخاصّية ولا يرفعه رفعُها. وتُقيَّم الحالةُ عند التحميل
+     أيضاً: المتصفّحُ يعيد قيمةَ القائمة بعد الرجوع بلا حدث تغيير. */
+  function syncShowWhen(el) {
+    var spec = el.getAttribute("data-show-when").split("|");
+    var t = resolve(el, spec[0]);
+    if (t) t.hidden = el.value !== spec[1];
+  }
+  on("change", "data-show-when", syncShowWhen);
+  document.addEventListener("DOMContentLoaded", function () {
+    var els = document.querySelectorAll("[data-show-when]");
+    for (var i = 0; i < els.length; i++) syncShowWhen(els[i]);
+  });
+
+  /* ── تنبيهٌ عائم: "نصّ|نوع" ─────────────────────────────────────── */
+  on("click", "data-toast", function (el) {
+    if (typeof window.showToast !== "function") return;
+    var spec = el.getAttribute("data-toast").split("|");
+    window.showToast(spec[0], spec[1] || "info");
+  });
+
+  /* ── اختيارٌ جماعيّ في جدول ──────────────────────────────────────
+     مربّعاتُ الأسطر قد تسكن جدولاً وزرُّ الإجراء نموذجاً خارجَه — فالنماذجُ
+     لا تتداخل، ولكلّ سطرٍ نموذجُ حذفه المفرد. والربطُ بسمة `form` في القالب:
+     المربّعُ يُرسَل مع نموذجٍ ليس أباه. وهذه الدوالُّ لا تعرف من ذلك شيئاً،
+     إنّما تعدّ المحدَّد وتُبقي الرأسَ والزرَّ والعدّادَ على وفاقه. */
+  function bulkSync(scope) {
+    if (!scope) return;
+    var items = scope.querySelectorAll("[data-bulk-item]");
+    var n = 0;
+    for (var i = 0; i < items.length; i++) if (items[i].checked) n++;
+
+    var all = scope.querySelectorAll("[data-bulk-all]");
+    for (var a = 0; a < all.length; a++) {
+      all[a].checked = n > 0 && n === items.length;
+      /* حالةٌ ثالثة: بعضٌ لا كلٌّ ولا لا شيء — والشرطةُ أصدقُ من علامةٍ كاذبة. */
+      all[a].indeterminate = n > 0 && n < items.length;
+    }
+
+    var counts = scope.querySelectorAll("[data-bulk-count]");
+    for (var c = 0; c < counts.length; c++) counts[c].textContent = String(n);
+
+    var actions = scope.querySelectorAll("[data-bulk-action]");
+    for (var b = 0; b < actions.length; b++) {
+      actions[b].disabled = n === 0;
+      var form = actions[b].form;
+      if (form && form.hasAttribute("data-bulk-confirm")) {
+        form.setAttribute(
+          "data-confirm",
+          form.getAttribute("data-bulk-confirm").split("{n}").join(String(n)),
+        );
+      }
+    }
+  }
+
+  on("change", "data-bulk-item", function (el) {
+    bulkSync(el.closest("[data-bulk]"));
+  });
+
+  on("change", "data-bulk-all", function (el) {
+    var scope = el.closest("[data-bulk]");
+    if (!scope) return;
+    var items = scope.querySelectorAll("[data-bulk-item]");
+    for (var i = 0; i < items.length; i++) items[i].checked = el.checked;
+    bulkSync(scope);
+  });
+
+  /* عند التحميل: المتصفّحُ يعيد حالةَ المربّعات بعد الرجوع بلا حدث تغيير،
+     فيُعاد الحسابُ مرّةً كي لا يقول العدّادُ صفراً وثلاثةٌ محدَّدة. */
+  document.addEventListener("DOMContentLoaded", function () {
+    var scopes = document.querySelectorAll("[data-bulk]");
+    for (var i = 0; i < scopes.length; i++) bulkSync(scopes[i]);
+  });
+
+  /* ── تعطيلُ حقلٍ تبعاً لمربّع اختيار: "#sel" ─────────────────────── */
+  on("change", "data-disables", function (el) {
+    var t = resolve(el, el.getAttribute("data-disables"));
+    if (!t) return;
+    t.disabled = el.checked;
+    t.style.opacity = el.checked ? "0.3" : "1";
+  });
+})();

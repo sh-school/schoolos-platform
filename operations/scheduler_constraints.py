@@ -1,0 +1,1067 @@
+"""
+scheduler_constraints.py — القيود الصلبة والمرنة للجدولة الذكية
+قطر
+═══════════════════════════════════════════════════════════════
+
+المرحلة 5: تحديث القيود حسب الخطة المتفق عليها:
+  HC4 (تحديث): الخميس إعدادي=6, ثانوي=7
+  HC5 (جديد): حد أقصى 3 حصص متتالية (صلب)
+  HC6 (جديد): مادة 5+/أسبوع: حد أقصى 2 بنفس اليوم
+  SC1 (تحديث): تفضيل 2 متتاليتين كحد أقصى
+  SC1b (جديد): PE والعلوم المعملية لا تُحسب ضمن المتتالية
+  SC7 (جديد): حصة مزدوجة لـ ART و TECH فقط
+  SC8 (جديد): مادة 5+/أسبوع بنفس اليوم يجب ألا تكون متتالية
+  HC10 (جديد): فراغُ المعلّم بين حصّتين لا يتجاوز سقفَه الشخصيّ (صلب لصاحبه)
+  HC20 (جديد): حصّتا المادّة في اليوم الواحد لا تتجاوران — والتوزيعُ نفسُه لـHC6
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from .scheduler_bell import (  # noqa: F401  (تُصدَّر من هنا لمن استوردها منه)
+    JOINABLE_GAP_MINUTES,
+    cells_joined,
+    joinable_pairs,
+    joinable_pairs_cached,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from .scheduler import ScheduleGrid, Task
+
+
+#: وكانت هنا `CONSECUTIVE_RESET_CODES = {"PE", "SCI"}` — رمزان يعنيان «حصّةٌ
+#: تقطع سلسلةَ التلاصق». والمعنى المقصودُ تغيُّرُ المكان أو النشاط لا اسمُ
+#: المادّة، وكلاهما في القاعدة: المكانُ موردٌ مسجَّل، والنشاطُ `pedagogy`.
+#: راجع `ScheduleGrid.teacher_consecutive_counted`.
+
+#: الازدواجُ يُقرأ من `Subject.requires_double_period` وحدَه — أي من شاشة
+#: إعدادات الجدول التي يملكها النائبُ الأكاديميّ.
+#:
+#: وكانت هنا مجموعةُ رموزٍ محفورةٌ `{"ART", "TECH"}` تُقرأ إلى جانب الحقل،
+#: فيصير زرُّ الشاشة كذبةً في حقّ مادّتين: يُطفئه النائبُ فلا ينطفئ الازدواج.
+#: وقرّرت الإدارةُ (2026-09-02) ألّا تُزدوَج التكنولوجيا، فلم يكن للقرار
+#: طريقٌ إلى الجدول ما دام الرمزُ يفرضه من الشيفرة.
+#:
+#: فمصدرٌ واحدٌ لا مصدران: ما في القاعدة هو الحكم.
+
+#: وكانت هنا `CORE_CODES` — سبعةُ رموزٍ محفورةٍ تعني «مادّةٌ أساسيّة». وحُذفت:
+#: طبيعةُ المادّة حقلٌ في القاعدة (`Subject.pedagogy`) يملكه النائبُ الأكاديميّ
+#: ويقرؤه المختبر، فكان الترجيحُ يوجّه بقائمةٍ والمقياسُ يحكم بحقل. ومصدرانِ
+#: لحقيقةٍ واحدةٍ يفترقان يوماً — وقد افترقا في `requires_double_period` قبلها.
+
+# عتبة المادة ذات النصاب العالي (5+ حصص/أسبوع)
+HIGH_WEEKLY_THRESHOLD = 5
+
+#: أوزانُ القيود المرنة — تُقاس ولا تُخمَّن.
+#:
+#: كانت محفورةً في مواضعها، فلم يكن أحدٌ يستطيع أن يجرّب وزناً ويقيس أثرَه.
+#: وأوّلُ قياسٍ بعد جمعها هنا كشف أنّ الجدولَ المولَّد يفوق المستوردَ في
+#: التتابع (249 زوجاً مقابل 142) — أي أنّ وزنَ عشرةٍ للتتابع لم يكن كافياً
+#: لمقاومة ترتيبٍ جشعٍ يملأ اليومَ حصّةً إثر حصّة.
+WEIGHTS = {
+    "consecutive": 10,
+    "gap": 8,
+    "subject_spread": 6,
+    "daily_load": 5,
+    #: يومٌ فارغٌ للمعلّم يُملأ قبل أن يُثقَّل يومٌ عامر، وحصصُ اليوم لا تتجاوز
+    #: حصّةَ القسمة (النصاب ÷ الأيّام) — «بنسبٍ متقاربة على الخمسة» (2026-09-04).
+    "day_balance": 6,
+    #: يومُ الحصّتين للمادّة أيُّ يومٍ عدا الخميس (قرار الإدارة 2026-09-04) — تفضيلٌ
+    #: قويّ لا قيدٌ صلب: قيداً صلباً أزال ستَّ حالاتٍ وأنتج ثمانيةً وعشرين يوماً من
+    #: التلاصق المخالف وثلاثَ حصصٍ بلا موضع (قياس 2026-09-04)؛ والراحةُ أهمّ.
+    #: والمتجاورةُ بحكمها (الفنّيّة، IT، CS، تكنولوجيا الثانوي) مستثناة.
+    "thursday_pair": 15,
+    #: الموادُّ الثقيلةُ في النصف الأوّل من اليوم — كان ثلاثةً فكان أضعفَ الأوزان كلِّها فلا يُسمع.
+    #: وقِيس على نسخة الإنتاج بتوليداتٍ كاملةٍ داخل معاملةٍ تُلغى (2026-09-24):
+    #:
+    #:     وزن   الرياضيات في السادسة/السابعة   الثقيلةُ في الصباح   مخالفاتٌ صلبة   درجةُ المختبر
+    #:       3            26.0%                        58.7%                5               79.7
+    #:       9            25.2%                        59.9%                7               79.2
+    #:      18            22.0%                        60.9%                1               79.7
+    #:      30            21.1%                        61.3%                4               80.6
+    #:      60            22.0%                        60.3%                5               80.4
+    #:
+    #: فمن 18 فأعلى يتحسّن كلُّ شيءٍ ولا يظهر ثمنٌ في المخالفات، وأفضلُها ثلاثون. وهدفُ الخارطة
+    #: (الرياضياتُ ≤ 15% في آخر اليوم) لا يبلغه الوزنُ وحدَه.
+    "core_early": 30,
+    "pe_after_break": 2,
+    "double_bonus": -5,
+    "high_weekly_adjacent": 7,
+    #: الحصّةُ السابعةُ آخرُ اليوم وأثقلُه. والقاعدةُ المطلوبة «سابعةٌ واحدةٌ
+    #: للمعلّم في الأسبوع»، ولا تُبلَغ بالمنع: في المدرسة مئةٌ واثنتا عشرةَ
+    #: خانةً سابعةً وثلاثةٌ وسبعون معلّماً — أي سابعةٌ ونصفٌ لكلٍّ في المتوسّط،
+    #: فالواحدةُ مستحيلةٌ حسابيّاً. فيُثقَّل الوزنُ ليقترب منها ما أمكن.
+    "extra_edge_period": 12,
+    #: مكافأةٌ (سالبة) لحصّةٍ أولى تُعطى لمن دون الحدّ الأدنى منها — تُقارب
+    #: العدالة «ما أمكن» ولا تضمنها؛ راجع `MIN_FIRST_PERIODS`.
+    "first_period_floor": -9,
+    #: يومُ التفريغ الذي طلبه المعلّم — ترجيحٌ قويٌّ لا قيدٌ صلب.
+    #:
+    #: كان الحقلُ يُحمَّل ويُمرَّر ولا يُقرأ في قيدٍ ولا ترجيح: يدخل حسابَ
+    #: السعة وقياسَ المختبر فقط. فمعلّمٌ نصابُه أربعُ حصصٍ وأيّامُه خمسةٌ طلب
+    #: تفريغَ الثلاثاء فوُضعت له فيه حصّة — وتركُه فارغاً كان مجّانيّاً
+    #: (قياس 2026-09-09). حقلٌ يَعِد ولا يفي أسوأُ من حقلٍ غائب.
+    #:
+    #: وصلباً لا يصلح: أربعون معلّماً يطلبون أيّاماً تُضيّق الأسبوعَ حتى
+    #: يستحيل. فوزنٌ يعلو التتابعَ والفراغَ ليُحترم ما لم يُسدَّ الطريق.
+    "free_day": 14,
+}
+
+
+# ══════════════════════════════════════════════════════════════
+# 1. القيود الصلبة (Hard Constraints)
+# ══════════════════════════════════════════════════════════════
+
+
+def check_teacher_conflict(grid: ScheduleGrid, day: int, period: int, teacher_id) -> bool:
+    """HC1: المعلم لا يُدرّس فصلين في نفس الوقت"""
+    return not grid.teacher_busy(teacher_id, day, period)
+
+
+def check_teacher_time_overlap(grid: ScheduleGrid, day: int, period: int, task: Task) -> bool:
+    """HC12: معلّمُ الطابقين يُحكَم بالساعة لا بالرقم.
+
+    الجرسان مختلفان: الحصّةُ الثانية في الأرضيّ 8:00–8:50 والثالثةُ في العلويّ
+    8:45–9:35، فرقمان مختلفان يتداخلان خمسَ دقائق — والخميسُ أشدّ. الرقمُ
+    وحده (HC1) لا يراه. فتُقارَن ساعةُ الخانة المقترحة بساعات خانات المعلّم
+    في اليوم نفسه، وأيُّ تداخلٍ ولو دقيقةً ممنوع. والتماسُّ (نهايةٌ = بداية)
+    بين طابقين شأنُ HC13.
+
+    وبلا أجراسٍ معروفة (لا `TimeSlotConfig`) يسقط الحكمُ ويبقى الرقم.
+    """
+    if not grid.band_times:
+        return True
+    for slot in task.slots(period):
+        mine = grid.interval(task.band_id, day, slot)
+        if mine is None:
+            continue
+        for member in task.members:
+            for other_p in grid.teacher_periods_on(member.teacher_id, day):
+                if other_p == slot:
+                    continue
+                other = grid.teacher_task_at(member.teacher_id, day, other_p)
+                if other is None:
+                    continue
+                theirs = grid.interval(other.band_id, day, other_p)
+                if theirs and mine[0] < theirs[1] and theirs[0] < mine[1]:
+                    return False
+    return True
+
+
+def check_band_transition(grid: ScheduleGrid, day: int, period: int, task: Task) -> bool:
+    """HC13: لا تماسَّ بين طابقين — حصّةٌ تنتهي 11:35 في الأرضيّ وأخرى تبدأ 11:35 في العلويّ.
+
+    كان التماسُّ جائزاً بعقوبةٍ مرنة (قرار 2026-09-04 الأوّل)، فبقي منه في
+    الجدول المولَّد حالتان لمعلّمَين يصعدان الدرجَ بلا دقيقة. فرُفع إلى قيدٍ
+    صلب (قرار 2026-09-04 الثاني). والتماسُّ بين نطاقين على جرسٍ واحدٍ في
+    اليوم (التاسع 2·3·4 والثانويُّ من الأحد إلى الأربعاء) حصّتان متتاليتان
+    في الطابق نفسه، لا انتقال — فلا يُمنع.
+
+    وبلا أجراسٍ معروفة يسقط الحكم.
+    """
+    if not grid.band_times:
+        return True
+    for slot in task.slots(period):
+        mine = grid.interval(task.band_id, day, slot)
+        if mine is None:
+            continue
+        for member in task.members:
+            for other_p in grid.teacher_periods_on(member.teacher_id, day):
+                if other_p == slot:
+                    continue
+                other = grid.teacher_task_at(member.teacher_id, day, other_p)
+                if other is None or grid.same_bell(other.band_id, task.band_id, day):
+                    continue
+                theirs = grid.interval(other.band_id, day, other_p)
+                if theirs and (mine[1] == theirs[0] or theirs[1] == mine[0]):
+                    return False
+    return True
+
+
+def check_day_coverage(
+    grid: ScheduleGrid, day: int, period: int, task: Task, allow_dense: bool = False
+) -> bool:
+    """HC14: لا يومَ فارغاً لمعلّمٍ نصابُه يبلغ أيّامَه — إلّا بتفريغٍ من الإعدادات.
+
+    يُحكَم بالاحتياط لا بالنتيجة: قبل وضع الحصّة يُعَدّ ما سيبقى للمعلّم
+    بعدها، وما بقي من أيّامه فارغاً. فإن كان الباقي لا يكفي لتغطية الفارغ
+    فالخانةُ ممنوعةٌ وإن كانت صحيحةً في ذاتها — لأنّها تستهلك حصّةً كان
+    يومٌ فارغٌ أولى بها. ومن نصابُه دون أيّامه (منسّقٌ بأربع حصص) مستثنى.
+
+    واليومُ المفرَّغُ كاملاً من الإعدادات ليس من أيّامه، فلا يُطلب ملؤه.
+
+    ويتنازل القيدُ في جولة الملاذ الأخير وحدَها (`allow_dense`): حصّةٌ بلا
+    موضعٍ أسوأُ من يومٍ فارغ — وحينها يُقال اليومُ الفارغُ باسم صاحبه في
+    سجلّ التوليد لا يُخفى.
+    """
+    if not grid.coverage or allow_dense:
+        return True
+    for member in task.members:
+        info = grid.coverage.get(member.teacher_id)
+        if info is None:
+            continue
+        placements, _periods, days = info
+        if placements < len(days) or day not in days:
+            continue
+        empty = grid.teacher_empty_days(member.teacher_id, days)
+        remaining = placements - grid.teacher_placed(member.teacher_id) - 1
+        empties_after = len(empty) - (1 if day in empty else 0)
+        if remaining < empties_after:
+            return False
+    return True
+
+
+def week_share(grid: ScheduleGrid, teacher_id: str) -> tuple[int, int] | None:
+    """(الحدُّ الأدنى، السقف) لحصص اليوم الواحد: النصابُ على أيّام المعلّم.
+
+    قرارُ الإدارة 2026-09-06: الفرقُ بين أثقل يومٍ وأخفّه لا يتجاوز حصّة —
+    ثماني عشرةَ = 3+4+4+4+3، وثلاثَ عشرةَ = 3+3+3+2+2، وأربعٌ = يومٌ فارغ.
+    """
+    info = grid.coverage.get(teacher_id) if grid.coverage else None
+    if not info:
+        return None
+    _placements, load, days = info
+    if not days:
+        return None
+    return load // len(days), -(-load // len(days))
+
+
+def check_week_balance_cap(grid: ScheduleGrid, day: int, period: int, task: Task) -> bool:
+    """HC16: لا يومَ فوق سقف القسمة — ولا يتنازل في الاسترخاء.
+
+    الحدُّ الأدنى لا يُفرض هنا: المولّدُ يضع الحصصَ واحدةً واحدة ولا يعرف كيف
+    ينتهي اليوم، فيُصلحه التحسينُ بعد اكتمال الجدول ويُبلّغ عنه المختبر.
+    """
+    for member in task.members:
+        share = week_share(grid, member.teacher_id)
+        if share is None:
+            continue
+        _floor, cap = share
+        # المزدوجةُ حصّتان في يومٍ بحكمها («مع مراعاة الحصص المتجاورة في موادها»)،
+        # والزوجُ لا يُشطر: معلّمُ فنونٍ نصابُه سبعةُ أزواجٍ لا يسعه نمطُ 3+3+3+3+2
+        # لأنّ يوماً بثلاثٍ لا يحمل زوجاً ونصفاً — فيُسمح للزوج أن يتجاوز السقفَ
+        # بحصّةٍ واحدة: 4+4+2+2+2. وقد أسقط السقفُ الصارم ستَّ حصص فنونٍ بلا موضع
+        # في أوّل توليدٍ محلّيّ (2026-09-06).
+        limit = cap + 1 if task.span > 1 else cap
+        if grid.teacher_periods_on_day(member.teacher_id, day) + task.span > limit:
+            return False
+    return True
+
+
+def check_week_floor_reservation(
+    grid: ScheduleGrid, day: int, period: int, task: Task, allow_dense: bool = False
+) -> bool:
+    """HC16ب: احتياطُ الحدّ الأدنى — كاحتياط التغطية (HC14) لكن بحصّة القسمة لا بواحدة.
+
+    الحدُّ الأدنى لا يُصلَح بعد اكتمال الجدول في مدرسةٍ إشغالُها ثمانيةٌ وتسعون
+    بالمئة: كلُّ خانةٍ في يوم النقص مشغولةٌ للشعبة، والتبديلُ يصطدم بانشغال
+    معلّم الحصّة الأخرى وتلاصقه (قياس 2026-09-06: 58 محاولةً بلا نجاح). فيُحجز
+    الحدُّ مسبقاً: قبل وضع الحصّة يُعَدّ ما سيبقى للمعلّم وما ستبقى أيّامُه
+    دون الحدّ، فإن كان الباقي لا يسدّ النقصَ رُفضت الخانةُ وإن صحّت في ذاتها.
+
+    ويتنازل في جولة الملاذ الأخير وحدَها (`allow_dense`) كما يتنازل احتياطُ
+    التغطية — وحينها يُسمّي المختبرُ من خرج عن النمط.
+    """
+    if not grid.coverage or allow_dense:
+        return True
+    for member in task.members:
+        info = grid.coverage.get(member.teacher_id)
+        if info is None:
+            continue
+        placements, load, days = info
+        if not days or day not in days:
+            continue
+        #: ومن مواضعُه دون أيّامه — فنّانٌ بثلاثِ مزدوجاتٍ على خمسةِ أيّام — لا يبلغ حدَّ كلِّ يوم
+        #: مهما وُزّعت: المزدوجةُ حصّتان في يومٍ بحكمها. فمستثنىً كما في التغطية (HC14)، وإلّا
+        #: رُفضت كلُّ خانةٍ للمزدوجة الثانية بهذا القيد وحدَه ولم تُوضع إلّا في الملاذ الأخير،
+        #: وعُدّ الجدولُ المنتهي مخالفاً وهو سليم.
+        if placements < len(days):
+            continue
+        floor = load // len(days)
+        if floor == 0:
+            continue
+        placed = sum(grid.teacher_periods_on_day(member.teacher_id, d) for d in days)
+        remaining = load - placed - task.span
+        gaps = 0
+        for d in days:
+            have = grid.teacher_periods_on_day(member.teacher_id, d)
+            if d == day:
+                have += task.span
+            gaps += max(0, floor - have)
+        if remaining < gaps:
+            return False
+    return True
+
+
+#: صفوفُ الثانويّ التي لا تجتمع فيها حصّتا مادّةٍ يومَ الخميس.
+THURSDAY_SINGLE_GRADES = frozenset({"G11", "G12"})
+
+
+def check_thursday_secondary_pair(grid: ScheduleGrid, day: int, period: int, task: Task) -> bool:
+    """HC17: يومَ الخميس لا حصّتان لمادّةٍ واحدةٍ في شعبة الحادي عشر أو الثاني عشر.
+
+    قيدٌ صلبٌ لا يسقط (قرار 2026-09-06)، وخُفّف نطاقُه إلى هذين الصفّين وحدهما؛
+    وما دونهما يبقى على الترجيح القويّ (SC14). والمزدوجةُ كتلةٌ واحدةٌ لا زوج.
+    """
+    if day != THURSDAY or task.grade not in THURSDAY_SINGLE_GRADES:
+        return True
+    if getattr(task, "prefers_double", False):
+        return True
+    return grid.subject_on_day(task.class_id, task.subject_id, THURSDAY) == 0
+
+
+def check_subject_not_adjacent(
+    grid: ScheduleGrid, day: int, period: int, task: Task, allow_adjacent: bool = False
+) -> bool:
+    """HC20: حصّتا المادّة في اليوم الواحد لا تتجاوران.
+
+    التباعدُ بين الأيّام يحسبه HC6 من القسمة ولا يحتاج وسماً: مادّةُ خمسِ حصصٍ
+    فأقلَّ سقفُها في اليوم واحدة، ومادّةُ ستٍّ يومٌ واحدٌ بحصّتين. فلم يبقَ إلّا
+    السؤالُ عن ذلك اليوم الواحد: أتقعان متلاصقتين فتصيرا حصّةً طويلةً بلا قصد؟
+
+    وكان هذا ترجيحاً مرناً (SC8) بوزن سبعة، فيُشترى بأيّ ربحٍ أثقلَ منه. وصار
+    منعاً — إلّا للمزدوجة، فتلاصقُها هو عينُ المقصود منها.
+
+    ورتبةُ كسره الرخصةُ الأولى لا المنعُ المطلق: تشديدُ التلاصق صلباً بلا كسرٍ
+    أنتج سابقاً ثمانيةً وعشرين يومَ تلاصقٍ مخالفٍ وثلاثَ حصصٍ بلا موضع. فزوجٌ
+    متلاصقٌ في جولة الاسترخاء خيرٌ من حصّةٍ تُترك بلا مكان.
+    """
+    if allow_adjacent or task.prefers_double:
+        return True
+    if grid.subject_on_day(task.class_id, task.subject_id, day) == 0:
+        return True
+    #: الجارتان: ما قبلَ أوّلِ خاناتها وما بعدَ آخرِها — والمزدوجةُ خانتان.
+    #: والحدُّ من سقف اليوم لا من رقمٍ محفور: خميسُ الإعداديّ ستُّ حصصٍ لا سبع.
+    last = get_max_periods_for_day(day, getattr(task, "level_type", ""))
+    neighbours = [at for at in (period - 1, period + task.span) if 1 <= at <= last]
+    #: والفسحةُ والصلاةُ تفصلان (قرارُ المالك 2026-09-24): جارةٌ تعبر استراحةً ليست تلاصقاً.
+    return not any(
+        (found := grid.get_task_at(task.class_id, day, at)) is not None
+        and found.subject_id == task.subject_id
+        and cells_joined(
+            grid,
+            day,
+            at,
+            task.band_id,
+            period if at < period else period + task.span - 1,
+            task.band_id,
+        )
+        for at in neighbours
+    )
+
+
+def check_class_conflict(grid: ScheduleGrid, day: int, period: int, class_id) -> bool:
+    """HC2: الفصل لا يأخذ مادتين في نفس الوقت
+
+    والشعبتانِ في التوقيت نفسه توازٍ لا تعارض: هذا هو معنى المدرسة. فيُسأل عن
+    خانةِ الشعبة وحدَها، لا عن ساكنِ التوقيت في المدرسة كلِّها.
+    """
+    return not grid.class_busy(class_id, day, period)
+
+
+def check_period_variety(grid: ScheduleGrid, period: int, task: Task) -> bool:
+    """HC7: لا تُكدَّس المادّةُ في حصّةٍ واحدةٍ من اليوم طوالَ الأسبوع.
+
+    كان الجدولُ يُخرج الرياضياتِ للثاني عشر/4 في الحصّة الخامسة **كلَّ يوم** —
+    وذلك لأنّ لا شيءَ كان يمنعه: القيودُ تنظر إلى اليوم ولا تنظر إلى موقع
+    الحصّة فيه.
+
+    والحدُّ مرّتان لا مرّة: أسبوعٌ بخمسة أيّامٍ ونصابٌ ستُّ حصصٍ لا يسع تنويعاً
+    كاملاً حين تضيق الخانات، ومنعُ التكرار بالكلّيّة يجعل الجدولَ متعذّراً في
+    مدرسةٍ إشغالُها ثمانيةٌ وتسعون بالمئة.
+    """
+    return grid.subject_at_period(task.class_id, task.subject_id, period) < MAX_SAME_PERIOD
+
+
+def check_resource_capacity(grid: ScheduleGrid, day: int, period: int, task: Task) -> bool:
+    """HC9: لا تتجاوز الحصصُ سعةَ المورد في التوقيت الواحد.
+
+    القيدُ على **المكان** لا على المعلّم ولا على الشعبة: خمسةُ معلّمي بدنيّةٍ
+    وملعبان، فلا تقع ثالثةٌ مهما كان المعلّمون فارغين. ومعملا حاسبٍ يتقاسمهما
+    أكثرُ من مادّة، فالسقفُ عليهما مجتمعَين.
+    """
+    return all(
+        grid.resource_load(resource_id, day, period) < capacity
+        for resource_id, capacity, *_ in task.resources
+    )
+
+
+#: دقائقُ الانتقال المسموحةُ بين مرحلتين على موردٍ واحد (قرار الإدارة
+#: 2026-09-08): صفٌّ يخرج وآخرُ يدخل في خمس دقائقَ لا فوضى، وما زاد فوضى.
+RESOURCE_OVERLAP_TOLERANCE = 5
+
+
+def check_resource_level_homogeneity(grid: ScheduleGrid, day: int, period: int, task: Task) -> bool:
+    """HC11: موردٌ لا يجمع مرحلتين في التوقيت الواحد.
+
+    الملعبانِ يتقاسمهما الإعداديّ والثانويّ، لكنّ حصّتَي بدنيّةٍ متزامنتين
+    تكونان من مرحلةٍ واحدة (قرار الإدارة 2026-09-03). السعةُ تقول «اثنتان»،
+    وهذا يقول «اثنتان من جنسٍ واحد». والمهمّةُ بلا مرحلةٍ معروفة تُعامَل
+    جنساً قائماً بذاته، فلا تُخلط بغيرها.
+
+    والحكمُ بالساعة لا بالرقم — وكان بالرقم وحدَه حتّى 2026-09-08، فمرّ منه
+    ما لا يُرى: الإعداديّ حصّتُه الثانية 8:00–8:50 والثانويّ ثالثتُه 8:45–9:35،
+    رقمان مختلفان يلتقيان في الملعب خمسَ دقائق؛ وأشدُّ منه الخميسَ حيث بلغ
+    التقاطعُ خمساً وعشرين دقيقة. وهو عيبُ HC12 نفسُه للمعلّمين، لم يكن نُقل
+    إلى الموارد. والحكمُ بالرقم يبقى احتياطاً حين لا جرسَ معروفاً.
+
+    والمزدوجةُ خانتان: تُفحص كلتاهما لا أولاهما وحدَها.
+    """
+    for resource_id, _capacity, same_level in task.resources:
+        if not same_level:
+            continue
+        for slot in task.slots(period):
+            if grid.resource_levels(resource_id, day, slot) - {task.level_type}:
+                return False
+            others = grid.resource_overlapping_levels(
+                resource_id, day, task.band_id, slot, RESOURCE_OVERLAP_TOLERANCE
+            )
+            if others - {task.level_type}:
+                return False
+    return True
+
+
+def check_double_not_split_by_break(grid: ScheduleGrid, day: int, period: int, task: Task) -> bool:
+    """HC19: المزدوجةُ لا تعبر فسحةً ولا صلاة.
+
+    حصّتان متلاصقتان بالرقم قد تفصلهما عشرون دقيقةً بالساعة: في الطابق
+    الأرضيّ تنتهي السادسةُ 12:20 وتبدأ السابعةُ 12:40، وبينهما الصلاة —
+    فالفنّيّةُ المزدوجةُ هناك حصّتان منفصلتان لا مزدوجة، يُصرَف الصفُّ بينهما
+    ويُجمع من جديد. وقعت ثلاثاً على الإنتاج وواحدةً محلّيّاً (2026-09-09).
+
+    وبلا استراحاتٍ معلَنةٍ يسقط الحكم.
+    """
+    if task.span < 2:
+        return True
+    slots = list(task.slots(period))
+    for first, second in zip(slots, slots[1:], strict=False):
+        if grid.break_between(task.band_id, day, first, second):
+            return False
+    return True
+
+
+def check_last_period_share(grid: ScheduleGrid, period: int, task: Task) -> bool:
+    """HC8: لا تتكدّس الحصّةُ السابعةُ على معلّمٍ بعينه.
+
+    والقاعدةُ المطلوبةُ «واحدةٌ في الأسبوع»، ولا تُبلَغ بالمنع: في المدرسة
+    مئةٌ واثنتا عشرةَ خانةً سابعةً وثلاثةٌ وسبعون معلّماً — فالواحدةُ مستحيلةٌ
+    حسابيّاً. فالحدُّ اثنتان، والوزنُ المرنُ المتصاعدُ يدفع نحو الواحدة داخله.
+
+    **والمنعُ للسابعة وحدَها وإن كان الترجيحُ للطرفين.** قِيست ثلاثُ صيغٍ على
+    بيانات المدرسة (2026-09-10، ثمانمئةٌ وتسعٌ وستّون حصّة):
+
+        السابعةُ وحدَها          متعذّر 0 · عدالةُ الأطراف 0.355 · تلاصق 52
+        الترجيحُ للطرفين         متعذّر 0 · عدالةُ الأطراف 0.366 · تلاصق 47
+        الترجيحُ + منعُ الأولى   متعذّر 5 · عدالةُ الأطراف 0.251 · تلاصق 58
+
+    فمنعُ الأولى يشتري العدالةَ بخمس حصصٍ بلا موضع — وخانةُ الأولى مئةٌ وخمسٌ
+    وعشرون على ثلاثةٍ وسبعين معلّماً، فسقفٌ صلبٌ عليها يُغلق ما لا يُفتح
+    بغيره. والترجيحُ وحدَه لا يشتري ولا يبيع: فرقُه عن الأصل داخلَ ضوضاء
+    التوليد نفسِها (تشغيلان بشيفرةٍ واحدةٍ أعطيا 72.0 و69.7).
+    """
+    if period != LAST_PERIOD:
+        return True
+    for m in task.members:
+        if grid.teacher_periods_at(m.teacher_id, LAST_PERIOD) >= MAX_LAST_PERIODS:
+            return False
+        #: وطرفا المعلّم لا يقعان على شعبةٍ واحدة: طرفُ اليوم أثقلُ ما فيه،
+        #: فإن تكرّر على الشعبة نفسها حمَلت وحدَها ضعفَ ما تحمله أخواتُها من
+        #: تعبِ ذلك المعلّم. فالثقلُ يُقسَم على الشُّعب كما يُقسَم على الأيّام.
+        if task.class_id in grid.teacher_classes_at(m.teacher_id, LAST_PERIOD):
+            return False
+    return True
+
+
+def check_subject_distribution(
+    grid: ScheduleGrid, day: int, task: Task, allow_dense: bool = False
+) -> bool:
+    """HC6: المادّةُ تُوزَّع على أيّام الأسبوع بالقسمة، لا تُكدَّس.
+
+        perDayCap = ⌈W / D⌉        daysAtCap = W mod D
+
+    فمادّةٌ بستّ حصصٍ في أسبوعٍ خماسيّ: أربعةُ أيّامٍ بحصّة، ويومٌ واحدٌ
+    بحصّتين. ومعلّمٌ مفرَّغٌ يوماً يعمل أربعةَ أيّام، فيصير المزدوجُ يومين.
+
+    وشرطان لا واحد: لا يومَ يتجاوز السقف، ولا عددَ الأيّام البالغةِ السقفَ
+    يتجاوز حصّتَه. فبالأوّل وحدَه يجوز 2+2+2 في ثلاثة أيّامٍ ويومان فارغان —
+    توزيعٌ يستوفي السقفَ ويُخالف القسمة.
+
+    وكان هنا قيدٌ أضيق: «مادّةُ 5+ حصصٍ لا تتجاوز حصّتين في اليوم». وهو صحيحٌ
+    في نتيجته لهذه الحالة، وصامتٌ عمّا دونها وعن عدد الأيّام.
+    """
+    #: `allow_dense` رخصةٌ تُصرَف في الجولة الأخيرة وحدَها: تسمح ليومٍ واحدٍ
+    #: بحصّةٍ زائدةٍ عن القسمة — مادّةٌ مرّتين في يومٍ ولا شيءَ منها في آخر.
+    #: وهي أغلى من رخصة التلاصق، فلا تُصرَف إلّا بعد أن تعجز تلك.
+    cap = task.per_day_cap + (1 if allow_dense else 0)
+    today = grid.subject_on_day(task.class_id, task.subject_id, day)
+    if today + 1 > cap:
+        return False
+
+    if today + 1 < cap:
+        return True
+
+    # هذه الحصّةُ تُبلغ اليومَ سقفَه — فهل بقي في الحصّة يومٌ يبلغه؟
+    from .scheduler import DAYS
+
+    at_cap = sum(
+        1
+        for d in DAYS
+        if d != day and grid.subject_on_day(task.class_id, task.subject_id, d) >= cap
+    )
+    return at_cap + 1 <= task.days_allowed_at_cap
+
+
+#: أقصى ما يُقبل من حصصٍ متلاصقةٍ للمعلّم الواحد — واحدةٌ أي: لا تلاصقَ.
+#:
+#: كان ثلاثاً، فأخرج المولّدُ إحدى وعشرين ثلاثيّةً بينما في الجدول المستورد —
+#: الذي وضعه بشرٌ — أربع. فصار اثنتين فسقطت الثلاثيّاتُ كلُّها، ثمّ قرّرت
+#: الإدارةُ ألّا تلاصقَ أصلاً فصار واحدة.
+#:
+#: والاستثناءُ الوحيد الحصّةُ المزدوجةُ المقصودة — أي مادّةٌ وُسِمت بالازدواج
+#: في إعدادات الجدول: المعلّمُ باقٍ مع شعبته في غرفته، وذلك هو الغرضُ لا
+#: عَرَضٌ يُتعب.
+MAX_CONSECUTIVE = 1
+
+#: سقفُ الحمل اليوميّ لمن لا تفضيلَ مكتوباً له.
+DEFAULT_MAX_DAILY = 5
+
+#: تفضيلٌ كتبته الإدارةُ في حقّ معلّمٍ بعينه يُضاعَف وزنُه على الافتراض العامّ:
+#: بوزنه الأصليّ (5) كان يسقط أمام الفراغ (8) والتتابع (10) فلا يُلزم شيئاً.
+EXPLICIT_PREFERENCE_FACTOR = 2
+#: الخميسُ — آخرُ الأسبوع وأقصرُه.
+THURSDAY = 4
+
+#: أكثرُ ما تتكرّر المادّةُ الواحدةُ في الموضع نفسِه من اليوم خلال الأسبوع.
+MAX_SAME_PERIOD = 2
+
+#: آخرُ حصّةٍ في اليوم.
+LAST_PERIOD = 7
+
+#: أكثرُ ما يُقبل من حصص طرفِ اليوم الواحد للمعلّم في الأسبوع — للأولى سقفُها
+#: وللسابعة سقفُها.
+#:
+#: المطلوبُ واحدة، وهي مستحيلةٌ حسابيّاً في هذه المدرسة: مئةٌ واثنتا عشرةَ
+#: خانةً سابعةً وثلاثةٌ وسبعون معلّماً — أي سابعةٌ ونصفٌ لكلٍّ في المتوسّط.
+#: فالحدُّ اثنتان، والوزنُ المتصاعدُ يدفع نحو الواحدة ما أمكن.
+MAX_LAST_PERIODS = 2
+
+#: أقلُّ ما يُطلب من حصص الأولى للمعلّم في الأسبوع، ترجيحاً لا منعاً (2026-09-17).
+#:
+#: حدٌّ أدنى صلبٌ (`never`) مستحيلٌ حسابيّاً هنا: مئةٌ وخمسٌ وعشرون خانةَ أولى
+#: على ثلاثةٍ وسبعين معلّماً (راجع `check_last_period_share`) — يلزم مئةٌ
+#: وستٌّ وأربعون لضمان اثنتين للجميع، فجوةُ إحدى وعشرين خانةً على الأقلّ. وقد
+#: جُرِّب فعلاً قيدٌ أخفّ من هذا (سقفٌ لا حدٌّ أدنى) على الأولى فأنتج خمسَ
+#: حصصٍ بلا موضع. فوزنٌ متصاعدٌ يقارب الاثنتين «ما أمكن» — لا يضمنهما — ولا
+#: يُصادم `extra_edge_period` الذي يعاقب من عنده طرفٌ فعلاً: هذا يكافئ من
+#: عنده أقلُّ من اثنتين، وذاك يعاقب من زاد عليهما.
+MIN_FIRST_PERIODS = 2
+
+
+def _wants_adjacency(grid: ScheduleGrid, task: Task, day: int, period: int) -> bool:
+    """الحصّةُ المزدوجةُ المقصودة: نفسُ المادّةِ لنفس الشعبة، ومادّةٌ تُزاوَج.
+
+    فالمعلّمُ يبقى مع شعبته في غرفته — وهذا هو الغرضُ لا عَرَضٌ يُتعب.
+    """
+    if not getattr(task, "prefers_double", False):
+        return False
+    return _neighbour_is_same_lesson(grid, task, day, period)
+
+
+def check_max_consecutive(
+    grid: ScheduleGrid, day: int, period: int, task: Task, allow_adjacent: bool = False
+) -> bool:
+    """HC5: لا أكثرَ من حصّتين متلاصقتين للمعلّم.
+
+    و`PE`/`SCI` تُعيد العدّاد: البدنيّةُ والعلومُ المعمليّةُ تغيّران المكانَ
+    والنشاطَ، فلا تُحسبان امتداداً لما قبلهما.
+
+    ويُسأل عن كلّ ساكنٍ في الشعبة المنقسمة: المعلّمانِ يعملان معاً، فتتابعُ
+    كلٍّ منهما تتابعُه هو.
+    """
+    if _wants_adjacency(grid, task, day, period):
+        return True
+    #: `allow_adjacent` تُرفع للمتعذّرات وحدَها في الجولة الأخيرة: زوجٌ يُسمح
+    #: به هنا خيرٌ من حصّةٍ تُترك بلا مكان — والثلاثيّةُ ممنوعةٌ في الحالين.
+    #:
+    #: أمّا سقفُ معلّمٍ بعينه فلا يُرفع بحال: قرارٌ في حقّه أثقلُ من سقفٍ عامٍّ
+    #: وُضع ليُقارَب. فمن مُنع من التجاور مُنع ولو بقيت حصّةٌ بلا مكان.
+    #: قرارٌ في حقّ الشخص يسبق كلَّ رخصةٍ عامّةٍ أو موضعيّة.
+    if task.consecutive_cap:
+        return all(
+            _run_length(grid, m.teacher_id, day, period, task.band_id) < task.consecutive_cap
+            for m in task.members
+        )
+
+    #: ولا رخصةَ موضعيّةَ لأحد: كانت العربيّةُ السداسيّةُ تُمنح زوجاً واحداً
+    #: «عن طيبِ خاطر»، وألغتها الإدارةُ 2026-09-06 — التجاورُ ضرورةٌ لا تفضيل،
+    #: فلا يُفتح إلّا في جولة الاسترخاء لحصّةٍ لا موضعَ لها.
+    limit = MAX_CONSECUTIVE + 1 if allow_adjacent else MAX_CONSECUTIVE
+    return all(
+        _run_length(grid, member.teacher_id, day, period, task.band_id) < limit
+        for member in task.members
+    )
+
+
+def check_max_gap(grid: ScheduleGrid, day: int, period: int, task: Task) -> bool:
+    """HC10: فراغُ المعلّم بين حصّتين لا يتجاوز سقفَه الشخصيّ.
+
+    والفراغُ لعامّة الكادر ترجيحٌ مرنٌ (SC2): يُثقَّل ولا يُمنع، لأنّ منعَه
+    للجميع يُغلق جدولاً إشغالُه ثمانيةٌ وتسعون بالمئة. أمّا من قرّرت الإدارةُ
+    في حقّه سقفاً فسقفُه صلبٌ لا يُرفع في الاسترخاء — شأنَ `consecutive_cap`.
+
+    ومعلّمٌ سقفُه فراغٌ واحدٌ ولا تلاصقَ له: حصصُه في اليوم تتباعد حصّةً حصّة
+    — الثانيةُ فالرابعةُ فالسادسة، لا الثالثةُ فالسادسة.
+
+    والقياسُ على اليوم كلِّه بعد الوضع، لا على الجارِ وحدَه: خانةٌ تُوضع بين
+    حصّتين متباعدتين تُضيّق الفراغَ ولا توسّعه، فلا يصحّ أن تُمنع.
+    """
+    if task.gap_cap is None:
+        return True
+    slots = list(task.slots(period))
+    return all(
+        grid.teacher_widest_gap_with(m.teacher_id, day, slots) <= task.gap_cap for m in task.members
+    )
+
+
+def _run_length(
+    grid: ScheduleGrid, teacher_id: str, day: int, period: int, band_id: str = ""
+) -> int:
+    """طولُ التلاصق المتّصل حول هذه الخانة — بلا استثناءِ مادّةٍ ولا صنف.
+
+    ولا يعبر استراحةً: الفسحةُ والصلاةُ تفصلان (قرارُ المالك 2026-09-24)، فيُحكم
+    بالساعة لا برقم الحصّة (`scheduler_bell`). وبلا جرسٍ معروفٍ يبقى الرقمُ حَكَماً.
+
+    و`teacher_consecutive_counted` تُعفي `PE`/`SCI` من العدّ، وهو تخفيفٌ يليق
+    بترجيحٍ مرن. أمّا المنعُ الصلبُ فيسأل سؤالاً واحداً: أيقف المعلّمُ حصّتين
+    متلاصقتين أم لا؟ والبدنيّةُ حصّةٌ يقفها كغيرها.
+    """
+    count = 0
+    for step in (-1, 1):
+        at, at_band = period, band_id
+        neighbour = period + step
+        while 1 <= neighbour <= 7 and grid.teacher_busy(teacher_id, day, neighbour):
+            found = grid.teacher_task_at(teacher_id, day, neighbour)
+            band = getattr(found, "band_id", "") or ""
+            if not cells_joined(grid, day, at, at_band, neighbour, band):
+                break
+            count += 1
+            at, at_band = neighbour, band
+            neighbour += step
+    return count
+
+
+#: سقفُ حصص الشعبة في اليوم مصونٌ بهذا المدى وحده.
+#:
+#: وكانت هنا أيضاً `check_high_weekly_daily_limit` تحرس سقفَ حصّتين لمادّةِ
+#: خمسٍ فأكثر، ولا تُستدعى من موضع. وحُذفت لأنّ `check_subject_distribution`
+#: (HC6) يحسب السقفَ من القسمة لكلّ مادّةٍ لا لعاليةِ النصاب وحدَها، وأدقَّ:
+#: مادّةُ خمسٍ سقفُها واحدةٌ لا اثنتان.
+#:
+#: وكانت قبلَهما `check_day_capacity` تعدّ حصصَ الشعبة وتقارنها بالسقف، ولم تكن
+#: تُستدعى من أيّ موضع. وحُذفت لأنّها لا تضيف ثابتاً مستقلّاً: الشعبةُ لا تشغل
+#: خانتين في الحصّة الواحدة (`check_class_conflict`)، والحصصُ محدودةٌ بالمدى
+#: أدناه — فعددُها في اليوم لا يتجاوزه بحال. ودالّةٌ تبدو حارساً وليست في
+#: المسار فخٌّ لمن يقرأ بعدنا.
+def get_max_periods_for_day(day: int, level_type: str = "") -> int:
+    """
+    HC4 (تحديث): الحد الأقصى لحصص اليوم.
+    الخميس (day=4): إعدادي=6, ثانوي=7.
+    باقي الأيام: 7 دائماً.
+    """
+    if day != 4:
+        return 7
+    if level_type == "prep":
+        return 6
+    if level_type == "sec":
+        return 7
+    return 6  # default = 6 (الأكثر تقييداً)
+
+
+def is_slot_valid(
+    grid: ScheduleGrid,
+    day: int,
+    period: int,
+    task: Task,
+    allow_adjacent: bool = False,
+    allow_dense: bool = False,
+) -> bool:
+    """تحقق من كل القيود الصلبة لخانة معينة — يقف عند أوّل رفض."""
+    return next(_refusals(grid, day, period, task, allow_adjacent, allow_dense), None) is None
+
+
+def slot_violations(
+    grid: ScheduleGrid,
+    day: int,
+    period: int,
+    task: Task,
+    allow_adjacent: bool = False,
+    allow_dense: bool = False,
+) -> list[str]:
+    """رموزُ القيود الصلبة التي ترفض هذه الخانة — كلُّها لا أوّلُها (SCH-01).
+
+    المصدرُ واحدٌ مع `is_slot_valid`: كلاهما يقرأ `_refusals`، فلا يفترق الحكمُ
+    عن تفسيره. وبلا رخصٍ هو حكمُ المدقّق على جدولٍ منتهٍ (`scheduler_audit`).
+    """
+    return list(_refusals(grid, day, period, task, allow_adjacent, allow_dense))
+
+
+def _refusals(
+    grid: ScheduleGrid, day: int, period: int, task: Task, allow_adjacent: bool, allow_dense: bool
+) -> Iterator[str]:
+    """يُولِّد رمزَ كلِّ قيدٍ صلبٍ يرفض الخانة، بترتيب الكلفة.
+
+    ورتبةُ الكسر — من `grid.policy` — تقول أيُّ قيدٍ يتنازل في أيّ جولة. وهي
+    نوعان بحسب القيد: من عرف كيف يلين بنفسه تُمرَّر إليه الرخصةُ فيرفع سقفَه
+    (التلاصقُ من واحدٍ إلى اثنين، لا إلغاءً)، ومن لا سقفَ له يُرفع فكسرُه
+    تخطّيه في تلك الجولة وحدَها.
+    """
+    from .constraint_registry import REGISTRY
+
+    policy = grid.policy
+
+    def waived(code: str) -> bool:
+        """أيُتخطّى هذا القيدُ في هذه الجولة؟ — لمن لا يلين بنفسه."""
+        found = REGISTRY.get(code)
+        if found is None or found.relaxes_in_place:
+            return False
+        return policy.licence(code, allow_adjacent, allow_dense)
+
+    def eased(code: str) -> bool:
+        """رخصةُ هذه الجولة كما تقرؤها دالّةٌ تعرف كيف تلين."""
+        return policy.licence(code, allow_adjacent, allow_dense)
+
+    if period > get_max_periods_for_day(day, getattr(task, "level_type", "")):
+        yield "HC4"
+    if not check_teacher_conflict(grid, day, period, task.teacher_id):
+        yield "HC1"
+    if not check_class_conflict(grid, day, period, task.class_id):
+        yield "HC2"
+    if not check_teacher_time_overlap(grid, day, period, task):
+        yield "HC12"
+    if not check_band_transition(grid, day, period, task):
+        yield "HC13"
+    if not check_day_coverage(grid, day, period, task, eased("HC14")):
+        yield "HC14"
+    if not waived("HC16") and not check_week_balance_cap(grid, day, period, task):
+        yield "HC16"
+    if not check_week_floor_reservation(grid, day, period, task, eased("HC16B")):
+        yield "HC16B"
+    if not waived("HC17") and not check_thursday_secondary_pair(grid, day, period, task):
+        yield "HC17"
+    if not check_subject_not_adjacent(grid, day, period, task, eased("HC20")):
+        yield "HC20"
+    if not check_max_consecutive(grid, day, period, task, eased("HC5")):
+        yield "HC5"
+    if not check_subject_distribution(grid, day, task, eased("HC6")):
+        yield "HC6"
+    if not waived("HC7") and not check_period_variety(grid, period, task):
+        yield "HC7"
+    if not waived("HC8") and not check_last_period_share(grid, period, task):
+        yield "HC8"
+    if not check_resource_capacity(grid, day, period, task):
+        yield "HC9"
+    if not waived("HC11") and not check_resource_level_homogeneity(grid, day, period, task):
+        yield "HC11"
+    if not check_double_not_split_by_break(grid, day, period, task):
+        yield "HC19"
+    if not check_max_gap(grid, day, period, task):
+        yield "HC10"
+
+
+# ══════════════════════════════════════════════════════════════
+# 2. القيود المرنة (Soft Constraints)
+# ══════════════════════════════════════════════════════════════
+
+
+@dataclass
+class SoftPenalty:
+    """نتيجة تقييم القيود المرنة لخانة"""
+
+    total: float = 0.0
+    details: dict = field(default_factory=dict)
+
+    def add(self, name: str, weight: float, violated: bool):
+        if violated:
+            self.total += weight
+            self.details[name] = weight
+
+
+def daily_load_weight(teacher_today: int, pref: dict | None, weight: float | None = None) -> float:
+    """وزنُ تجاوز الحمل اليوميّ: صفرٌ دون السقف، ثمّ يتصاعد بمقدار التجاوز.
+
+    والتفضيلُ المكتوب في حقّ معلّمٍ بعينه يُضاعَف — وبوزنه الأصليّ كان يسقط
+    أمام الفراغ (8) والتتابع (10) فلا يُلزم شيئاً.
+    """
+    max_daily = (pref or {}).get("max_daily", DEFAULT_MAX_DAILY)
+    if teacher_today < max_daily:
+        return 0.0
+    over = teacher_today - max_daily + 1
+    base = WEIGHTS["daily_load"] if weight is None else weight
+    return base * over * (EXPLICIT_PREFERENCE_FACTOR if pref else 1)
+
+
+def _neighbour_is_same_lesson(grid: ScheduleGrid, task: Task, day: int, period: int) -> bool:
+    """هل جارُ هذه الخانة — قبلَها أو بعدَها — نفسُ المادّة لنفس الشعبة؟"""
+    for step in (-1, 1):
+        neighbour = period + step
+        if 1 <= neighbour <= 7:
+            other = grid.get_task_at(task.class_id, day, neighbour)
+            if other is not None and other.subject_id == task.subject_id:
+                return True
+    return False
+
+
+def _unbalances_the_week(
+    grid: ScheduleGrid, day: int, period: int, task: Task, teacher_today: int
+) -> bool:
+    """SC13: أيُثقَّل يومٌ عامرٌ ويومٌ آخرُ فارغ، أو يُتجاوَز نصيبُ اليوم من القسمة؟"""
+    info = grid.coverage.get(task.teacher_id) if grid.coverage else None
+    if not info:
+        return False
+    _placements, load, days = info
+    today = teacher_today
+    if grid.teacher_task_at(task.teacher_id, day, period) is task:
+        today -= 1
+    empty_elsewhere = any(
+        d != day and grid.teacher_periods_on_day(task.teacher_id, d) == 0 for d in days
+    )
+    fair_share = -(-load // max(1, len(days)))
+    return (today > 0 and empty_elsewhere) or today >= fair_share
+
+
+def evaluate_soft_constraints(
+    grid: ScheduleGrid,
+    day: int,
+    period: int,
+    task: Task,
+    preferences: dict | None = None,
+) -> SoftPenalty:
+    """تقييم القيود المرنة لتحديد أفضل خانة.
+
+    والأوزانُ من `grid.policy` لا من الثابت مباشرةً: افتراضُها هو `WEIGHTS`
+    نفسُه — يحرس تطابقَهما اختبار — ويعلوه ما عايرته الإدارةُ لهذا العام.
+    """
+    penalty = SoftPenalty()
+    weights = grid.policy.weights
+
+    # ── SC15: يومُ التفريغ الذي طلبه المعلّم يُترك فارغاً ما أمكن ──
+    #
+    # صفةُ اليوم لا الخانة: كلُّ خانةٍ فيه تحمل العقوبةَ نفسَها، فيُزاح العملُ
+    # إلى غيره ما دام في غيره موضع. وبلا تفضيلٍ مكتوبٍ لا عقوبةَ أصلاً.
+    wanted_free = ((preferences or {}).get(task.teacher_id) or {}).get("free_day")
+    penalty.add("free_day", weights["free_day"], wanted_free is not None and wanted_free == day)
+
+    # ── SC1 (تحديث): تتابع الحصص — تفضيل 2 كحد أقصى (3 = عقوبة) ──
+    consecutive = grid.teacher_consecutive_counted(task.teacher_id, day, period, task.band_id)
+    # الحصّةُ المزدوجةُ استثناءٌ مقصود: مادّةٌ وُسِمت بالازدواج تُرجَّح متجاورةً
+    # لأنّ المعلّمَ يبقى مع الشعبة نفسها في الغرفة نفسها — فليست تتابعاً
+    # يُتعب، بل هي الغرضُ نفسُه. وما عداها يُعاقَب من أوّل تلاصق.
+    wants_adjacent = getattr(task, "prefers_double", False) and _neighbour_is_same_lesson(
+        grid, task, day, period
+    )
+    penalty.add("consecutive", weights["consecutive"], consecutive >= 1 and not wants_adjacent)
+
+    # ── SC2: فراغات المعلم — تقليل الفجوات ──
+    creates_gap = grid.would_create_gap(task.teacher_id, day, period)
+    penalty.add("gap", weights["gap"], creates_gap)
+
+    # ── SC3: التوزيعُ يملأ الأيّامَ الفارغةَ قبل أن يُضاعف ──
+    #
+    # كان يعاقب **كلَّ** حصّةٍ ثانيةٍ في اليوم، فسجّل ٧٩٢ «مخالفة» في جدولٍ
+    # صحيح: لأنّ كلَّ مادّةٍ سداسيّةٍ يلزمها يومٌ مزدوجٌ بالضرورة، فكان
+    # المقياسُ يعاقب الصوابَ ويسمّيه خطأً.
+    #
+    # والقسمةُ الآن قيدٌ صلب (`check_subject_distribution`)، فلم يبقَ لهذا
+    # الوزن إلّا ترتيبُ الأفضليّة: املأ يوماً فارغاً قبل أن تُضاعف يوماً عامراً.
+    # العدُّ يستثني المهمّةَ نفسَها حين تكون موضوعةً سلفاً.
+    #
+    # فالدالّةُ تُستدعى مرّتين: قبل الوضع لترجيح الخانة — والمهمّةُ حينها ليست
+    # في الشبكة — وبعد التوليد لحساب الجودة، وهي حينها فيها. فبلا هذا
+    # الاستثناء يصير «عندي حصّةٌ اليوم» صادقاً عن نفسه دائماً، فتُحسب مخالفةٌ
+    # لكلّ حصّةٍ في المدرسة.
+    same_subject_today = grid.subject_on_day(task.class_id, task.subject_id, day)
+    if grid.get_task_at(task.class_id, day, period) is task:
+        same_subject_today -= 1
+
+    is_double = getattr(task, "prefers_double", False)
+    if not is_double:
+        from .scheduler import DAYS
+
+        empty_days = sum(
+            1
+            for d in DAYS
+            if grid.subject_on_day(task.class_id, task.subject_id, d) == 0 and d != day
+        )
+        penalty.add(
+            "subject_spread", weights["subject_spread"], same_subject_today > 0 and empty_days > 0
+        )
+
+    # ── SC4: موازنة الأحمال — تقليل فرق الحصص اليومية للمعلم ──
+    #
+    # وكانت العقوبةُ مسطّحةً: خمسُ نقاطٍ للرابعة كما للسابعة، فبعد أوّل تجاوزٍ
+    # يصير الإثقالُ مجّاناً. وكانت تُسوّي بين تفضيلٍ كتبته الإدارةُ في حقّ
+    # معلّمٍ بعينه وبين الافتراض العامّ — فوزنُ خمسةٍ دون الفراغ (8) والتتابع
+    # (10)، فيسقط التفضيلُ كلّما زاحمه أحدُهما. (قياس 2026-09-06: معلّمٌ
+    # تفضيلُه ثلاثٌ ونصابُه خمسَ عشرةَ — قسمتُه ثلاثٌ بالضبط — فجاء 4·2·3·2·4.)
+    teacher_today = grid.teacher_periods_on_day(task.teacher_id, day)
+    load_weight = daily_load_weight(
+        teacher_today, (preferences or {}).get(task.teacher_id), weights["daily_load"]
+    )
+    penalty.add("daily_load", load_weight, load_weight > 0)
+
+    # ── SC14: الحصّةُ الثانيةُ للمادّة يومَ الخميس تُتجنَّب ما وُجد بديل ──
+    penalty.add(
+        "thursday_pair",
+        weights["thursday_pair"],
+        day == THURSDAY and not getattr(task, "prefers_double", False) and same_subject_today > 0,
+    )
+
+    # ── SC13: بنسبٍ متقاربة على الأيّام — يومٌ فارغٌ أوّلاً، ولا يومَ فوق حصّة القسمة ──
+    penalty.add(
+        "day_balance",
+        weights["day_balance"],
+        _unbalances_the_week(grid, day, period, task, teacher_today),
+    )
+
+    # ── SC9: طرفٌ واحدٌ للمعلّم ما أمكن — أوّلُ اليوم وآخرُه سواء ──
+    if period in (1, LAST_PERIOD):
+        # العقوبةُ تتصاعد: من عنده ثلاثةُ أطرافٍ يُثقَّل أكثرَ ممّن عنده واحد،
+        # فتنساب الأطرافُ على الكادر بدل أن تتكدّس على قلّةٍ منه.
+        #
+        # والعدُّ للطرفين معاً كما يعدّهما مقياسُ «عدالة الأولى والسابعة»: من
+        # بدأ يومَه أوّلَ الدوام كمن أنهاه آخرَه (قرار الإدارة 2026-09-10).
+        already = max(grid.teacher_edge_periods(m.teacher_id) for m in task.members)
+        penalty.add("extra_edge_period", weights["extra_edge_period"] * already, already >= 1)
+
+    # ── جديد (2026-09-17): تفضيلُ حصّةٍ أولى لمن دون الحدّ الأدنى منها ──
+    #
+    # ترجيحٌ لا قيدٌ صلب — المستحيلُ حسابيّاً هنا لا يشتري إلّا حصصاً بلا
+    # موضع (راجع `MIN_FIRST_PERIODS`). والمكافأةُ تتصاعد: من عنده صفرٌ يُرجَّح
+    # أكثر ممّن عنده واحدة، فتنساب الأولى على من ينقصه لا على من اكتفى.
+    if period == 1:
+        already_first = max(grid.teacher_periods_at(m.teacher_id, 1) for m in task.members)
+        missing_first = MIN_FIRST_PERIODS - already_first
+        penalty.add(
+            "first_period_floor",
+            weights["first_period_floor"] * max(missing_first, 0),
+            missing_first > 0,
+        )
+
+    # ── SC5: المادّةُ الثقيلةُ في النصف الأوّل من اليوم ──
+    #
+    # والطبيعةُ من `Subject.pedagogy` لا من رموزٍ محفورة: مؤشّرُ المختبر
+    # «الموادُّ الثقيلة في النصف الأوّل» يقرأ الحقلَ نفسَه، فيوجّه الترجيحُ
+    # إلى ما يقيسه المقياسُ بحدّه نفسِه (`MORNING_LAST`) — وكان يعاقب السادسةَ
+    # فصاعداً بينما يقيس المختبرُ الخامسةَ فصاعداً، فيُثقَّل جدولٌ ويُقاس بغيره.
+    penalty.add("core_early", weights["core_early"], task.pedagogy == "heavy" and period > 4)
+
+    # ── SC6: مادّةُ النشاط في النصف الثاني ──
+    #
+    # وكانت البدنيّةَ وحدَها بالرمز، في الحصّتين الرابعة والخامسة. والحدُّ الآن
+    # حدُّ المقياس، والمادّةُ كلُّ ما وُسِم نشاطاً — بدنيّةً كان أو فنّيّةً أو
+    # تكنولوجيا. فمن غيّرت الإدارةُ طبيعتَه في الشاشة تغيّر ترجيحُه في الجدول.
+    penalty.add(
+        "pe_after_break", weights["pe_after_break"], task.pedagogy == "activity" and period <= 4
+    )
+
+    _same_subject_neighbour_weights(
+        penalty, grid, day, period, task, is_double, same_subject_today, weights
+    )
+    return penalty
+
+
+def _same_subject_neighbour_weights(
+    penalty, grid, day, period, task, is_double, same_subject_today, weights
+):
+    """SC7 وSC8 — وكلاهما يسأل السؤالَ نفسَه: أجارُ الخانة نفسُ المادّة؟
+
+    والجوابُ يُثاب في المزدوجة ويُعاقَب في مادّة الخمسِ حصصٍ فأكثر. فُصلا عن
+    `evaluate_soft_constraints` لأنّها بلغت بهما حدَّ بوّابة الجودة (CC ≥ 31).
+    """
+    if same_subject_today != 1:
+        return
+
+    prev_task = grid.get_task_at(task.class_id, day, period - 1) if period > 1 else None
+
+    # SC7: المزاوجةُ صفةُ شعبةٍ ومادّة — تُقرأ داخل شعبتها لا في التوقيت العامّ.
+    if is_double and prev_task and prev_task.subject_id == task.subject_id:
+        penalty.add("double_bonus", weights["double_bonus"], True)  # مكافأة (قيمة سالبة)
+
+    # SC8: مادّةُ خمسِ حصصٍ فأكثر — حصّتاها في اليوم الواحد لا تتلاصقان.
+    if task.weekly_periods >= HIGH_WEEKLY_THRESHOLD:
+        next_task = grid.get_task_at(task.class_id, day, period + 1) if period < 7 else None
+        is_adj_same = (prev_task and prev_task.subject_id == task.subject_id) or (
+            next_task and next_task.subject_id == task.subject_id
+        )
+        penalty.add("high_weekly_adjacent", weights["high_weekly_adjacent"], is_adj_same)
+
+
+# ══════════════════════════════════════════════════════════════
+# 3. حساب نقاط الجودة الإجمالية
+# ══════════════════════════════════════════════════════════════
+
+
+def calculate_quality_score(
+    grid: ScheduleGrid, preferences: dict | None = None, total_required: int | None = None
+) -> dict:
+    """نقاطُ الجودة، ونسبةُ ما وُضِع من المطلوب — رقمان لا واحد.
+
+    فالنقاطُ تقيس جمالَ ما وُضع: تتابعاً وفجواتٍ وتوزيعاً. وجدولٌ فيه خمسٌ
+    وثلاثون حصّةً من ثمانمئةٍ وتسعٍ وأربعين قد يكون «جميلاً» بهذا المقياس —
+    وأُعلن مرّةً بـ«85.1%» وهو أربعةٌ في المئة من المطلوب. فالنسبةُ تُعلن
+    مستقلّةً كي لا يستر أحدُ الرقمين الآخر.
+    """
+    violations = {
+        "consecutive": 0,
+        "gap": 0,
+        "subject_spread": 0,
+        "daily_load": 0,
+        "day_balance": 0,
+        "thursday_pair": 0,
+        "core_early": 0,
+        "pe_after_break": 0,
+        "double_bonus": 0,
+        "high_weekly_adjacent": 0,
+    }
+    total_penalty = 0.0
+    total_slots = 0
+    # ما وُضع يُعَدّ بحصص التوزيعات لا بخانات الشبكة: الخانةُ المنقسمةُ بين
+    # مادّتين اختياريّتين حصّتان في التوزيعات، والمزدوجةُ خانتان. وكان العدُّ
+    # بالخانات فيقول «839/870» عن جدولٍ كامل.
+    placed_periods = 0
+
+    for entry in grid.all_entries():
+        total_slots += 1
+        task = entry["task"]
+        placed_periods += task.span * len(task.members)
+        day = entry["day"]
+        period = entry["period"]
+        p = evaluate_soft_constraints(grid, day, period, task, preferences)
+        total_penalty += p.total
+        for k, v in p.details.items():
+            violations[k] = violations.get(k, 0) + 1
+
+    # نقاط الجودة: 100 - (العقوبات المرجحة / العدد الكلي)
+    # مجموعُ الأوزان الموجبة — يتبع `WEIGHTS` ولا يُكتب رقماً جامداً.
+    ceiling = sum(w for w in WEIGHTS.values() if w > 0)
+    max_possible = total_slots * ceiling
+    if max_possible == 0:
+        score = 100.0
+    else:
+        score = max(0, 100 * (1 - total_penalty / max_possible))
+
+    required = total_required if total_required is not None else placed_periods
+    placed_ratio = round(100 * placed_periods / required, 1) if required else 100.0
+
+    return {
+        "score": round(score, 1),
+        "total_slots": placed_periods,
+        "total_required": required,
+        "placed_ratio": placed_ratio,
+        "total_penalty": round(total_penalty, 1),
+        "violations": violations,
+    }

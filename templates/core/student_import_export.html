@@ -1,0 +1,193 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+{% block title %}استيراد / تصدير الطلاب{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current="استيراد / تصدير الطلاب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "استيراد / تصدير الطلاب" subtitle=subtitle icon="import" %}{% endpage_header %}
+
+  {% kpi_strip label="الطلاب" %}
+    {% kpi "الطلاب المسجّلون" total_students %}
+  {% endkpi_strip %}
+
+  {# ── نتيجةُ الاستيراد ── #}
+  {% if import_result %}
+  <div id="import-result" role="{% if import_result.success %}status{% else %}alert{% endif %}">
+    {% if import_result.success %}
+    {% section_card "اكتمل الاستيراد بنجاح" icon="status_success" %}
+      {% kpi_strip label="نتيجة الاستيراد" %}
+        {% kpi "إجمالي الصفوف" import_result.total_rows %}
+        {% kpi "طلاب جدد" import_result.students_created tone="green" %}
+        {% kpi "طلاب موجودون" import_result.students_existed tone="sky" %}
+        {% kpi "أولياء جدد" import_result.parents_created tone="blue" %}
+        {% kpi "تسجيلات" import_result.enrollments_created tone="teal" %}
+        {% kpi "أخطاء" import_result.error_count tone=errors_tone %}
+      {% endkpi_strip %}
+      {% if import_result.errors %}
+      <ul class="plain-list is-scroll import-errors" aria-label="الأخطاء">
+        {% for err in import_result.errors %}
+        <li class="plain-list__row">{{ err }}</li>
+        {% endfor %}
+        {% if errors_more %}<li class="plain-list__row plain-list__sub">… و{{ errors_more }} خطأ آخر</li>{% endif %}
+      </ul>
+      {% endif %}
+    {% endsection_card %}
+    {% else %}
+    {% section_card "فشل الاستيراد" icon="status_error" %}
+      {% callout "warning" %}يُرجى مراجعة الملف والمحاولة مجدداً.{% endcallout %}
+      {% if import_result.errors %}
+      <ul class="plain-list import-errors" aria-label="الأخطاء">
+        {% for err in import_result.errors %}<li class="plain-list__row">{{ err }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    {% endsection_card %}
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% include "components/credentials_sheet.html" %}
+
+  {# ── الملفّات الثلاثة: ما يحويه كلٌّ منها وزرُّه ── #}
+  {% section_card "الملفّات" icon="messages" %}
+    <ul class="plain-list">
+      <li class="plain-list__row">
+        <span class="plain-list__main">
+          <b class="plain-list__title">تصدير الطلاب</b>
+          <span class="plain-list__sub" title="الرقم الشخصي — الاسم — الصف — الشعبة — الجوال — البريد الإلكتروني · رأس احترافي + فلاتر + RTL + طباعة A4">كشف Excel: الرقم الشخصي، الاسم، الصف، الشعبة، الجوال، البريد</span>
+        </span>
+        <a data-app-file href="{% url 'student_export_excel' %}" class="btn-primary btn-sm" aria-label="تصدير كل الطلاب إلى Excel">{% icon "export_excel" %} تصدير Excel</a>
+      </li>
+      <li class="plain-list__row">
+        <span class="plain-list__main">
+          <b class="plain-list__title">قالب الاستيراد</b>
+          <span class="plain-list__sub">أعمدة الطالب ووليّ الأمر، وتعليماتٌ في الصف الأول، وصفوفٌ نموذجيّة</span>
+        </span>
+        <a data-app-file href="{% url 'student_import_template' %}" class="btn-secondary btn-sm" aria-label="تحميل قالب Excel للاستيراد">{% icon "download" %} تحميل القالب</a>
+      </li>
+      <li class="plain-list__row">
+        <span class="plain-list__main">
+          <b class="plain-list__title">استيراد الطلاب</b>
+          <span class="plain-list__sub">ينشئ حسابات الطلاب وأولياء الأمور ويربط الطالب بفصله تلقائيّاً</span>
+        </span>
+        <button type="button" data-call="toggleImportForm" class="btn-secondary btn-sm" aria-expanded="false" aria-controls="import-form-area" id="btn-show-import">
+          {% icon "import" %} رفع ملف الاستيراد
+        </button>
+      </li>
+    </ul>
+  {% endsection_card %}
+
+  {# ── منطقة الاستيراد المخفية ── #}
+  <div id="import-form-area" role="region" aria-label="نموذج استيراد الطلاب" hidden>
+    {% section_card "رفع ملف Excel للاستيراد" icon="export_excel" %}
+      {% if import_error %}
+      {% callout "error" %}{{ import_error }}{% endcallout %}
+      {% endif %}
+
+      {# قواعدُ الملفّ: معلومةٌ لا تغيّر الفعل — أمّا عاقبةُ الاستيراد ففي التحذير أدناه #}
+      {% callout "info" %}
+        استخدم القالب الرسمي فقط: أعمدةٌ بترتيبٍ ثابت، والبياناتُ ابتداءً من الصف الثالث. الإلزاميّ: الرقم الشخصي والاسم الكامل. الصفوف المقبولة: G7 إلى G12.
+      {% endcallout %}
+      {% callout "warning" %}
+        الاستيراد ينشئ حساباتٍ جديدةً للطلاب وأولياء الأمور بكلمة مرورٍ عشوائيّةٍ لكلّ حساب، تُعرض لك في ورقةٍ بعد الاستيراد مرّةً واحدةً فقط ولا تُحفظ في أيّ مكان — نزِّلها ووزّعها، ويُلزَم كلُّ صاحبٍ بتغييرها عند أوّل دخول. الحسابُ الموجود لا يُحذف ولا يُستبدل ما فيه: يُكمَّل الحقلُ الفارغ (الاسم والجوال والبريد) فقط. الاستيراد بلا معاينةٍ ولا تراجع بعد البدء.
+      {% endcallout %}
+
+      <form method="post" enctype="multipart/form-data" action="{% url 'student_import_export' %}" id="import-form" novalidate>
+        {% csrf_token %}
+
+        <div class="import-drop" id="drop-zone" role="group" aria-label="منطقة رفع ملف Excel">
+          {% icon "export_excel" size="2xl" %}
+          <p class="import-drop__title">اسحب ملف Excel هنا أو انقر للاختيار</p>
+          <p class="ui-field-hint">يُقبل: .xlsx أو .xls — الحجم الأقصى: 5 ميغا</p>
+          <label for="student-file-input" class="sr-only">اختر ملف Excel</label>
+          <input type="file" name="student_file" id="student-file-input" accept=".xlsx,.xls" required class="import-drop__input" data-call-change="onFileSelected" aria-describedby="file-hint">
+          <p id="file-hint" class="ui-field-hint">لا يوجد ملف محدد</p>
+        </div>
+
+        <div id="file-preview" class="import-file" hidden>
+          {% icon "export_excel" %}
+          <span id="file-name-display" class="import-file__name"></span>
+          <span id="file-size-display" class="import-file__size"></span>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" data-call="toggleImportForm" class="btn-secondary btn-sm">إلغاء</button>
+          <button type="submit" id="btn-import-submit" disabled class="btn-primary btn-sm" aria-disabled="true" title="سيتم إنشاء الحسابات وتسجيل الطلاب في فصولهم تلقائياً">
+            {% icon "import" %} بدء الاستيراد
+          </button>
+        </div>
+
+        <div id="import-progress" class="import-progress" hidden>
+          <span class="import-progress__label">{% icon "loading" %} جارٍ معالجة الملف…</span>
+          <div class="import-progress__track" role="progressbar" aria-label="تقدم الاستيراد"><div class="import-progress__bar"></div></div>
+        </div>
+      </form>
+    {% endsection_card %}
+  </div>
+
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+  /* الإظهارُ والإخفاءُ بسمة `hidden` لا بصنفٍ يعرّفه Tailwind. */
+  window.toggleImportForm = function () {
+    var area = document.getElementById('import-form-area');
+    var btn  = document.getElementById('btn-show-import');
+    var isHidden = area.hidden;
+
+    area.hidden = !isHidden;
+    btn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+
+    if (isHidden) {
+      area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  window.onFileSelected = function (input) {
+    var submitBtn  = document.getElementById('btn-import-submit');
+    var preview    = document.getElementById('file-preview');
+    var nameEl     = document.getElementById('file-name-display');
+    var sizeEl     = document.getElementById('file-size-display');
+    var hint       = document.getElementById('file-hint');
+
+    if (input.files && input.files.length > 0) {
+      var file = input.files[0];
+      var sizeMB = (file.size / 1024 / 1024).toFixed(2);
+
+      nameEl.textContent = file.name;
+      sizeEl.textContent = sizeMB + ' MB';
+      preview.hidden = false;
+      hint.textContent   = file.name;
+
+      submitBtn.disabled = false;
+      submitBtn.setAttribute('aria-disabled', 'false');
+    } else {
+      preview.hidden = true;
+      hint.textContent = 'لا يوجد ملف محدد';
+      submitBtn.disabled = true;
+      submitBtn.setAttribute('aria-disabled', 'true');
+    }
+  };
+
+  // إظهار شريط التقدم عند إرسال النموذج
+  document.getElementById('import-form').addEventListener('submit', function () {
+    document.getElementById('import-progress').hidden = false;
+    document.getElementById('btn-import-submit').disabled = true;
+    document.getElementById('btn-import-submit').setAttribute('aria-disabled', 'true');
+  });
+
+  // فتح منطقة الاستيراد تلقائياً إذا كانت هناك نتيجة
+  {% if import_result or import_error %}
+  document.addEventListener('DOMContentLoaded', function () {
+    var area = document.getElementById('import-form-area');
+    if (area) area.hidden = false;
+    var btn = document.getElementById('btn-show-import');
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+  });
+  {% endif %}
+</script>
+{% endblock %}

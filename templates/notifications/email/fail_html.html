@@ -1,0 +1,39 @@
+{% extends "email/_base.html" %}
+{% comment %}
+إشعارُ وليّ الأمر بموادّ الرسوب — `NotificationService.notify_fail`.
+{% endcomment %}
+{% block title %}{{ school_name }}{% endblock %}
+{% block body_attrs %} class="mail-canvas"{% endblock %}
+{% block body %}
+<div class="mail-card">
+  <div class="mail-head">
+    <h1>{{ school_name }}</h1>
+    <p>إشعار نتيجة — العام الدراسي {{ year }}</p>
+  </div>
+  <div class="mail-body">
+    <p class="mail-greeting">
+      {{ parent_name }} الكريم / الكريمة،
+    </p>
+
+    <div class="mail-figure is-compact">
+      <div class="mail-figure__num">{{ fail_count }}</div>
+      <div class="mail-figure__lbl">مادة راسب فيها الطالب {{ student_name }}</div>
+    </div>
+
+    <p class="mail-label">المواد:</p>
+    <div class="mail-list">
+      {% for subj in failed_subjects %}
+      <div class="mail-list__item">
+        <div class="mail-dot"></div>
+        <span>{{ subj }}</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <p class="mail-text is-spaced">
+      يُرجى التواصل مع إدارة المدرسة لمناقشة الخطوات القادمة ومتابعة مستوى الطالب الأكاديمي.
+    </p>
+  </div>
+  <div class="mail-foot">{{ school_name }} — هذه رسالة تلقائية</div>
+</div>
+{% endblock %}

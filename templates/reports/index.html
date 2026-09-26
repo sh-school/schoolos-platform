@@ -1,0 +1,254 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}التقارير والشهادات — {{ school.name|default:"المدرسة" }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current="التقارير والشهادات" %}
+{% endblock %}
+
+{% block content %}
+
+{% page_header "التقارير والشهادات" subtitle=page_subtitle icon="reports" %}
+    <details class="report-student-search">
+      <summary class="btn-secondary btn-sm cursor-pointer list-none">
+        {% icon "student_info" %} بحث طالب فردي
+      </summary>
+      <div class="report-student-dropdown">
+        <div class="flex gap-2 mb-2">
+          <input type="text" id="student-search-input"
+                 placeholder="ابحث باسم الطالب أو الرقم الشخصي..."
+                 aria-label="ابحث باسم الطالب أو الرقم الشخصي"
+                 class="form-control flex-1"
+                 autocomplete="off">
+          <button type="button" id="student-search-btn" class="btn-primary btn-sm">بحث</button>
+        </div>
+        <div id="student-results" class="plain-list"></div>
+      </div>
+    </details>
+{% endpage_header %}
+
+{# ── التبويبات ── #}
+<div class="report-tabs">
+  <a href="?tab=results&level={{ level_filter }}&grade={{ grade_filter }}&year={{ year }}&paper={{ paper }}"
+     class="report-tab {% if tab == 'results' %}active{% endif %}">
+    <span class="report-tab-icon">{% icon "stats" %}</span> كشف النتائج
+  </a>
+  <a href="?tab=certificates&level={{ level_filter }}&grade={{ grade_filter }}&year={{ year }}&paper={{ paper }}"
+     class="report-tab {% if tab == 'certificates' %}active{% endif %}">
+    <span class="report-tab-icon">{% icon "document" %}</span> الشهادات
+  </a>
+  <a href="?tab=attendance&level={{ level_filter }}&grade={{ grade_filter }}&year={{ year }}&paper={{ paper }}"
+     class="report-tab {% if tab == 'attendance' %}active{% endif %}">
+    <span class="report-tab-icon">{% icon "date" %}</span> الحضور والغياب
+  </a>
+  {% if request.user.is_admin or request.user.get_role == "principal" %}
+  <a href="?tab=behavior&year={{ year }}&paper={{ paper }}"
+     class="report-tab {% if tab == 'behavior' %}active{% endif %}">
+    <span class="report-tab-icon">{% icon "behavior" %}</span> المخالفات السلوكية
+  </a>
+  {% endif %}
+</div>
+
+{# ── الفلاتر ── #}
+{% if tab != "behavior" %}
+{# المرحلةُ والصفُّ يُطبَّقان في المتصفّح (`applyFilter`) لا بنموذج — فالشريطُ حيّ، والورقُ وحدَه نموذجٌ صغيرٌ يُرسَل #}
+{% filter_bar "ترشيحُ الفصول" css="mb-4" live=True %}
+  {% field "level" "المرحلة" type="select" choices=LEVELS value=level_filter blank="كل المراحل" hide_label=True data_call_change="applyFilter" data_filter="level" %}
+
+  {# الصفوفُ المتاحةُ وحدَها تُعرض — شرطٌ بين الخيارات لا تعبّر عنه choices #}
+  <div class="ui-field">
+    <label for="f-grade" class="ui-field__label sr-only">الصف</label>
+    <select id="f-grade" name="grade" class="form-control"
+            data-call-change="applyFilter" data-filter="grade">
+      <option value="">كل الصفوف</option>
+      {% for val, label in GRADES %}
+        {% if val in available_grades %}
+        <option value="{{ val }}" {% if grade_filter == val %}selected{% endif %}>{{ label }}</option>
+        {% endif %}
+      {% endfor %}
+    </select>
+  </div>
+
+  <form method="get" class="m-0">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <input type="hidden" name="year" value="{{ year }}">
+    <input type="hidden" name="level" value="{{ level_filter }}">
+    <input type="hidden" name="grade" value="{{ grade_filter }}">
+    <div class="ui-field">
+      <label for="f-paper" class="ui-field__label sr-only">حجم الورق</label>
+      <select id="f-paper" name="paper"
+              class="form-control"
+              data-autosubmit>
+        <option value="A4" {% if paper == "A4" %}selected{% endif %}>A4</option>
+        <option value="A3" {% if paper == "A3" %}selected{% endif %}>A3</option>
+      </select>
+    </div>
+  </form>
+
+  {% if grade_filter or level_filter %}
+  <a href="?tab={{ tab }}&year={{ year }}&paper={{ paper }}" class="btn-secondary btn-sm">مسح الفلاتر</a>
+  {% endif %}
+
+  <span class="pagination-info">{{ classes|length }} فصل</span>
+{% endfilter_bar %}
+{% else %}
+{% filter_bar "حجمُ الورق" css="mb-4" live=True %}
+  <form method="get" class="m-0">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <input type="hidden" name="year" value="{{ year }}">
+    <div class="ui-field">
+      <label for="f-paper" class="ui-field__label sr-only">حجم الورق</label>
+      <select id="f-paper" name="paper"
+              class="form-control"
+              data-autosubmit>
+        <option value="A4" {% if paper == "A4" %}selected{% endif %}>A4</option>
+        <option value="A3" {% if paper == "A3" %}selected{% endif %}>A3</option>
+      </select>
+    </div>
+  </form>
+{% endfilter_bar %}
+{% endif %}
+
+{# ── بطاقات الفصول ── #}
+{% if tab == "behavior" %}
+  {# ── السلوك: بطاقة واحدة فقط ── #}
+  {% section_card "كشف المخالفات السلوكية" icon="behavior_violation" %}
+    {% callout "warning" %}الملفُّ يحوي أسماءَ الطلاب ومخالفاتِهم (بيانات شخصيّة، والرقم الشخصيّ فيه مستور)، ويُسجَّل تنزيلُه باسمك في سجلّ التدقيق. لا تُشاركه خارج من يحقّ له.{% endcallout %}
+    <div class="plain-list__row">
+      <span class="plain-list__sub">تصدير كامل بيانات السلوك للعام {{ year }}</span>
+      <a data-app-file href="{% url 'behavior_excel' %}?year={{ year }}&paper={{ paper }}" class="btn-success btn-sm">
+        {% icon "export_excel" %} تنزيل Excel
+      </a>
+    </div>
+  {% endsection_card %}
+
+{% elif classes %}
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for cls in classes %}
+    <div class="report-class-card">
+      <div class="flex items-start justify-between gap-2 mb-2">
+        <div class="min-w-0">
+          <span class="text-maroon font-bold text-sm block truncate">
+            {{ cls.short_label }}
+          </span>
+        </div>
+        <span class="status-badge status-info flex-shrink-0 text-xs">{{ cls.students_count|default:"—" }} طالب</span>
+      </div>
+      <div class="pt-2 border-t flex gap-2 flex-wrap">
+
+        {% if tab == "results" %}
+          <a href="{% url 'report_viewer' %}?r=class_results_pdf&id={{ cls.id }}&year={{ year }}&paper={{ paper }}&tab={{ tab }}"
+             class="btn-secondary btn-sm text-xs no-underline">{% icon "export_pdf" %} PDF</a>
+          <a data-app-file href="{% url 'class_results_excel' cls.id %}?year={{ year }}&paper={{ paper }}"
+             class="btn-secondary btn-sm text-xs no-underline">Excel</a>
+
+        {% elif tab == "certificates" %}
+          <a href="{% url 'report_viewer' %}?r=class_certificates_pdf&id={{ cls.id }}&year={{ year }}&paper={{ paper }}&tab={{ tab }}"
+             class="btn-secondary btn-sm text-xs no-underline">{% icon "export_pdf" %} PDF</a>
+
+        {% elif tab == "attendance" %}
+          <a href="{% url 'report_viewer' %}?r=attendance_report_pdf&id={{ cls.id }}&year={{ year }}&paper={{ paper }}&tab={{ tab }}"
+             class="btn-secondary btn-sm text-xs no-underline">{% icon "export_pdf" %} PDF</a>
+          <a data-app-file href="{% url 'attendance_excel' cls.id %}?year={{ year }}&paper={{ paper }}"
+             class="btn-secondary btn-sm text-xs no-underline">Excel</a>
+        {% endif %}
+
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+{% else %}
+  {% include "components/empty_state.html" with icon="checklist" title="لا توجد فصول" subtitle="لا توجد فصول تطابق الفلاتر المحددة. جرّب تغيير المرحلة أو الصف." compact=True %}
+{% endif %}
+
+<script nonce="{{ request.csp_nonce }}">
+window.applyFilter = function (name, value) {
+  var params = new URLSearchParams(window.location.search);
+  if (value) params.set(name, value);
+  else params.delete(name);
+  if (name === 'level') params.delete('grade');
+  window.location.search = params.toString();
+};
+
+/* بحث الطالب الفردي */
+var searchBtn = document.getElementById('student-search-btn');
+var searchInput = document.getElementById('student-search-input');
+if (searchBtn) {
+  searchBtn.addEventListener('click', searchStudent);
+  searchInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') searchStudent();
+  });
+}
+
+async function searchStudent() {
+  var q = searchInput.value.trim();
+  if (!q) return;
+
+  var res = document.getElementById('student-results');
+  var paper = '{{ paper|escapejs }}';
+  var year = '{{ year|escapejs }}';
+
+  function showStatus(text, className) {
+    var message = document.createElement('p');
+    message.className = className;
+    message.textContent = text;
+    res.replaceChildren(message);
+  }
+
+  showStatus('جاري البحث...', 'report-search-status');
+
+  try {
+    var r = await fetch('/api/students/search/?q=' + encodeURIComponent(q));
+    var data = await r.json();
+
+    if (!data.results || !data.results.length) {
+      showStatus('لا توجد نتائج', 'report-search-status');
+      return;
+    }
+
+    res.replaceChildren();
+
+    data.results.forEach(function(s) {
+      var studentId = encodeURIComponent(String(s.id || ''));
+      if (!studentId) return;
+
+      var row = document.createElement('div');
+      row.className = 'plain-list__row';
+
+      var name = document.createElement('span');
+      name.className = 'plain-list__title';
+      name.textContent = String(s.full_name || '');
+
+      var actions = document.createElement('div');
+      actions.className = 'form-actions';
+
+      var resultLink = document.createElement('a');
+      resultLink.className = 'btn-primary btn-sm';
+      resultLink.textContent = 'تقرير';
+      resultLink.href =
+        '/reports/student/' + studentId + '/result/?year=' +
+        encodeURIComponent(year) + '&paper=' + encodeURIComponent(paper);
+
+      var certificateLink = document.createElement('a');
+      certificateLink.className = 'btn-secondary btn-sm';
+      certificateLink.textContent = 'شهادة';
+      certificateLink.href =
+        '/reports/student/' + studentId + '/certificate/?year=' +
+        encodeURIComponent(year) + '&paper=' + encodeURIComponent(paper);
+
+      // ملفّا PDF: في التطبيق المثبَّت إلى قائمة المشاركة لا مكانَ المنصّة (js/app-mode.js).
+      resultLink.setAttribute('data-app-file', '');
+      certificateLink.setAttribute('data-app-file', '');
+      actions.append(resultLink, certificateLink);
+      row.append(name, actions);
+      res.appendChild(row);
+    });
+  } catch(e) {
+    showStatus('خطأ في البحث', 'report-search-status is-error');
+  }
+}
+</script>
+
+{% endblock %}

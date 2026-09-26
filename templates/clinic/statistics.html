@@ -1,0 +1,24 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}إحصائيات العيادة{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/clinic/" parent_label="العيادة" current="الإحصائيات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "إحصائيات العيادة المدرسية" subtitle="ملخّص بيانات العيادة والسجلات الصحية" icon="clinic" %}
+    <a href="{% url 'clinic:dashboard' %}" class="btn-secondary btn-sm">← رجوع</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام العيادة" %}
+    {% kpi "إجمالي الزيارات" visits_count tone="red" %}
+    {% kpi "زيارات هذا الشهر" visits_this_month tone="orange" %}
+    {% kpi "طلاب بأمراض مزمنة" health_records_count %}
+    {% kpi "طلاب لديهم حساسية" allergies_count tone="blue" %}
+  {% endkpi_strip %}
+
+</div>
+{% endblock %}

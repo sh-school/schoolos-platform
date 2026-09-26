@@ -1,0 +1,47 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block title %}{{ page_title }} — {{ module_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current=page_title %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header page_title subtitle=page_subtitle icon="reports" %}{% endpage_header %}
+
+  {% section_card "التقارير" meta=4 icon="reports" %}
+    <ul class="plain-list">
+      <li class="plain-list__row">
+        <a class="plain-list__main report-link" href="{% url 'academic_management:monthly_ba_report' %}">
+          <b class="plain-list__title">{% icon "behavior" %} التقرير السلوكي والتعليمي الشهري</b>
+          <span class="plain-list__sub">متوسط نتائج الاختبارات القصيرة مع عدد المخالفات السلوكية في شهرٍ واحد — على مستوى الطالب أو الشعبة</span>
+        </a>
+        <span class="status-badge status-maroon">{% icon "reports" %} تقرير رئيسي</span>
+      </li>
+      <li class="plain-list__row">
+        <a class="plain-list__main report-link" href="{% url 'academic_management:quiz_reports' %}">
+          <b class="plain-list__title">{% icon "assessments" %} تقارير الاختبارات القصيرة</b>
+          <span class="plain-list__sub">نتائج الاختبارات القصيرة حسب المواد على مستوى الطالب أو الشعبة</span>
+        </a>
+      </li>
+      <li class="plain-list__row">
+        <a class="plain-list__main report-link" href="{% url 'academic_management:exam_results_reports' %}">
+          <b class="plain-list__title">{% icon "assessments" %} تقارير نتائج الاختبارات</b>
+          <span class="plain-list__sub">نتائج اختبارات الباقات (P1-P4, AW) مقارنةً على مستوى الفصول والطالب</span>
+        </a>
+      </li>
+      <li class="plain-list__row">
+        <a class="plain-list__main report-link" href="{% url 'academic_management:academic_progress_reports' %}">
+          <b class="plain-list__title">{% icon "academic" %} تقارير التقدم الأكاديمي</b>
+          <span class="plain-list__sub">نتائج التقييمات في شعبةٍ محدّدة خلال فترةٍ زمنيّة، مع ترتيب الطلاب</span>
+        </a>
+      </li>
+    </ul>
+  {% endsection_card %}
+
+</div>
+{% endblock %}

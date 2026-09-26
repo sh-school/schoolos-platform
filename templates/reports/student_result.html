@@ -1,0 +1,69 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags %}
+{# نتيجة الطالب — الهيكلُ من base_qatar_report.html، والنغماتُ من reports/views.py #}
+
+{% block extra_styles %}
+.pkg { font-size: 9px; color: {% brand_color "TEXT_MUTED" %}; }
+.doc-body > table:not([class]) thead .sub-head th { font-size: 9px; background: {% brand_color "MAROON_BG" %}; color: {% brand_color "MAROON_DARK" %}; }
+{% endblock %}
+
+{% block report_title %}كشف نتيجة سنوية — {{ student.full_name }}{% endblock %}
+
+{% block report_meta_cells %}
+<td>الطالب: <strong>{{ student.full_name }}</strong></td>
+<td>الرقم الشخصي: <strong>{{ student.national_id|default:"—" }}</strong></td>
+{% if enrollment %}<td>الفصل: <strong>{{ enrollment.class_group.short_label }}</strong></td>{% endif %}
+<td>السنة: <strong>{{ year }}</strong></td>
+<td>تاريخ الطباعة: <strong>{{ print_date }}</strong></td>
+{% endblock %}
+
+{% block content %}
+<table>
+  <thead>
+    <tr>
+      <th scope="col">المادة</th>
+      <th scope="col" colspan="2">الفصل الأول (من 40)</th>
+      <th scope="col" colspan="2">الفصل الثاني (من 60)</th>
+      <th scope="col">المجموع / 100</th>
+      <th scope="col">التقدير</th>
+      <th scope="col">الحالة</th>
+    </tr>
+    <tr class="sub-head">
+      <td></td>
+      <th scope="col">الباقات</th><th scope="col">الإجمالي</th>
+      <th scope="col">الباقات</th><th scope="col">الإجمالي</th>
+      <td></td><td></td><td></td>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <th scope="row">{{ row.subject }}</th>
+      <td class="pkg">
+        {% if row.s1 %}
+          {% if row.s1.p1_score is not None %}ب١:{{ row.s1.p1_score }} {% endif %}
+          {% if row.s1.p2_score is not None %}ب٢:{{ row.s1.p2_score }} {% endif %}
+          {% if row.s1.p3_score is not None %}ب٣:{{ row.s1.p3_score }}{% endif %}
+        {% else %}—{% endif %}
+      </td>
+      <td><b>{% if row.s1 and row.s1.total %}{{ row.s1.total }}/{{ row.s1.semester_max }}{% else %}—{% endif %}</b></td>
+      <td class="pkg">
+        {% if row.s2 %}
+          {% if row.s2.p1_score is not None %}ب١:{{ row.s2.p1_score }} {% endif %}
+          {% if row.s2.p2_score is not None %}ب٢:{{ row.s2.p2_score }} {% endif %}
+          {% if row.s2.p3_score is not None %}ب٣:{{ row.s2.p3_score }}{% endif %}
+        {% else %}—{% endif %}
+      </td>
+      <td><b>{% if row.s2 and row.s2.total %}{{ row.s2.total }}/{{ row.s2.semester_max }}{% else %}—{% endif %}</b></td>
+      <td><b class="c-{{ row.total_tone }}">{% if row.annual.annual_total %}{{ row.annual.annual_total }}{% else %}—{% endif %}</b></td>
+      <td><b>{{ row.annual.letter_grade|default:"—" }}</b></td>
+      <td><b class="c-{{ row.status_tone }}">{{ row.status_label }}</b></td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="8">لا توجد درجات</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
+
+{% block signatures %}{% include "reports/pdf/_signatures.html" with s1="المعلم المشرف" s2="ولي الأمر" s3="مدير المدرسة" %}{% endblock %}

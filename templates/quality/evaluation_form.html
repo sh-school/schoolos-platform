@@ -1,0 +1,103 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}تقييم — {{ employee.full_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/quality/" parent_label="ضمان الجودة" parent2_url="/quality/evaluations/" parent2_label="تقييم الأداء" current="نموذج التقييم" %}
+{% endblock %}
+
+{% block content %}
+<div class="qeval qeval--narrow">
+
+  {% page_header "تقييم أداء الموظف" subtitle=form_subtitle icon="staff_evaluation" %}{% endpage_header %}
+
+  <form method="post" class="qobs-form-stack">
+    {% csrf_token %}
+
+    {% section_card "محاور التقييم" meta=axes_meta icon="quality" %}
+      <ul class="plain-list">
+        {% for field_name, label, max_val, value in axis_rows %}
+        <li class="qeval-axis">
+          <label class="qeval-axis__head" for="axis-{{ field_name }}">
+            <span>{{ label }}</span>
+            <span class="pr-muted">من {{ max_val }}</span>
+          </label>
+          <div class="qeval-axis__control">
+            <input type="range" name="{{ field_name }}" id="axis-{{ field_name }}" min="0" max="{{ max_val }}"
+                   value="{{ value }}" class="qeval-axis__range" data-mirror-next>
+            <output class="qeval-axis__value" for="axis-{{ field_name }}">{{ value }}</output>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+
+      {% if obj.total_score %}
+      <p class="qeval-total">
+        <span>المجموع الحالي</span>
+        <span><b class="grade-total is-{{ score_tone }}">{{ obj.total_score }} / 100</b> <span class="pr-muted">{{ obj.get_rating_display }}</span></span>
+      </p>
+      {% endif %}
+    {% endsection_card %}
+
+    {% if scores %}
+    {% section_card "تقييمات المقيّمين المتعددين" meta=scores|length icon="assessments" %}
+      <ul class="plain-list">
+        {% for score in scores %}
+        <li class="plain-list__row">
+          <span class="plain-list__title">{{ score.evaluator.full_name }}</span>
+          <span class="qeval-recent__end">
+            <span class="status-badge status-maroon">{{ score.weight }}%</span>
+            <b>{{ score.total_score }}</b>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endsection_card %}
+    {% endif %}
+
+    {% section_card "الملاحظات" icon="document" %}
+      <div class="qeval-notes">
+        <label for="ev-strengths">نقاط القوة</label>
+        <textarea name="strengths" id="ev-strengths" rows="3" class="form-control">{{ obj.strengths }}</textarea>
+        <label for="ev-improvements">مجالات التطوير</label>
+        <textarea name="improvements" id="ev-improvements" rows="3" class="form-control">{{ obj.improvements }}</textarea>
+        <label for="ev-goals">أهداف الفترة القادمة</label>
+        <textarea name="goals_next" id="ev-goals" rows="3" class="form-control">{{ obj.goals_next }}</textarea>
+        {% if obj.employee_comment %}
+        <p class="ui-note"><b>تعليق الموظف:</b> {{ obj.employee_comment }}</p>
+        {% endif %}
+      </div>
+    {% endsection_card %}
+
+    <div class="form-actions">
+      <a href="{% url 'evaluation_dashboard' %}" class="btn-secondary">إلغاء</a>
+      {% if is_editable %}
+      <button type="submit" name="action" value="draft" class="btn-secondary">حفظ مسودة</button>
+      {# كان الوسمُ بلا «>» فابتلع نصَّه سماتٍ ورُسم الزرُّ فارغاً. #}
+      <button type="submit" name="action" value="submitted" class="btn-primary">تقديم التقييم</button>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if can_approve %}
+  {# المادة 16: «يضع الرئيس المباشر تقييم أداء الموظف ويعتمد من مدير المدرسة». #}
+  <form method="post" action="{% url 'approve_evaluation' obj.id %}" class="form-actions">
+    {% csrf_token %}
+    {% callout "warning" %}الاعتماد يقفل التقرير فلا تُعدَّل درجاتُه بعده، ويظهر للموظّف؛ ويبدأ ميعادُ تظلّمه (15 يوماً) من تاريخ علمه به.{% endcallout %}
+    <button type="submit" class="btn-primary">اعتماد التقرير</button>
+  </form>
+  {% endif %}
+
+  {% if can_record_receipt %}
+  {# «تاريخ استلام الموظف (يرجى تدوين التاريخ في حالة رفض الموظف التوقيع)» — استمارة المعلم ص2. #}
+  <form method="post" action="{% url 'record_evaluation_receipt' obj.id %}" class="form-actions">
+    {% csrf_token %}
+    <label for="ev-received-on">تاريخ استلام الموظف (عند رفضه التوقيع)</label>
+    <input type="date" name="received_on" id="ev-received-on" class="form-control" required>
+    {% callout "warning" %}يبدأ به ميعادُ التظلّم القانونيّ (15 يوماً، م 20) ولا يُدوَّن التاريخ ثانيةً.{% endcallout %}
+    <button type="submit" class="btn-secondary">تدوين تاريخ الاستلام</button>
+  </form>
+  {% endif %}
+
+</div>
+{% endblock %}

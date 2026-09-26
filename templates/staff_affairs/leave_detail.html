@@ -1,0 +1,44 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}تفاصيل الإجازة — {{ leave.staff.full_name }}{% endblock %}
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/staff-affairs/leave/" parent_label="الإجازات" current=leave.staff.full_name %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-narrow">
+  {% page_header "تفاصيل طلب الإجازة" subtitle=leave.get_leave_type_display icon="leave" %}
+    <span class="status-badge {% if leave.status == 'approved' %}status-success{% elif leave.status == 'rejected' %}status-danger{% elif leave.status == 'pending' %}status-warning{% else %}status-gray{% endif %}">{{ leave.get_status_display }}</span>
+  {% endpage_header %}
+
+  {% section_card "بيانات الطلب" icon="document" %}
+    <dl class="detail-dl">
+      <dt>الموظف</dt><dd><strong>{{ leave.staff.full_name }}</strong></dd>
+      <dt>النوع</dt><dd>{{ leave.get_leave_type_display }}</dd>
+      <dt>من</dt><dd>{{ leave.start_date|date:"d/m/Y" }}</dd>
+      <dt>إلى</dt><dd>{{ leave.end_date|date:"d/m/Y" }}</dd>
+      <dt>الأيام</dt><dd><strong>{{ leave.days_count }}</strong></dd>
+      <dt>السبب</dt><dd>{{ leave.reason }}</dd>
+      {% if leave.rejection_reason %}<dt class="text-status-danger">سبب الرفض</dt><dd>{{ leave.rejection_reason }}</dd>{% endif %}
+      <dt>تاريخ الطلب</dt><dd>{{ leave.created_at|date:"d/m/Y H:i" }}</dd>
+      {% if leave.reviewed_by %}<dt>راجعها</dt><dd>{{ leave.reviewed_by.full_name }} — {{ leave.reviewed_at|date:"d/m/Y H:i" }}</dd>{% endif %}
+    </dl>
+  {% endsection_card %}
+
+  {% if leave.status == "pending" %}
+  {% section_card "مراجعة الطلب" icon="checklist" %}
+    <form method="post" action="{% url 'staff_affairs:leave_review' leave.pk %}">{% csrf_token %}
+      {% callout "warning" %}الموافقة تخصم أيامَ الإجازة من رصيد الموظف فوراً ولا مسارَ للتراجع عنها من المنصّة؛ أمّا الرفض فلا يمسّ الرصيد.{% endcallout %}
+      <div class="form-row">
+        {% field "action" "القرار" type="select" choices="approved=موافقة|rejected=رفض" required=True %}
+        {% field "rejection_reason" "سبب الرفض" placeholder="سبب الرفض..." help="مطلوب عند الرفض" %}
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary btn-sm">{% icon "status_success" %} تنفيذ القرار</button>
+      </div>
+    </form>
+  {% endsection_card %}
+  {% endif %}
+</div>
+{% endblock %}

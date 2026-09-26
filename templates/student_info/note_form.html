@@ -1,0 +1,62 @@
+{% extends "base/base.html" %}
+{% load ui %}
+
+{% block title %}ملاحظة على {{ student.full_name }}{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}page-noscroll{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-info/" parent_label="مركز معلومات الطلبة" current="إضافة ملاحظة" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+  {% page_header "ملاحظة على "|add:student.full_name subtitle=year icon="edit_record" %}
+    <a href="{% url 'student_info:student_file' student.id %}?year={{ year }}" class="btn-secondary btn-sm">رجوع للملفّ</a>
+  {% endpage_header %}
+
+  {% section_card "بيانات الملاحظة" icon="edit_record" %}
+    <form method="post">
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+      {% callout "error" %}{{ form.non_field_errors|join:" · " }}{% endcallout %}
+      {% endif %}
+
+      <div class="form-group">
+        <label class="form-label" for="{{ form.category.id_for_label }}">الجهة <span class="required">*</span></label>
+        {{ form.category }}
+        {% if form.category.errors %}<p class="form-error">{{ form.category.errors|striptags }}</p>{% endif %}
+        <p class="ui-field-hint">لا تظهر هنا إلّا الجهةُ التي تكتب باسمها.</p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="{{ form.title.id_for_label }}">العنوان <span class="required">*</span></label>
+        {{ form.title }}
+        {% if form.title.errors %}<p class="form-error">{{ form.title.errors|striptags }}</p>{% endif %}
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="{{ form.occurred_on.id_for_label }}">التاريخ <span class="required">*</span></label>
+        {{ form.occurred_on }}
+        {% if form.occurred_on.errors %}<p class="form-error">{{ form.occurred_on.errors|striptags }}</p>{% endif %}
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="{{ form.body.id_for_label }}">نصّ الملاحظة <span class="required">*</span></label>
+        {{ form.body }}
+        {% if form.body.errors %}<p class="form-error">{{ form.body.errors|striptags }}</p>{% endif %}
+        <p class="ui-field-hint">يُحفظ النصّ مشفَّراً في قاعدة البيانات، ويُسجَّل اسمُك كاتباً له.</p>
+      </div>
+
+      {% callout "warning" %}لا تعديلَ ولا حذفَ بعد الحفظ، ويقرؤها كلُّ من يُدرّس الطالب مع قيادةِ المدرسة.{% endcallout %}
+
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">حفظ الملاحظة</button>
+        <a href="{% url 'student_info:student_file' student.id %}?year={{ year }}" class="btn-secondary">إلغاء</a>
+      </div>
+    </form>
+  {% endsection_card %}
+</div>
+{% endblock %}

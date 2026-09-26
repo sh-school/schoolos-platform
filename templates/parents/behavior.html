@@ -1,0 +1,49 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}سلوك الأبناء{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/parents/" parent_label="بوابة ولي الأمر" current="السلوك" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "سلوك الأبناء" subtitle=school.name icon="behavior" %}
+    <a href="{% url 'parent_dashboard' %}" class="btn-secondary btn-sm">العودة للبوابة</a>
+  {% endpage_header %}
+
+  {% for child in children_behavior %}
+    {% section_card child.student.full_name meta="آخر 10 مخالفات" icon="behavior_violation" %}
+      <div class="parent-child">
+        {% kpi_strip label="أرقام السلوك" %}
+          {% kpi "قائمة" child.unresolved tone=child.unresolved_tone title="مخالفاتٌ لم يُغلق إجراؤها" %}
+          {% kpi "الإجمالي" child.total_infractions tone="purple" %}
+        {% endkpi_strip %}
+        {% if child.infractions %}
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>التاريخ</th><th>الرمز</th><th>الوصف</th><th>الحالة</th></tr></thead>
+              <tbody>
+                {% for inf in child.infractions %}
+                  <tr>
+                    <td class="num">{{ inf.shown_day|date:"d/m" }}</td>
+                    <td>{% if inf.violation_category %}<span class="status-badge {% if inf.violation_category.category == 'A' %}status-warning{% else %}status-danger{% endif %}">{{ inf.violation_category.code }}</span>{% else %}—{% endif %}</td>
+                    <td>{{ inf.description|truncatewords:10 }}</td>
+                    <td>{% if inf.is_resolved %}<span class="status-badge status-success">محلولة</span>{% else %}<span class="status-badge status-warning">قائمة</span>{% endif %}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          {% empty_state "لا مخالفاتٍ مسجّلة" sub="سجلٌّ نظيف" icon="status_success" %}
+        {% endif %}
+      </div>
+    {% endsection_card %}
+  {% empty %}
+    {% section_card "الأبناء" icon="children" empty="لا أبناءَ مربوطين بحسابك حالياً" empty_sub="تواصل مع إدارة المدرسة لربط حسابك بأبنائك" %}{% endsection_card %}
+  {% endfor %}
+
+</div>
+{% endblock %}

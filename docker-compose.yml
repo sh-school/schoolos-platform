@@ -1,0 +1,107 @@
+# ══════════════════════════════════════════════════════════════
+# SchoolOS — Development docker-compose
+# تشغيل محلي:  docker compose up --build -d   →   http://localhost:8000
+# يعمل بمعزل تام عن مشروع schoolos-template (أسماء حاويات ومنافذ مختلفة).
+# للإنتاج استخدم docker-compose.prod.yml.
+# ══════════════════════════════════════════════════════════════
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: shschool-dev-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - shschool_pgdata18:/var/lib/postgresql
+    ports:
+      - "5433:5432"          # 5432 محجوز لـ schoolos-template — نستخدم 5433 على المضيف
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: shschool-dev-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"          # 6379 محجوز لـ schoolos-template — نستخدم 6380 على المضيف
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    # الصورةُ نفسُها تخدم حاوياتِ الجلسات (docker-compose.session.yml)، فأدواتُ
+    # الاختبار فيها مبنيّةٌ لا مثبَّتةٌ في كلّ حاوية — انظر INSTALL_DEV في Dockerfile.
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
+    container_name: shschool-dev-web
+    restart: unless-stopped
+    # migrate يعمل بدور المالك (env_file=shschool_user) لتطبيق DDL،
+    # ثم runserver يعمل بدور التطبيق غير-superuser (shschool_app) ليخضع لـ RLS.
+    command: sh -c "python manage.py migrate --noinput && DB_USER=shschool_app DB_PASSWORD=$$APP_DB_PASSWORD python manage.py runserver 0.0.0.0:8000"
+    environment:
+      DJANGO_SETTINGS_MODULE: shschool.settings.development
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: "1"
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    env_file:
+      - .env
+    volumes:
+      - .:/app                # كود حيّ مع auto-reload للتطوير
+      - /app/.venv            # لا تُظلِّل بيئة الصورة بأي venv محلي
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # عاملُ المهامّ الخلفيّة — توليدُ الجدول وحده يستغرق دقائقَ لا تحتملها دورةُ الطلب.
+  # وبدونه يبقى الطلبُ «في الانتظار» حتّى يُوسمَ فاشلاً بعد عشرين دقيقة.
+  worker:
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
+    container_name: shschool-dev-worker
+    restart: unless-stopped
+    command: sh -c "DB_USER=shschool_app DB_PASSWORD=$$APP_DB_PASSWORD celery -A shschool worker -l info --concurrency=2"
+    environment:
+      DJANGO_SETTINGS_MODULE: shschool.settings.development
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: "1"
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/.venv
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # الصورةُ تحمل HEALTHCHECK للويب (wget على /health/) فيرثه العامل ويُعلَن
+    # «unhealthy» أبداً رغم أنّه يعمل. فحصُ العامل الصحيح: يُجيب على ping عبر Redis.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A shschool inspect ping -d celery@$$(hostname) --timeout 10 | grep -q pong || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  shschool_pgdata18:

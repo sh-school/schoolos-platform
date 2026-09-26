@@ -1,0 +1,63 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}استمارة {{ obs.teacher.full_name }} — PDF{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent2_url="/quality/" parent2_label="ضمان الجودة" parent_url="/quality/observations/" parent_label="الزيارات الصفية" current="نسخة PDF" %}
+{% endblock %}
+
+{% block content %}
+{% comment %}
+الملفّ يُعاد inline فيحلّ محلّ الصفحة في عارض المتصفّح؛ عرضُه داخل إطارٍ هنا
+يُبقي شريط الأدوات لنا — رجوعاً وتحميلاً وإرسالاً.
+
+و`{# … #}` لا يصلح هنا: صيغة التعليق تلك في Django **سطرٌ واحد**، والمتعدّد
+يُطبع نصّاً ظاهراً فوق الصفحة. وقد وقع ذلك فعلاً.
+{% endcomment %}
+<div class="obs-pdf-page">
+  {% page_header page_title icon="document" %}
+    {% if can_send %}
+    <button type="button" class="btn-primary btn-sm"
+            data-toggle="#send-box">
+      إرسال نسخة
+    </button>
+    {% endif %}
+    <a data-app-file href="{% url 'observation_pdf' obs.id %}" download class="btn-secondary btn-sm">تحميل</a>
+    {% comment %}
+    الرجوع إلى القائمة لا إلى التفصيل: من يفتح الاستمارة يكون قد فرغ منها،
+    ووجهتُه التالية زيارةٌ أخرى — لا الصفحة التي جاء منها.
+    {% endcomment %}
+    <a href="{% url 'observation_list' %}" class="btn-secondary btn-sm">← رجوع للقائمة</a>
+  {% endpage_header %}
+
+  {% if can_send %}
+  <form id="send-box" hidden method="post" action="{% url 'observation_send' obs.id %}"
+        class="obs-send-box">
+    {% csrf_token %}
+    <p class="obs-send-box__title"><b>إرسال نسخة إلى:</b></p>
+    <div class="obs-send-box__grid">
+      {% for key, label, person in recipients %}
+      <label class="obs-send-box__option{% if not person %} is-unavailable{% endif %}">
+        <input type="checkbox" name="recipients" value="{{ key }}"
+               {% if not person %}disabled{% endif %}>
+        <span>{{ label }}
+          <small class="obs-send-box__who">
+            {% if person %}— {{ person.full_name }}{% else %}— غير محدَّد{% endif %}
+          </small>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+    {% callout "warning" %}يصل المستلمَ إشعارٌ فيه اسمُ المعلّم ونسبتُه الإجماليّة، ولا يُسحب بعد الإرسال.{% endcallout %}
+    <div class="obs-send-box__actions">
+      <button type="submit" class="btn-primary btn-sm">إرسال</button>
+      <button type="button" class="btn-secondary btn-sm"
+              data-hide="#send-box">إلغاء</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <iframe src="{% url 'observation_pdf' obs.id %}" title="استمارة الزيارة الصفّية"
+          class="obs-pdf-frame"></iframe>
+</div>
+{% endblock %}

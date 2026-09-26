@@ -1,0 +1,68 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load privacy ui %}
+{% block title %}تسجيل زيارة جديدة{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/clinic/" parent_label="العيادة" current="تسجيل زيارة" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash clinic-form-page">
+
+  {% page_header "تسجيل زيارة جديدة" icon="clinic" %}
+    <a href="{% url 'clinic:dashboard' %}" class="btn-secondary btn-sm">← رجوع</a>
+  {% endpage_header %}
+
+  <div class="form-card">
+    <form method="post" hx-post="{% url 'clinic:record_visit' %}" hx-target="#visit-result" data-validate>
+      {% csrf_token %}
+      <div class="form-stack">
+
+        {# ── الطالب — تسميةُ الخيار مركّبةٌ بمرشِّح الستر، فالقائمةُ تبقى باليد بتسميةٍ مربوطة ── #}
+        <div class="ui-field">
+          <label for="f-student_id" class="ui-field__label">الطالب <span class="req-star" aria-hidden="true">*</span></label>
+          <select id="f-student_id" name="student_id" required class="form-control">
+            <option value="">— اختر الطالب —</option>
+            {% for student in students %}
+            <option value="{{ student.id }}" {% if student_id == student.id|stringformat:"s" %}selected{% endif %}>
+              {{ student.full_name }} ({{ student.national_id|mask_id }})
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        {# ── السبب ── #}
+        {% field "reason" "سبب الزيارة" required=True placeholder="مثال: صداع، غثيان، إصابة..." %}
+
+        {# ── الأعراض ── #}
+        {% field "symptoms" "الأعراض التفصيلية" type="textarea" rows=2 placeholder="تفاصيل الأعراض..." %}
+
+        {# ── درجة الحرارة والعلاج ── #}
+        <div class="ui-grid-2">
+          {% field "temperature" "درجة الحرارة (°م)" type="number" step="0.1" min=35 max=42 placeholder="37.0" %}
+          {% field "treatment" "الإجراء المتخذ" placeholder="مثال: مسكن ألم، راحة..." %}
+        </div>
+
+        {# ── إرسال للمنزل ── #}
+        <div class="ui-callout ui-callout--warning items-center">
+          <input type="checkbox" name="is_sent_home" id="sent_home" class="clinic-check">
+          <label for="sent_home" class="font-medium cursor-pointer m-0">
+            {% icon "status_warning" %} تم إرسال الطالب إلى المنزل (يُرسَل إشعارٌ بالبريد إلى وليّ الأمر إن كان له بريدٌ مسجَّل)
+          </label>
+        </div>
+
+      </div>
+
+      <div class="flex gap-3 mt-6">
+        <button type="submit" class="btn-danger flex-1 p-3 text-sm font-bold">
+          {% icon "save" %} تسجيل الزيارة
+        </button>
+        <a href="{% url 'clinic:dashboard' %}" class="btn-secondary px-6 py-3 no-underline">إلغاء</a>
+      </div>
+    </form>
+  </div>
+
+  <div id="visit-result"></div>
+</div>
+{% endblock %}

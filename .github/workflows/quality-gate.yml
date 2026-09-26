@@ -1,0 +1,680 @@
+name: Quality Gate — بوابة الجودة الإلزامية
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, develop]
+  # طابورُ الدمج: الفحصُ الإلزاميُّ يُشغَّل على «main + الطلب» قبل الدمج، فلا يُطلب
+  # تحديثُ الفرع يدويّاً كلّما دمجت محادثةٌ أخرى (قرارُ 2026-09-13).
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ══════════════════════════════════════════════════════
+  #  1. pytest + عتبةُ التغطية (الرقمُ في pyproject.toml وحدَه)
+  # ══════════════════════════════════════════════════════
+  #
+  # إصدارٌ واحد: 3.12 — ما تُفحص عليه البوّاباتُ ويعمل عليه الإنتاج
+  # (`Dockerfile: python:3.12-slim`). كانت هنا مصفوفةٌ مع 3.11 حين كان الإنتاجُ
+  # عليه (#259)، ثمّ حارساً لطريق الرجوع بعد التحويل (#278)؛ واستقرّ الإنتاجُ على
+  # 3.12 منذ 2026-09-14 فسقطت الخانة. إصدارٌ جديد = سطرٌ هنا + Dockerfile + pyproject.
+  test-coverage:
+    name: pytest — تغطية
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       test_db
+          POSTGRES_USER:     test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SETTINGS_MODULE: shschool.settings.testing
+      SECRET_KEY: ci-testing-only-not-for-production-use-a1b2c3d4e5f6
+      FERNET_KEY: dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLWZvcmNpLS0=
+      EXCEL_PROTECTION_PASSWORD: ci-testing-only
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت مكتبات النظام (Cairo + WeasyPrint)
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libgdk-pixbuf2.0-dev \
+            libffi-dev \
+            shared-mime-info \
+            pkg-config
+
+      - name: تثبيت المتطلبات
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-django pytest-cov pytest-asyncio factory-boy \
+            pytest-xdist==3.8.0
+
+      - name: تطبيق Migrations
+        run: python manage.py migrate --noinput
+
+      # كانتا في ci.yml وحده، وهو الملفُّ الذي أُزيل لأنّ بقيّته تكرارٌ لهذه البوّابة.
+      - name: التحقق من عدم وجود migrations غير مطبّقة
+        run: python manage.py makemigrations --check --noinput
+
+      - name: فحص إعدادات Django
+        run: python manage.py check --fail-level WARNING
+
+      - name: "pytest + Coverage Gate"
+        # العتبةُ ليست هنا: pytest-cov يقرأ `fail_under` من
+        # `[tool.coverage.report]` في pyproject.toml — الرقمُ الوحيدُ في المستودع.
+        # كانت 70 هنا و60 في nightly و85 في عنوانه، والملخّصُ يطبع PASS عند 60.
+        #
+        # و`-n auto`: المجموعةُ نفسُها تمرّ في CI في اثنتي عشرةَ دقيقةً وتمرّ هنا
+        # في اثنتين وأربعين — والفرقُ أنّ تلك تُوزّعها على الأنوية وهذه تُسلسلها.
+        # ثلاثون دقيقةً تُهدر في كلّ دورة، وبوّابةٌ بهذا الطول تُغري بتخطّيها لا
+        # باحترامها.
+        run: |
+          python -m pytest -n auto --junit-xml=test-results.xml \
+            --cov=. --cov-report=xml:coverage.xml --cov-report=html:htmlcov
+
+      - name: رفع تقارير التغطية
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            test-results.xml
+            coverage.xml
+            htmlcov/
+          retention-days: 14
+
+      - name: ملخص Coverage
+        if: always()
+        # الحالةُ تُحسب بالعتبة نفسِها التي حكمت — تُقرأ من pyproject لا تُكتب هنا.
+        run: |
+          echo "## نتائج التغطية — Quality Gate" >> $GITHUB_STEP_SUMMARY
+          echo "| المقياس | القيمة |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          python3 -c "
+          import tomllib
+          import xml.etree.ElementTree as ET
+          with open('pyproject.toml', 'rb') as f:
+              threshold = tomllib.load(f)['tool']['coverage']['report']['fail_under']
+          try:
+              rate = float(ET.parse('coverage.xml').getroot().attrib['line-rate']) * 100
+              status = 'PASS' if rate >= threshold else 'FAIL'
+              print(f'| التغطية | {rate:.1f}% |')
+              print(f'| الحد الأدنى (pyproject) | {threshold}% |')
+              print(f'| الحالة | {status} |')
+          except Exception as e:
+              print(f'| التغطية | غير متاح ({e}) — الوظيفةُ فشلت |')
+          " >> $GITHUB_STEP_SUMMARY
+
+  # ══════════════════════════════════════════════════════
+  #  2. Ruff — lint + format
+  # ══════════════════════════════════════════════════════
+  ruff:
+    name: Ruff — lint + format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت ruff
+        run: pip install ruff==0.4.4
+
+      - name: ruff check
+        run: ruff check . --output-format=github
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+  # ══════════════════════════════════════════════════════
+  #  3. mypy — سقّاطةُ الأنواع (tests/mypy_ratchet.py)
+  # ══════════════════════════════════════════════════════
+  #
+  # كانت `mypy … | head -50 || true` ثمّ `::warning` — فتخضرّ مهما أخرج،
+  # والملخّصُ يكتب PASS لفحصٍ لم يحكم قطّ. الآن سقّاطة: العددُ المسجَّل لكلّ
+  # ملفٍّ في `tests/mypy_ratchet_baseline.json` لا يزيد، وملفٌّ جديدٌ يبدأ من
+  # الصفر، وإن سقط mypy نفسُه سقطت الوظيفة.
+  mypy:
+    name: mypy — سقّاطة الأنواع
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت مكتبات النظام (Cairo)
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcairo2-dev pkg-config
+
+      - name: تثبيت mypy + stubs
+        # الإصداراتُ من requirements-mypy.txt وحدَه (OWN-30) — الملفُّ نفسُه الذي يستدعيه requirements-dev.txt،
+        # فما يقيسه المطوّرُ محلّيّاً هو ما تحكم به البوّابة. لا إصدارَ حرفيّاً هنا (يحرسه tests/test_mypy_pins_are_one_source.py).
+        run: pip install -r requirements-mypy.txt
+
+      - name: تثبيت المتطلبات (لحل أنواع Django)
+        run: pip install -r requirements.txt
+
+      - name: فحص الأنواع — core/ و shschool/ (بإعداد pyproject، لا يزيد عن المسجَّل)
+        env:
+          DJANGO_SETTINGS_MODULE: shschool.settings.testing
+          SECRET_KEY: ci-testing-only-not-for-production-use-a1b2c3d4e5f6
+          FERNET_KEY: dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLWZvcmNpLS0=
+          EXCEL_PROTECTION_PASSWORD: ci-testing-only
+        run: python -m tests.mypy_ratchet
+
+  # ══════════════════════════════════════════════════════
+  #  3b. migration-linter — لا هجرةَ هدّامةً بلا توسيعٍ ثمّ تقليص (P4-1)
+  # ══════════════════════════════════════════════════════
+  #
+  # django-migration-linter يولّد SQL كلّ هجرةٍ جديدةٍ (منذ فرع الأساس) بـ
+  # sqlmigrate ويفحصها: DROP COLUMN/TABLE وRENAME وNOT NULL بلا افتراضٍ كلُّها
+  # أخطاءٌ تُسقط الوظيفة. لا يُطبّق شيئاً على القاعدة (sqlmigrate لا يُنفّذ).
+  # حادثة 2026-09-11 (حذفُ عمودٍ بهجرةٍ أسقط ثماني صفحاتٍ) من هذا النوع تماماً.
+  migration-linter:
+    name: مدقّق الهجرات — Expand/Contract
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       test_db
+          POSTGRES_USER:     test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SETTINGS_MODULE: shschool.settings.testing
+      SECRET_KEY: ci-testing-only-not-for-production-use-a1b2c3d4e5f6
+      FERNET_KEY: dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLWZvcmNpLS0=
+      EXCEL_PROTECTION_PASSWORD: ci-testing-only
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # التاريخُ كاملاً: `--git-commit-id` يقارن بفرع الأساس، وهو أسلافُ
+          # رأس الفرع أصلاً (طلبُ الدمج/طابورُ الدمج) — لا حاجةَ لجلبٍ إضافيّ.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت مكتبات النظام (Cairo)
+        # بلا هذه: pip يبني pycairo من المصدر (لا عجلةَ منشورةً له على PyPI)
+        # ويسقط بـ`Dependency "cairo" not found` — كان يمرّ صدفةً بذاكرة pip
+        # المؤقّتة لعجلةٍ بُنيت لإصدارٍ مثبَّتٍ سابقاً، فكشفه أوّلُ ترقية
+        # (1.29.0 → 1.29.1، PR #364).
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcairo2-dev pkg-config
+
+      - name: تحديد الأساس للمقارنة
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request) echo "BASE_SHA=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_ENV" ;;
+            merge_group)  echo "BASE_SHA=${{ github.event.merge_group.base_sha }}" >> "$GITHUB_ENV" ;;
+            *)            echo "BASE_SHA=$(git rev-parse HEAD~1)" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: تثبيت المتطلبات + المدقّق
+        # مجموعةُ pytest نفسُها التي في وظيفة test-coverage: tests/conftest.py
+        # (يُحمَّل تلقائيّاً مع أيّ اختبارٍ تحته) يستورد factory، وpyproject.toml
+        # يضبط asyncio_mode — فتُثبَّت الحزمُ كلُّها لا factory-boy وحدَه.
+        run: |
+          pip install -r requirements.txt
+          pip install django-migration-linter==5.2.0 \
+            pytest pytest-django pytest-cov pytest-asyncio factory-boy
+
+      - name: التحقّق من أنّ الآلة نفسَها تُسقط عموداً محذوفاً
+        # لا تشغيلَ هنا لهجرةٍ حقيقيّة — اختبارٌ حتميّ على المحلّل نفسِه
+        # (tests/test_migration_linter_wiring.py)، فلا نثق بأنّ الوظيفة تعمل، نتحقّق.
+        run: python -m pytest tests/test_migration_linter_wiring.py -q
+
+      - name: تطبيق الهجرات (الحالةُ التي تُقاس عليها هجراتُ الفرع الجديدة)
+        run: python manage.py migrate --noinput
+
+      - name: فحص هجرات الفرع منذ ${{ env.BASE_SHA }}
+        run: python manage.py lintmigrations --git-commit-id "$BASE_SHA"
+
+  # ══════════════════════════════════════════════════════
+  #  4. Radon — تعقيد حلقي (CC 11-30 = تحذير، CC >= 31 = فشل)
+  # ══════════════════════════════════════════════════════
+  complexity:
+    name: Radon — تعقيد CC ≤ 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: تثبيت radon
+        run: pip install radon==6.0.1
+
+      - name: فحص التعقيد الحلقي (CC >= 31 = فشل)
+        run: |
+          # radon grades: A(1-5) B(6-10) C(11-20) D(21-30) E(31-40) F(41+)
+          # --min E catches CC >= 31.
+          # Phase 1: block CC >= 31. Phase 2 (future): lower to C (CC 11-30)
+          result=$(radon cc . \
+            --exclude "*/migrations/*,*/.venv/*,manage.py,scripts/*,*/scripts/*,tests/*,*/tests/*,*/management/commands/*" \
+            --min E \
+            --show-complexity 2>/dev/null)
+          if [ -n "$result" ]; then
+            echo "::error::Functions with Critical Complexity (CC >= 31) detected:"
+            echo "$result"
+            echo ""
+            echo "## تعقيد الكود — فشل (CC >= 31)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$result" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # Warn about moderate complexity (CC 11-30) but don't fail
+          warnings=$(radon cc . \
+            --exclude "*/migrations/*,*/.venv/*,manage.py,scripts/*,*/scripts/*,tests/*,*/tests/*,*/management/commands/*" \
+            --min C --max D \
+            --show-complexity 2>/dev/null)
+          if [ -n "$warnings" ]; then
+            echo "::warning::Functions with moderate complexity (CC 11-30):"
+            echo "$warnings"
+            echo "## تعقيد الكود — تحذير (CC 11-30)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$warnings" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## تعقيد الكود — ناجح (CC ≤ 30)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ══════════════════════════════════════════════════════
+  #  5. detect-secrets — كشف بيانات الاعتماد المسربة
+  # ══════════════════════════════════════════════════════
+  secrets-scan:
+    name: detect-secrets — كشف الأسرار
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: تثبيت detect-secrets
+        run: pip install detect-secrets==1.5.0
+
+      - name: حارسُ البيانات الشخصيّة — لا رقمَ شخصيّاً ولا جوّالاً حقيقيّاً في مستودعٍ عامّ
+        # المنطقُ كلُّه في `scripts/check_personal_data.py` (وتحرسه `tests/test_personal_data_guard.py`).
+        # كان `grep` هنا يستثني `tests/` فبقي فيها رقمٌ حقيقيٌّ لمعلّم، ويحكم على السطر لا على الرمز،
+        # ويطبع الأرقامَ كاملةً في هذا السجلّ وهو عامّ. والبياناتُ الحقيقيّةُ في `data/` و`backups/`
+        # يتجاهلها git، وهذا الحارسُ يرفض ما يفلت.
+        run: python scripts/check_personal_data.py
+
+      - name: فحص الأسرار المسربة — سرٌّ ليس في السجلّ يُسقط البوّابة
+        # كان `detect-secrets scan … || true` ثمّ عدٌّ للجديد يُطبع ولا يُقارن —
+        # فلا سرَّ كان يُسقط شيئاً. الخطّافُ يقارن كلَّ ملفٍّ متتبَّع بالسجلّ
+        # (`.secrets.baseline`، وفيه فلاتر الاستثناء نفسُها) ويخرج بـ1 على أيّ
+        # سرٍّ جديد. وخروجُه بـ3 ليس سرّاً: السجلُّ تقادم (رقمُ سطرٍ تحرّك أو سرٌّ
+        # مسجَّلٌ زال) — يُطبع تحذيرٌ بأمر التحديث ولا يُسقط، لأنّ الخطّاف لا يصل
+        # إلى 3 إلّا وقد وجد صفرَ سرٍّ جديد. ولا xargs: يقسم القائمةَ فتتعدّد
+        # الاستدعاءات ويضيع رمزُ الخروج (123).
+        #
+        # تحديثُ السجلّ (على لينكس — المساراتُ فيه بشرطةٍ أماميّة؛ ويندوز يكتبها
+        # بشرطةٍ خلفيّة فلا يطابقها الخطّاف في CI):
+        #   detect-secrets scan --all-files --exclude-files '<كما في السجلّ>' \
+        #     --exclude-lines '<كما في السجلّ>' > .secrets.baseline
+        run: |
+          mapfile -t files < <(git ls-files)
+          set +e
+          detect-secrets-hook --baseline .secrets.baseline "${files[@]}"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "لا سرَّ جديداً في ${#files[@]} ملفّاً متتبَّعاً." ;;
+            3) echo "::warning::سجلُّ الأسرار تقادم (أرقامُ أسطرٍ تحرّكت أو سرٌّ مسجَّلٌ زال) — أعد توليده وأودعه؛ لا سرَّ جديداً." ;;
+            *) echo "::error::سرٌّ جديدٌ ليس في .secrets.baseline (أو انهار detect-secrets، رمز $rc) — راجع المخرَجات أعلاه"; exit 1 ;;
+          esac
+
+  # ══════════════════════════════════════════════════════
+  #  6. axe-core — وصوليّةٌ على صفحاتٍ مرسومةٍ فعلياً (P2-1، خارطة الهوية البصرية)
+  # ══════════════════════════════════════════════════════
+  #  `tests/a11y_ratchet.py` يفحص مصدر القالب نصّياً؛ هذا يفتح الصفحةَ في متصفّحٍ
+  #  حقيقيّ (Playwright + Chromium) بعد تسجيل دخولٍ فعليّ، ويُشغّل محرّك axe-core
+  #  نفسَه — فيُمسك ما لا يظهر في المصدر (تبايناً محسوباً، دَوراً مُركَّباً من
+  #  CSS/JS معاً). الخطُّ الأساس لا يبدأ من صفر — سُجِّل بمخالفتين حقيقيّتين
+  #  موجودتين فعلاً (2026-09-18)؛ الحارسُ يمنع الزيادة لا يُصلحهما الآن.
+  axe-a11y:
+    name: axe-core — وصوليّةٌ حيّة
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       test_db
+          POSTGRES_USER:     test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SETTINGS_MODULE: shschool.settings.testing
+      SECRET_KEY: ci-testing-only-not-for-production-use-a1b2c3d4e5f6
+      FERNET_KEY: dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLWZvcmNpLS0=
+      EXCEL_PROTECTION_PASSWORD: ci-testing-only
+      # Playwright يستعمل حلقةَ أحداثٍ داخليّةً (greenlet) تُخطئ حارسَ Django غير
+      # المتزامن ظنّاً منه أنّه استُدعي من سياقٍ غير متزامن — وهو ليس كذلك، لا
+      # استدعاءَ ORM حقيقيّاً من طريقٍ غير متزامن هنا.
+      DJANGO_ALLOW_ASYNC_UNSAFE: "1"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت مكتبات النظام (Cairo + WeasyPrint)
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libgdk-pixbuf2.0-dev \
+            libffi-dev \
+            shared-mime-info \
+            pkg-config
+
+      - name: تثبيت المتطلبات
+        # حزمٌ محدّدة لا `requirements-dev.txt` كاملاً — فيه مسافةٌ لتعارضٍ
+        # سابقٍ بين click وmutmut غيرِ متعلّقٍ بهذه الوظيفة (كما تفعل وظيفتا
+        # pytest وmypy أعلاه، كلٌّ يثبّت ما يحتاجه فقط).
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-django factory-boy \
+            pytest-playwright==0.9.0 axe-playwright-python==0.1.8
+
+      # WebKit (محرّكُ iOS Safari) لسقّاطة الجوال وحدها (Q-02)؛ وaxe وCore Web Vitals على Chromium.
+      - name: تثبيت متصفّحَي Chromium وWebKit (مع مكتبات النظام)
+        run: playwright install --with-deps chromium webkit
+
+      - name: تطبيق Migrations
+        run: python manage.py migrate --noinput
+
+      - name: axe-core على الصفحات الحيّة
+        run: python -m pytest tests/test_a11y_axe_ratchet.py -v
+
+      # ميزانية Core Web Vitals (P3-3): الخطوةُ هنا لا في وظيفةٍ جديدة — المتصفّحُ
+      # والخدمات والهجراتُ جاهزةٌ. ولا يُعاد تسمية الوظيفة: اسمُها هو اسمُ الفحص
+      # المطلوب في حماية الفرع وطابور الدمج، وتبديلُه يُعلّق الدمج على اسمٍ لا يصل.
+      - name: ميزانية Core Web Vitals على الصفحات الحيّة
+        run: python -m pytest tests/test_web_vitals_budget.py tests/test_action_cards_fit_narrow_screens.py -v -s
+
+      # سقّاطةُ الجوال (M-00، خطّة الجوال §3): أهدافُ اللمس والنصّ والتجاوز على رحلات خمسة
+      # أدوار، جوالاً بالمحرّكَين وسطحَ مكتبٍ بـChromium. الخطوةُ هنا لا في وظيفةٍ جديدة للسبب أعلاه.
+      - name: سقّاطة الجوال على الرحلات الحيّة
+        run: python -m pytest tests/test_mobile_audit.py -v
+
+  # ══════════════════════════════════════════════════════
+  #  6b. tests/e2e/ — Playwright: مصادقة، تنقّل، صلاحياتُ أدوار (أُحييت 2026-09-19)
+  # ══════════════════════════════════════════════════════
+  #  كانت مستثناةً استثناءً مضاعفاً (norecursedirs + collect_ignore_glob) منذ
+  #  إنشائها — pytest-playwright نفسُه لم يكن مثبَّتاً، فلم تُجمَع قطّ. فُحص كلُّ
+  #  ملفٍّ (6) يدوياً: 17 من 39 اختباراً كانت تفشل فعلياً لأسبابٍ حقيقيّةٍ متعدّدة
+  #  (حقلُ دخولٍ قديم، صيغةُ Playwright API غير مدعومة، `locator("nav")` مبهمٌ
+  #  بعد صار للصفحة عدّةُ معالم nav، وسياسةُ صلاحياتٍ تغيّرت فعلاً) — أُصلحت
+  #  كلُّها، ثمّ أُحيي المجلّدُ هنا. كلُّ ملفٍّ يتخطّى نفسَه بـ
+  #  `pytest.importorskip("pytest_playwright")` إن غابت الحزمة (كوظيفة
+  #  `pytest — تغطية` الرئيسية).
+  e2e:
+    name: Playwright — e2e (مصادقة، تنقّل، صلاحيات)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       test_db
+          POSTGRES_USER:     test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SETTINGS_MODULE: shschool.settings.testing
+      SECRET_KEY: ci-testing-only-not-for-production-use-a1b2c3d4e5f6
+      FERNET_KEY: dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLWZvcmNpLS0=
+      EXCEL_PROTECTION_PASSWORD: ci-testing-only
+      DJANGO_ALLOW_ASYNC_UNSAFE: "1"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: تثبيت مكتبات النظام (Cairo + WeasyPrint)
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libgdk-pixbuf2.0-dev \
+            libffi-dev \
+            shared-mime-info \
+            pkg-config
+
+      - name: تثبيت المتطلبات
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-django factory-boy pytest-playwright==0.9.0
+
+      - name: تثبيت متصفّح Chromium (مع مكتبات النظام)
+        run: playwright install --with-deps chromium
+
+      - name: تطبيق Migrations
+        run: python manage.py migrate --noinput
+
+      - name: اختبارات Playwright الشاملة
+        run: python -m pytest tests/e2e/ -v
+
+  # ══════════════════════════════════════════════════════
+  #  نافذة النشر — الدمجُ إلى main نشرٌ فوريّ (حادثة 2026-09-17)
+  # ══════════════════════════════════════════════════════
+  #  هنا لا في سير عملٍ مستقلّ: «ملخص بوابة الجودة» هو الفحصُ الإلزاميّ في طابور
+  #  الدمج، فالحارسُ خارجه لا يمنع شيئاً. القواعدُ في scripts/deploy_window.py.
+  deploy-window:
+    name: نافذة النشر — لا دمج وقت الدوام
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: الأحد–الخميس 07:00–14:00 بتوقيت قطر ممنوع إلّا «نشر-عاجل»
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          REPO: ${{ github.repository }}
+        run: python3 scripts/deploy_window.py
+
+  # ══════════════════════════════════════════════════════
+  #  تحذيرٌ لا حظر — لا يدخل «ملخص بوابة الجودة» ولا يُسقط شيئاً. سواط
+  #  2026-09-17: ثلاثةُ طلباتٍ مفتوحةٍ عدّلت base.html في آنٍ واحد بلا علم
+  #  أصحابها ببعضهم؛ وقبلها طلبان نفّذا البندَ نفسَه خلال 28 دقيقة. القواعدُ
+  #  في scripts/pr_file_collision.py.
+  pr-file-collision:
+    name: تعارضُ ملفّاتٍ بين الطلبات المفتوحة — تحذير
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: مقارنةُ ملفّات هذا الطلب بالطلبات المفتوحة الأخرى
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/pr_file_collision.py
+
+  # ══════════════════════════════════════════════════════
+  #  ملخص بوابة الجودة
+  # ══════════════════════════════════════════════════════
+  gate-summary:
+    name: ملخص بوابة الجودة
+    runs-on: ubuntu-latest
+    needs: [test-coverage, ruff, mypy, migration-linter, complexity, secrets-scan, deploy-window, axe-a11y, e2e, tailwind-build]
+    if: always()
+    steps:
+      - name: نتيجة بوابة الجودة
+        run: |
+          echo "## بوابة الجودة — Quality Gate" >> $GITHUB_STEP_SUMMARY
+          echo "| الفحص | النتيجة |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| pytest + التغطية (py3.12، العتبة في pyproject) | ${{ needs.test-coverage.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ruff lint + format | ${{ needs.ruff.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| mypy — سقّاطة الأنواع | ${{ needs.mypy.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| مدقّق الهجرات — Expand/Contract | ${{ needs.migration-linter.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Radon CC ≤ 30 | ${{ needs.complexity.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| detect-secrets | ${{ needs.secrets-scan.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| نافذة النشر (لا دمج وقت الدوام) | ${{ needs.deploy-window.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| axe-core — وصوليّةٌ حيّة | ${{ needs.axe-a11y.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Playwright — e2e | ${{ needs.e2e.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tailwind — البناءُ الملتزَم محدَّث | ${{ needs.tailwind-build.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: فشل إذا فشل أي فحص
+        if: >-
+          needs.test-coverage.result != 'success' ||
+          needs.ruff.result != 'success' ||
+          needs.mypy.result != 'success' ||
+          needs.migration-linter.result != 'success' ||
+          needs.complexity.result != 'success' ||
+          needs.secrets-scan.result != 'success' ||
+          needs.deploy-window.result != 'success' ||
+          needs.axe-a11y.result != 'success' ||
+          needs.e2e.result != 'success' ||
+          needs.tailwind-build.result != 'success'
+        run: |
+          echo "::error::Quality Gate FAILED — one or more checks did not pass"
+          exit 1
+
+  # ══════════════════════════════════════════════════════
+  #  Tailwind — الملفُّ الملتزَم هو ما يُبنى من القوالب
+  # ══════════════════════════════════════════════════════
+  #  `static/css/tailwind.min.css` أصلٌ منشور: القوالبُ تستورده و`Dockerfile`
+  #  لا يبنيه، فما في المستودع هو ما يصل المتصفّح. وقد تقادم فعلاً — كانت
+  #  القوالبُ تستعمل `animate-pulse` و`border-amber-400` ولا وجودَ لهما في
+  #  الملفّ المنشور، فتصمت الأنماطُ بلا خطأٍ يُنبّه.
+  tailwind-build:
+    name: Tailwind — البناءُ الملتزَم محدَّث
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: تثبيت التبعيات (بلا postinstall كي لا يُبنى قبل المقارنة)
+        run: npm ci --ignore-scripts
+
+      - name: بناء Tailwind
+        run: npm run tw:build
+
+      - name: المقارنة بالملتزَم
+        run: |
+          if ! git diff --quiet -- static/css/tailwind.min.css; then
+            echo "::error::static/css/tailwind.min.css متقادم — شغّل npm run tw:build والتزم الناتج"
+            git diff --stat -- static/css/tailwind.min.css
+            exit 1
+          fi
+          echo "البناءُ الملتزَم يطابق القوالب."

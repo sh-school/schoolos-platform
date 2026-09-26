@@ -1,0 +1,92 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}سجل الاستيراد{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/import/" parent_label="الاستيراد" current="سجل الاستيراد" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "سجل عمليات الاستيراد" subtitle="آخر 50 عملية استيراد" icon="import" %}
+    <a href="{% url 'import_grades_select' %}" class="btn-primary btn-sm">{% icon "import" %} استيراد جديد</a>
+  {% endpage_header %}
+
+  {% if log_rows %}
+  {% filter_bar "ترشيحُ سجلّ الاستيراد" live=True %}
+    {% field "q" "بحث" type="search" id="log-search-input" grow=True placeholder="بحث باسم الملف أو المستخدم..." autocomplete="off" %}
+    {% field "status" "الحالة" type="select" id="log-status-filter" choices="completed=مكتمل|failed=فشل|other=أخرى" blank="كل الحالات" %}
+  {% endfilter_bar %}
+  {% endif %}
+
+  {# العددُ في طرف الترويسة، ويُحدَّث مع البحث: «12 من 50 عملية». #}
+  {% section_card "العمليات" meta=log_rows|length icon="folder" empty="لا توجد عمليات استيراد" empty_sub="لم يتم تنفيذ أي عمليات استيراد بعد." flush=True %}{% if log_rows %}
+    <div class="table-wrap">
+      <table id="import-log-table">
+        <thead>
+          <tr>
+            <th scope="col">الملف</th>
+            <th scope="col">رُفع بواسطة</th>
+            <th scope="col" class="num">التاريخ</th>
+            <th scope="col" class="num">الإجمالي</th>
+            <th scope="col" class="num">مستورد</th>
+            <th scope="col" class="num">أخطاء</th>
+            <th scope="col" class="num">الحالة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in log_rows %}
+          <tr data-status="{{ log.status }}">
+            <td class="import-log-file" title="{{ log.file_name }}"><b>{{ log.file_name }}</b></td>
+            <td>{{ log.uploaded_by.full_name|default:"—" }}</td>
+            <td class="num">{{ log.started_at|date:"d/m/Y H:i" }}</td>
+            <td class="num">{{ log.total_rows }}</td>
+            <td class="num">{{ log.imported_rows }}</td>
+            <td class="num">{{ log.failed_rows|default:"—" }}</td>
+            <td class="num"><span class="status-badge {{ log.badge_class }}">{{ log.get_status_display }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+
+</div>
+
+{% if log_rows %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function () {
+  var searchInput = document.getElementById('log-search-input');
+  var statusFilter = document.getElementById('log-status-filter');
+  var table = document.getElementById('import-log-table');
+  /* العدّادُ طرفُ ترويسة البطاقة التي تحمل الجدول. */
+  var countDisplay = table ? table.closest('.ui-section').querySelector('.card-bar-sub') : null;
+  var rows = table ? Array.from(table.querySelectorAll('tbody tr')) : [];
+  var total = rows.length;
+
+  function filterRows() {
+    var q = searchInput.value;
+    var status = statusFilter.value;
+    var visible = 0;
+    rows.forEach(function(row) {
+      var text = row.textContent;
+      var rowStatus = row.getAttribute('data-status') || '';
+      var matchText = window.smartMatch(q, text);
+      var matchStatus = !status
+        || (status === 'other' && rowStatus !== 'completed' && rowStatus !== 'failed')
+        || rowStatus === status;
+      var show = matchText && matchStatus;
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    if (countDisplay) countDisplay.textContent = visible === total ? total : visible + ' من ' + total;
+  }
+
+  searchInput.addEventListener('input', filterRows);
+  statusFilter.addEventListener('change', filterRows);
+});
+</script>
+{% endif %}
+{% endblock %}

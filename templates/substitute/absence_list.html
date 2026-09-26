@@ -1,0 +1,58 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% load navigation %}
+{% block title %}غيابات المعلمين{% endblock %}
+
+{# الجدولُ يُمرَّر وحدَه، لا الصفحةُ فوقه أيضاً. #}
+{% block main_class %}{% page_layout "list" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/staff-affairs/" parent_label="شؤون الموظفين" current="غيابات المعلمين" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "غيابات المعلمين" subtitle="غيابُ اليوم ومن يحلّ محلَّه — والبدلاءُ يُقترحون من الحصص الحرّة" icon="attendance_teacher_absence" %}
+    {% if request.user|can_open:"register_absence" %}<a href="{% url 'register_absence' %}" class="btn-primary btn-sm">{% icon "edit_record" %} تسجيل غياب</a>{% endif %}
+    <a href="{% url 'substitute_report' %}" class="btn-secondary btn-sm">{% icon "attendance_teacher_absence" %} تقرير البدلاء</a>
+  {% endpage_header %}
+
+  {% filter_bar "ترشيحُ الغيابات" %}
+    {% field "date" "التاريخ" type="date" value=abs_date|date:'Y-m-d' %}
+    {# بحثٌ في المتصفّح وحده (`smartFilter`) بلا اسمٍ يُرسَل — فلا يُعطى اسماً. #}
+    <div class="ui-field ui-field--grow">
+      <label for="absence-search" class="ui-field__label">بحث بالاسم</label>
+      <input type="text" id="absence-search" class="form-control" placeholder="ابحث باسم المعلم..." autocomplete="off">
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="btn-secondary btn-sm">{% icon "search" %} عرض</button>
+    </div>
+  {% endfilter_bar %}
+
+  {% section_card "الغيابات" meta=absences|length icon="attendance_teacher_absence" empty="لا توجد غيابات" empty_sub="لا توجد غيابات مسجّلة في هذا التاريخ" %}{% if absences %}
+    {# الاسمُ في `data-text` على غلافٍ لكلّ بطاقة: `smartFilter` يُخفي الغلافَ كلَّه. #}
+    <div class="ui-entity-grid" id="absence-cards">
+      {% for absence in absences %}
+      <div class="slot-cell" data-filter-row data-text="{{ absence.teacher.full_name }}">
+        {% url 'absence_detail' absence.id as detail_url %}
+        {% entity_card absence.teacher.full_name who=absence.get_reason_display href=detail_url tone=absence.tone %}
+          {% if absence.assignments.all %}{% entity_chips %}{% for a in absence.assignments.all %}<span class="chip">{{ a.substitute.full_name }} — ح{{ a.slot.period_number }}</span>{% endfor %}{% endentity_chips %}{% endif %}
+          {% entity_status tone=absence.status_tone %}{{ absence.get_status_display }}{% endentity_status %}
+        {% endentity_card %}
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  window.smartFilter('absence-search', '[data-filter-row]', { textAttr: 'data-text' });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,107 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui navigation %}
+
+{% block title %}ملخص سلوك الطلاب — شؤون الطلاب{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}{% page_layout "dashboard" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-affairs/" parent_label="شؤون الطلاب" current="ملخص السلوك" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-page">
+
+  {% firstof wing_subtitle today|date:"F Y" as header_subtitle %}
+  {% page_header "ملخص سلوك الطلاب" subtitle=header_subtitle icon="behavior" %}
+    <a href="{% url 'behavior:report_infraction' %}" class="btn-primary btn-sm">{% icon "edit_record" %} تسجيل مخالفة</a>
+    <a href="{% url 'behavior:dashboard' %}" class="btn-secondary btn-sm">{% icon "behavior" %} لوحة السلوك</a>
+    {% if not wing_bound or request.user|can_open:'behavior:committee' %}
+    <a href="{% url 'behavior:committee' %}" class="btn-secondary btn-sm">{% icon "behavior_team" %} فريق السلوك</a>
+    {% endif %}
+    <a data-app-file href="{% url 'behavior:policy_pdf' %}" class="btn-secondary btn-sm">{% icon "export_pdf" %} لائحة السلوك PDF</a>
+    <a data-app-file href="{% url 'student_affairs:behavior_export' %}" class="btn-secondary btn-sm">{% icon "export_excel" %} تصدير Excel</a>
+    <a data-app-file href="{% url 'student_affairs:behavior_pdf' %}" class="btn-secondary btn-sm" target="_blank">{% icon "export_pdf" %} تصدير PDF</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام السلوك هذا العام" %}
+    {% kpi "إجمالي المخالفات" total_infractions tone=pct_tone title="مخالفات العام الدراسي" %}
+    {% kpi "مخالفات اليوم" today_infractions tone=today_tone %}
+    {% kpi "الطلاب المخالفون" pct_label sub=offenders_label tone=pct_tone title="من خالف مرّةً فأكثر هذا العام، من إجمالي الطلاب" %}
+    {% kpi "غير محلولة" unresolved tone=unresolved_tone %}
+  {% endkpi_strip %}
+
+  {% section_card "توزيع المخالفات حسب الدرجة" meta="هذا العام" icon="stats" %}
+    <ul class="chip-row" aria-label="المخالفات حسب الدرجة">
+      {% for label, count in degree_rows %}
+        <li class="chip-stat"><span class="chip-stat__key">{{ label }}</span><b class="chip-stat__value">{{ count }}</b></li>
+      {% endfor %}
+    </ul>
+  {% endsection_card %}
+
+  <div class="fill-grid">
+    {% section_card "اتجاه المخالفات الشهري" meta="آخر 6 أشهر" icon="trend" %}
+      <div class="dash-chart-wrap">
+        <canvas id="infractions-chart" role="img" aria-label="رسم بياني: عدد المخالفات في كل شهر من آخر ستة أشهر"></canvas>
+      </div>
+    {% endsection_card %}
+
+    {% section_card "أكثر الطلاب مخالفات" meta="هذا العام" icon="stats" empty="لا مخالفات مسجّلة هذا العام" %}{% if worst_students %}
+      <ol class="plain-list is-scroll">
+        {% for s in worst_students %}
+          <li class="plain-list__row">
+            <a href="{% url 'student_affairs:student_profile' s.student__id %}" class="plain-list__title sa-link">{{ s.student__full_name }}</a>
+            <span class="status-badge status-danger" title="عدد المخالفات">{{ s.infraction_count }}</span>
+          </li>
+        {% endfor %}
+      </ol>
+    {% endif %}{% endsection_card %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/vendor/chart.umd.min.js' %}"></script>
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function() {
+  Chart.defaults.font.family = 'Tajawal, sans-serif';
+  Chart.defaults.font.size = 11;
+
+  const ctx = document.getElementById('infractions-chart');
+  if (!ctx) return;
+  new Chart(ctx.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: {{ chart_labels_json|safe }},
+      datasets: [{
+        label: 'عدد المخالفات',
+        data: {{ chart_data_json|safe }},
+        backgroundColor: chartColor('chart-1'),
+        borderRadius: 6,
+        maxBarThickness: 48,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { precision: 0 },
+          grid: { color: chartColor('border') },
+        },
+        x: {
+          grid: { display: false },
+        }
+      }
+    }
+  });
+});
+</script>
+{% endblock %}

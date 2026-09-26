@@ -1,0 +1,410 @@
+from typing import TYPE_CHECKING, Any
+
+from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
+from django.core.validators import RegexValidator
+from django.db import models
+from django.utils import timezone
+
+from ..managers import CustomUserManager
+from ._crypto import decrypt_field, encrypt_field, hmac_field
+from .school import _uuid
+
+if TYPE_CHECKING:
+    from .access import Membership
+
+_national_id_validator = RegexValidator(
+    regex=r"^\d{5,20}$",
+    message="الرقم الشخصي يجب أن يحتوي على أرقام فقط (5-20 رقم)",
+)
+_phone_validator = RegexValidator(
+    regex=r"^\+?[\d\s\-]{7,20}$",
+    message="رقم الجوال غير صحيح — استخدم صيغة دولية مثل +97455xxxxxx",
+)
+
+
+class CustomUser(AbstractBaseUser, PermissionsMixin):
+    id = models.UUIDField(primary_key=True, default=_uuid, editable=False)
+    # PDPPL Article 8: national_id plaintext kept as USERNAME_FIELD (Django requirement).
+    # Auth uses HMACAuthBackend (HMAC lookup). Fernet encryption + HMAC populated on save().
+    # get_by_natural_key() overridden in CustomUserManager to use HMAC-first lookup.
+    national_id = models.CharField(
+        max_length=20,
+        unique=True,
+        verbose_name="الرقم الشخصي",
+        db_index=True,
+        validators=[_national_id_validator],
+    )
+    full_name = models.CharField(max_length=200, verbose_name="الاسم الكامل", db_index=True)
+    email = models.EmailField(blank=True, verbose_name="البريد الإلكتروني")
+    phone = models.CharField(
+        max_length=20,
+        blank=True,
+        verbose_name="الجوال",
+        validators=[_phone_validator],
+    )
+    # ── v7: PDPPL Article 8 — تشفير رقم الهاتف ───────────────────
+    phone_encrypted = models.TextField(
+        blank=True,
+        default="",
+        verbose_name="الجوال (مشفّر)",
+    )
+    phone_hmac = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        verbose_name="HMAC الجوال",
+    )
+    nationality = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        verbose_name="الجنسية",
+    )
+    #: تاريخُ مباشرة العمل في الخدمة (لا الالتحاق بهذه المدرسة — ذاك `Membership.joined_at`).
+    #: يحسب به تقريرُ السنة الأولى (النظام الوظيفي، المادة 16: مدّةٌ «لا تقل عن ثلاثة أشهر»).
+    #: فارغٌ = غيرُ معروف، فلا يُرفض به تقرير.
+    service_start_date = models.DateField(null=True, blank=True, verbose_name="تاريخ المباشرة")
+    is_staff = models.BooleanField(default=False, verbose_name="دخول لوحة الإدارة")
+    is_active = models.BooleanField(default=True, verbose_name="حساب نشط")
+    date_joined = models.DateTimeField(default=timezone.now, verbose_name="تاريخ الانضمام")
+    must_change_password = models.BooleanField(default=True, verbose_name="يجب تغيير كلمة المرور")
+    totp_secret = models.CharField(max_length=255, blank=True, verbose_name="مفتاح 2FA")
+    totp_enabled = models.BooleanField(default=False, verbose_name="2FA مفعّل")
+    last_password_change = models.DateTimeField(
+        null=True, blank=True, verbose_name="آخر تغيير لكلمة المرور"
+    )
+    failed_login_attempts = models.PositiveSmallIntegerField(
+        default=0, verbose_name="محاولات الدخول الفاشلة"
+    )
+    locked_until = models.DateTimeField(null=True, blank=True, verbose_name="مقفل حتى")
+    consent_given_at = models.DateTimeField(
+        null=True, blank=True, verbose_name="تاريخ إعطاء الموافقة"
+    )
+
+    # ── v6: الرخصة المهنية — نظام الرخص المهنية (قطر) ──────────────
+    professional_license_number = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        verbose_name="رقم الرخصة المهنية",
+        help_text="رقم الرخصة الصادرة من وزارة التعليم والتعليم العالي",
+    )
+    professional_license_expiry = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name="تاريخ انتهاء الرخصة المهنية",
+    )
+
+    #: الرقم الوظيفي الذي تعرف به الوزارةُ الموظّف — غير الرقم الشخصي وغير
+    #: الرخصة المهنية. وبه تُراسَل الوزارةُ في شؤون الموظّف، ولم يكن له موضعٌ
+    #: في المنصّة فكان يُحفظ خارجها.
+    employee_number = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        db_index=True,
+        verbose_name="الرقم الوظيفي",
+        help_text="رقم الموظّف لدى وزارة التربية والتعليم والتعليم العالي",
+    )
+
+    #: منطقةُ سكن الموظّف كما في كشف المدرسة — «الريان»، «معيذر»، «دخان».
+    #:
+    #: غرضان معلَنان (قرار 2026-09-10): الطوارئُ وترتيبُ المناوبات حين تُغلق
+    #: طريق، والتوزيعُ الجغرافيُّ للتخطيط. والاطّلاعُ مقيَّدٌ بإدارة المدرسة
+    #: وشؤون الموظّفين، ومدّةُ الحفظ مدّةُ الخدمة — يُفرَّغ عند إنهائها.
+    #:
+    #: ومنطقةٌ لا عنوان: لا شارعَ ولا رقمَ مبنى. وهو في الورقة المدرسيّة وحدَها
+    #: فيمتلئ لنحو 104 من 135 — الفراغُ فيه أصلٌ لا خلل.
+    residence_area = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        verbose_name="منطقة السكن",
+    )
+
+    # ── v5.1.1: HMAC + Fernet encryption for national_id (PDPPL) ──
+    national_id_encrypted = models.TextField(
+        blank=True,
+        default="",
+        verbose_name="الرقم الشخصي (مشفّر)",
+    )
+    national_id_hmac = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        verbose_name="HMAC الرقم الشخصي",
+    )
+
+    USERNAME_FIELD = "national_id"
+    REQUIRED_FIELDS = ["full_name"]
+    objects = CustomUserManager()
+
+    class Meta:
+        verbose_name = "مستخدم"
+        verbose_name_plural = "المستخدمون"
+        constraints = [
+            # رقمان وظيفيّان متطابقان خطأُ إدخالٍ لا واقع. والشرط يستثني
+            # الفراغ: أكثرُ السجلّات بلا رقمٍ وظيفيّ بعد.
+            models.UniqueConstraint(
+                fields=["employee_number"],
+                condition=~models.Q(employee_number=""),
+                name="unique_employee_number",
+            ),
+        ]
+
+    def __str__(self):
+        # PDPPL [PII-02]: لا نُدرج الرقم الشخصي في التمثيل النصّي لأنه يتسرّب
+        # إلى AuditLog.object_repr (جدول دائم غير قابل للحذف).
+        return self.full_name
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        # ── Auto-populate HMAC + Fernet fields on every save ──
+        if self.national_id:
+            new_hmac = hmac_field(self.national_id)
+            if new_hmac != self.national_id_hmac:
+                self.national_id_hmac = new_hmac
+            new_enc = encrypt_field(self.national_id)
+            if new_enc and new_enc != self.national_id_encrypted:
+                self.national_id_encrypted = new_enc
+        if self.phone:
+            new_hmac = hmac_field(self.phone)
+            if new_hmac != self.phone_hmac:
+                self.phone_hmac = new_hmac
+            new_enc = encrypt_field(self.phone)
+            if new_enc and new_enc != self.phone_encrypted:
+                self.phone_encrypted = new_enc
+        else:
+            # الأعمدةُ الثلاثة وحدةٌ واحدة: مسحُ الرقم يمسح نسختَه المشفَّرة وبصمتَه،
+            # وإلا بقي الرقمُ القديم قابلاً للفكّ وقرأته الإشعاراتُ بعد أن أُلغي.
+            self.phone_encrypted = ""
+            self.phone_hmac = ""
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and "phone" in update_fields:
+            # `save(update_fields=["phone"])` كان يحفظ الرقمَ الصريح وحدَه ويترك
+            # النسخةَ المشفَّرة والبصمةَ على القيمة السابقة.
+            kwargs["update_fields"] = {*update_fields, "phone_encrypted", "phone_hmac"}
+        super().save(*args, **kwargs)
+
+    def get_national_id_decrypted(self):
+        """فك تشفير الرقم الشخصي من الحقل المشفّر — fallback إلى الحقل العادي."""
+        if self.national_id_encrypted:
+            decrypted = decrypt_field(self.national_id_encrypted)
+            if decrypted and decrypted != self.national_id_encrypted:
+                return decrypted
+        return self.national_id
+
+    def get_phone_decrypted(self) -> str:
+        """فك تشفير رقم الهاتف — fallback إلى الحقل العادي."""
+        if self.phone_encrypted:
+            decrypted = decrypt_field(self.phone_encrypted)
+            if decrypted and decrypted != self.phone_encrypted:
+                return str(decrypted)
+        return str(self.phone)
+
+    @property
+    def active_membership(self):
+        """العضويّةُ الحاكمة — والكادرُ يتقدّم على وليّ الأمر والطالب.
+
+        معلّمٌ ابنُه في المدرسة له عضويّتان نشطتان: «معلّم» و«وليّ أمر». وكان
+        الاختيارُ بلا ترتيبٍ — `first()` بلا `order_by` تُعيد ما يشاء المحرّك —
+        فيظهر معلّمُ الرياضيات بلا قسم، وقد يُقرأ دورُه «وليَّ أمرٍ» فيُحرَم
+        شاشاتِه. والترتيبُ الآن صريحٌ ومستقرّ.
+        """
+        cached = self.__dict__.get("_active_membership")
+        if cached is not None:
+            return cached
+        memberships = self.active_memberships
+        result = memberships[0] if memberships else None
+        if result is not None:
+            self.__dict__["_active_membership"] = result
+        return result
+
+    @property
+    def active_memberships(self) -> "list[Membership]":
+        """العضويّاتُ النشطة كلُّها بترتيب الحكم — استعلامٌ واحدٌ يُحفظ على الكائن.
+
+        كانت `active_membership` تجلب الأولى وحدَها (`LIMIT 1`)، ثمّ يسأل قالبُ
+        الأساس `memberships.count` في كلّ صفحةٍ ليُظهر «تبديل الدور». والعضويّاتُ
+        قلّةٌ (واحدةٌ إلى ثلاث)، فجلبُها معاً يكلّف ما كان يكلّفه جلبُ الأولى،
+        ويُغني عن عدٍّ في كلّ صفحة.
+        """
+        cached: list[Membership] | None = self.__dict__.get("_active_memberships")
+        if cached is not None:
+            return cached
+        result: list[Membership] = list(
+            self.memberships.filter(is_active=True)
+            .select_related("school", "role")
+            .order_by(role_rank(), "joined_at", "id")
+        )
+        self.__dict__["_active_memberships"] = result
+        return result
+
+    @property
+    def has_multiple_roles(self) -> bool:
+        """أله أكثرُ من عضويّةٍ نشطة — فيُعرض له «تبديل الدور»."""
+        return len(self.active_memberships) > 1
+
+    @property
+    def has_parent_membership(self) -> bool:
+        """أله عضويّةُ وليّ أمرٍ نشطة — أيّاً كان دورُه الحاكم؟
+
+        تُقرأ من ``active_memberships`` المحفوظة، فلا تكلّف استعلاماً في كلّ صفحة
+        كما يكلّف ``has_role("parent")``. ويقرؤها رابطُ «بوابتي» في قائمة الكادر
+        وبوّابةُ الموافقة (``core/parent_consent.py``).
+        """
+        return any(m.role.name == "parent" for m in self.active_memberships)
+
+    def invalidate_active_membership(self):
+        """يُبطل cache العضوية — استخدمه بعد إنشاء أو تعديل Membership"""
+        self.__dict__.pop("_active_membership", None)
+        self.__dict__.pop("_active_memberships", None)
+        self.__dict__.pop("_department_obj", None)
+
+    def get_active_membership(self):
+        return self.active_membership
+
+    @property
+    def school(self):
+        m = self.active_membership
+        return m.school if m else None
+
+    def get_school(self):
+        return self.school
+
+    @property
+    def role(self):
+        m = self.active_membership
+        return m.role.name if m else None
+
+    def get_role(self):
+        return self.role or ""
+
+    def has_role(self, role_name):
+        return self.memberships.filter(is_active=True, role__name=role_name).exists()
+
+    def has_any_role(self, *role_names):
+        """أله عضويّةٌ نشطةٌ بأحد هذه الأدوار؟ — استعلامٌ واحدٌ لا استعلامٌ لكلّ دور.
+
+        وكان تنفيذُها `get_role() in role_names` — أي فحصَ **الدور الحاكم**
+        وحدَه، بينما توثيقُها واسمُها يَعِدان بفحص الأدوار كلِّها. فمعلّمٌ هو
+        وليُّ أمرٍ أيضاً يُجاب عنه بـ«لا» في سؤال «أهو وليُّ أمر؟»، لأنّ
+        الكادرَ يتقدّم في `role_rank`. والفرقُ لا يظهر اليومَ إلّا في عشرة
+        حساباتٍ محلّيّاً — وكلُّها كادرٌ ووليُّ أمرٍ معاً.
+        """
+        return self.memberships.filter(is_active=True, role__name__in=role_names).exists()
+
+    def get_parent_membership(self):
+        return (
+            self.memberships.filter(is_active=True, role__name="parent")
+            .select_related("school", "role")
+            .first()
+        )
+
+    @property
+    def department(self):
+        """يُعيد اسم قسم/تخصص المستخدم من FK."""
+        department = self.department_obj
+        return department.name if department else ""
+
+    @property
+    def department_obj(self):
+        """قسمُ المستخدم — من عضويّةٍ تحمل قسماً، لا من أوّل عضويّةٍ تُصادَف.
+
+        فالقسمُ يخصّ عضويّةَ التدريس، وصاحبُ عضويّتين قد تُقرأ منه الأخرى.
+        تُقرأ من مُعالج السياق في كلّ طلب، وقد تُقرأ ثانيةً في الصلاحيّات أو
+        القالب لنفس المستخدم — فتُحفظ على الكائن كـ`active_membership`.
+        """
+        cached = self.__dict__.get("_department_obj", "__unset__")
+        if cached != "__unset__":
+            return cached
+        membership = (
+            self.memberships.filter(is_active=True, department_obj__isnull=False)
+            .select_related("department_obj")
+            .order_by("department_obj__sort_order")
+            .first()
+        )
+        result = membership.department_obj if membership else None
+        self.__dict__["_department_obj"] = result
+        return result
+
+    def get_department(self):
+        return self.department
+
+    def is_admin(self):
+        """مدير أو superuser — صلاحيات إدارية كاملة."""
+        return self.is_superuser or self.get_role() == "principal"
+
+    def is_teacher(self):
+        return self.get_role() in ("teacher", "coordinator", "ese_teacher")
+
+    def is_leadership(self):
+        """المستوى الأول والثاني — القيادة العليا ونواب المدير."""
+        return self.is_superuser or self.get_role() in (
+            "principal",
+            "vice_admin",
+            "vice_academic",
+        )
+
+    def is_staff_member(self):
+        """أي دور من الطاقم (ليس طالب أو ولي أمر)."""
+        from .access import ALL_STAFF_ROLES
+
+        return (
+            self.is_superuser
+            or self.get_role() in ALL_STAFF_ROLES
+            or self.get_role() == "specialist"
+        )
+
+    def is_same_department(self, other_department):
+        """
+        يتحقق إذا كان المستخدم من نفس القسم.
+        يقبل: كائن Department أو اسم نصي.
+        """
+        from .department import Department
+
+        my_dept = self.department_obj
+        if my_dept is None:
+            return False
+        if isinstance(other_department, Department):
+            return my_dept.pk == other_department.pk
+        return my_dept.name == other_department
+
+
+class Profile(models.Model):
+    GENDER = [("M", "ذكر"), ("F", "أنثى")]
+    user = models.OneToOneField(
+        CustomUser, on_delete=models.CASCADE, related_name="profile", verbose_name="المستخدم"
+    )
+    gender = models.CharField(max_length=1, choices=GENDER, blank=True, verbose_name="الجنس")
+    birth_date = models.DateField(null=True, blank=True, verbose_name="تاريخ الميلاد")
+    notes = models.TextField(blank=True, verbose_name="ملاحظات")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="تاريخ التعديل")
+
+    class Meta:
+        verbose_name = "ملف شخصي"
+        verbose_name_plural = "الملفات الشخصية"
+
+    def __str__(self):
+        return f"Profile: {self.user.full_name}"
+
+
+def role_rank() -> models.Case:
+    """رتبةُ الدور عند تعدّد العضويّات: الكادرُ صفر، ووليُّ الأمر واحد، والطالبُ اثنان.
+
+    تُستعمل في كلّ استعلامٍ يختار «العضويّةَ الحاكمة» لشخصٍ له أكثرُ من صفة.
+
+    الاستيرادُ داخل الدالّة لأنّ `access` يستورد `CustomUser` — ولو كان في
+    الرأس لدار الاستيرادُ على نفسه.
+    """
+    from django.db.models import Case, IntegerField, Value, When
+
+    from .access import ALL_STAFF_ROLES
+
+    return Case(
+        When(role__name__in=sorted(ALL_STAFF_ROLES), then=Value(0)),
+        When(role__name="parent", then=Value(1)),
+        default=Value(2),
+        output_field=IntegerField(),
+    )

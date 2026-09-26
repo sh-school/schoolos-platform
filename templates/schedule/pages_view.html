@@ -1,0 +1,84 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}{{ title }}{% endblock %}
+{% block main_class %}page-wide{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/teacher/weekly-schedule/" parent_label="الجدول الأسبوعي" current=title %}
+{% endblock %}
+
+{% block content %}
+{% comment %}
+عرضٌ مستقلٌّ عن الطباعة (قرارُ 2026-09-18، نفسُ فصل جدول المعلم المفرد):
+بطاقةٌ عاديّةٌ لكلّ معلّمٍ أو شعبةٍ بجدولها — لا ورقةٌ بالملّيمتر في إطارٍ.
+والطباعةُ والتنزيلُ من ورقتهما الحقيقيّة عبر إطارٍ مخفيٍّ لا يُعرض، يُحمَّل
+عند أوّل طلب طباعةٍ لا فوراً — فعشراتُ الصفحات لا تُحسب مرّتين بلا حاجة.
+{% endcomment %}
+{% page_header title icon="print" %}{% endpage_header %}
+{# بطاقةٌ عاريةٌ بشريط أدواتٍ وقائمة — لا ترويسةَ عنّابيّةَ لها فليست `section_card`. #}
+<div class="schedule-pages-card">
+  <div class="schedule-head">
+    <div class="schedule-tools">
+      {% include "schedule/partials/schedule_picker.html" %}
+
+      <form method="get">
+        <input type="hidden" name="kind" value="{{ kind }}">
+        <input type="hidden" name="dept" value="{{ selected_dept }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <select name="paper" class="form-select" data-autosubmit title="حجم الورق">
+          <option value="a4" {% if paper == 'a4' %}selected{% endif %}>A4</option>
+          <option value="a3" {% if paper == 'a3' %}selected{% endif %}>A3</option>
+        </select>
+        <select name="orient" class="form-select" data-autosubmit title="اتّجاه الورقة">
+          <option value="portrait" {% if orient == 'portrait' %}selected{% endif %}>عمودي</option>
+          <option value="landscape" {% if orient == 'landscape' %}selected{% endif %}>أفقي</option>
+        </select>
+      </form>
+
+      <button type="button" id="pages-print-btn" class="btn-primary btn-sm">طباعة</button>
+      <a data-app-file href="{% url 'schedule_pages_pdf' %}?{{ selection_query }}" class="btn-secondary btn-sm">تنزيل PDF</a>
+      <span class="text-sm text-secondary">{{ pages|length }} صفحة</span>
+    </div>
+  </div>
+
+  <div class="pages-screen">
+    {% for page in pages %}
+    <section class="pages-screen__item">
+      <h2 class="pages-screen__title">
+        {% if kind == "classes" %}{{ page.class_group.label_with_track }}
+        {% else %}{{ page.teacher.full_name }}{% if page.department.name %} — {{ page.department.name }}{% endif %}{% endif %}
+      </h2>
+      <div class="table-wrap">
+        {% if kind == "classes" %}
+        {% include "schedule/pdf/week_grid.html" with week=page.week who="teacher" show_band_labels=True %}
+        {% else %}
+        {% include "schedule/pdf/week_grid.html" with week=page.week who="class" show_band_labels=True %}
+        {% endif %}
+      </div>
+      {% if kind == "teachers" and page.exempt_map %}
+      {% include "schedule/partials/week_legend.html" %}
+      {% endif %}
+    </section>
+    {% endfor %}
+  </div>
+
+  {% comment %}إطارٌ مخفيٌّ للطباعة والتنزيل وحدَهما — ورقتُه الحقيقيّةُ بملّيمترها وترويستها كما كانت دائماً.{% endcomment %}
+  <iframe id="pages-frame" title="{{ title }}"
+          data-src="{% url 'schedule_pages_paper' %}?embed=1&amp;{{ selection_query }}"
+          class="schedule-print-frame-hidden" aria-hidden="true" tabindex="-1"></iframe>
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+  (function () {
+    var frame = document.getElementById('pages-frame');
+    // الطباعةُ للإطار لا للصفحة — ويُحمَّل عند أوّل طلبٍ لا فوراً، وتنتظر
+    // تحميلَه أوّلَ مرّةٍ كي لا تُطبَع صفحةٌ بيضاء قبل أن تصل الورقةُ.
+    function print() { frame.contentWindow.focus(); frame.contentWindow.print(); }
+    document.getElementById('pages-print-btn').addEventListener('click', function () {
+      if (frame.getAttribute('src')) { print(); return; }
+      frame.addEventListener('load', print, { once: true });
+      frame.src = frame.dataset.src;
+    });
+  })();
+</script>
+{% endblock %}

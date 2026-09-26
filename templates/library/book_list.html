@@ -1,0 +1,34 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}قائمة الكتب{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/library/" parent_label="المكتبة" current="قائمة الكتب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "قائمة الكتب والمصادر" icon="library" %}
+    <a href="{% url 'library:borrow_book' %}" class="btn-primary btn-sm no-underline">+ إعارة جديدة</a>
+    <a href="{% url 'library:dashboard' %}" class="btn-secondary btn-sm no-underline">← رجوع</a>
+  {% endpage_header %}
+
+  {# ── HTMX Live Search ── #}
+  {% filter_bar "بحثُ الكتب" live=True %}
+    {% include "components/search_input.html" with search_url=request.path target="#books-container" placeholder="بحث بالعنوان أو المؤلف أو ISBN أو التصنيف..." name="q" value=query %}
+  {% endfilter_bar %}
+
+  {# ── Skeleton على التحميل الأولي ── #}
+  <div id="books-skeleton" class="htmx-indicator">
+    {% include "components/skeleton.html" with type="card" count=6 %}
+  </div>
+
+  {# ── نتائج الكتب (يُحدَّث بـ HTMX) ── #}
+  <div id="books-container"
+       hx-indicator="#books-skeleton">
+    {% include "library/partials/book_rows.html" %}
+  </div>
+
+</div>
+{% endblock %}

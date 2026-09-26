@@ -1,0 +1,52 @@
+{% load icons %}
+{% comment %}
+  Partial: صفوف جدول الزيارات — SchoolOS v5.1
+  يُعاد هذا القالب في طلبات HTMX (البحث الحي والترشيح)
+  Target: #visits-container
+{% endcomment %}{% load ui %}
+{% section_card "الزيارات" meta=visits|length icon="clinic_visit" flush=True empty="لا توجد زيارات" empty_sub="لا توجد زيارات مطابقة للمعايير المحددة" %}{% if visits %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">الطالب</th>
+          <th scope="col">التاريخ والوقت</th>
+          <th scope="col">السبب</th>
+          <th scope="col" class="num">الحرارة</th>
+          <th scope="col">الإجراء</th>
+          <th scope="col">ملاحظات</th>
+        </tr>
+      </thead>
+      <tbody id="visits-tbody">
+        {% for v in visits %}
+        <tr>
+          <td>
+            <a href="{% url 'clinic:health_record' v.student.id %}" class="link-maroon">{{ v.student.full_name }}</a>
+          </td>
+          <td class="num text-secondary">{{ v.visit_date|date:"d/m/Y H:i" }}</td>
+          <td>{{ v.reason }}</td>
+          <td class="num">
+            {% if v.temperature %}
+              <span class="clinic-temp{% if v.is_feverish %} is-fever{% endif %}">{{ v.temperature }}°</span>
+            {% else %}—{% endif %}
+          </td>
+          <td class="text-secondary">{{ v.treatment|default:"—" }}</td>
+          <td>
+            <div class="flex flex-wrap gap-1">
+              {% if v.is_sent_home %}
+                <span class="status-badge status-warning">{% icon "dashboard" %} منزل</span>
+              {% endif %}
+              {% if v.parent_notified %}
+                <span class="status-badge status-success">{% icon "call_parent" %} أُبلغ</span>
+              {% endif %}
+              {% if not v.is_sent_home and not v.parent_notified %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}{% endsection_card %}

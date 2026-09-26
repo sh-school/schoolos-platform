@@ -1,0 +1,63 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}حضور {{ student.full_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/parents/" parent_label="بوابة ولي الأمر" current="حضور الطالب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header student.full_name subtitle=subtitle icon="checklist" %}
+    <nav class="period-switch" aria-label="الفترة">
+      {% for d in period_choices %}
+        <a href="?period={{ d }}" class="period-switch__item{% if period == d %} is-current{% endif %}"{% if period == d %} aria-current="page"{% endif %}>{{ d }} يوماً</a>
+      {% endfor %}
+    </nav>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام الحضور" %}
+    {% if total %}{% kpi "الحضور" att_pct|stringformat:"s"|add:"%" tone="teal" title="الحصص الحاضرة من الحصص المرصودة" %}{% else %}{% kpi "الحضور" "—" tone="teal" title="لا حصصَ مرصودةً في الفترة" %}{% endif %}
+    {% kpi "حصص الغياب" absent tone="red" %}
+    {% kpi "حصص التأخّر" late tone="amber" %}
+    {% kpi "الحصص المرصودة" total tone="blue" %}
+  {% endkpi_strip %}
+
+  {% if alerts %}
+  {% section_card "تنبيهات الغياب المتكرّر" meta=alerts|length icon="absence" %}
+    <ul class="plain-list">
+      {% for alert in alerts %}
+        <li class="plain-list__row">
+          <span>{{ alert.absence_count }} غياب · {{ alert.period_start|date:"d/m" }} – {{ alert.period_end|date:"d/m" }}</span>
+          <span class="status-badge {% if alert.status == 'resolved' %}status-success{% else %}status-danger{% endif %}">{{ alert.get_status_display }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endsection_card %}
+  {% endif %}
+
+  {% section_card "تقويم الفترة" meta=enrollment.class_group.short_code icon="date" empty="لا حصصَ مرصودةً في هذه الفترة" %}{% if total %}
+    {% include "parents/_attendance_calendar.html" with weeks=weeks %}
+  {% endif %}{% endsection_card %}
+
+  {% if total %}
+  {% section_card "أيّامٌ فيها غيابٌ أو تأخّر" meta=flagged_days|length icon="absence" empty="لا غيابَ ولا تأخّرَ في هذه الفترة" %}{% if flagged_days %}
+    <div class="ui-entity-grid">
+      {% for day in flagged_days %}
+        {% entity_card day.date|date:"l d/m" count=day.sessions_label tone=day.has_absent|yesno:"red,amber" %}
+          {% entity_chips %}{% for rec in day.records %}{% if rec.status == "absent" or rec.status == "late" %}<span class="chip">{{ rec.session.start_time|time:"H:i" }} {{ rec.session.subject.name_ar|default:"—" }}</span>{% endif %}{% endfor %}{% endentity_chips %}
+          {% if day.has_absent %}
+            {% entity_status tone="danger" %}{% icon "status_error" %} غياب{% if day.has_late %} وتأخّر{% endif %}{% endentity_status %}
+          {% else %}
+            {% entity_status tone="warning" %}{% icon "tardiness" %} تأخّر{% endentity_status %}
+          {% endif %}
+        {% endentity_card %}
+      {% endfor %}
+    </div>
+  {% endif %}{% endsection_card %}
+  {% endif %}
+
+</div>
+{% endblock %}

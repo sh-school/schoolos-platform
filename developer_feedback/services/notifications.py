@@ -1,0 +1,268 @@
+"""
+خدمة إشعار المطوّر عبر SMTP.
+تطبّق قيود E1 escalation #3:
+- TLS 1.3 إلزامي (Django EMAIL_USE_SSL/TLS + EMAIL_BACKEND)
+- المحتوى المسموح: ticket_id + timestamp + role + URL_path + body فقط
+- ممنوع: الاسم الكامل، user_id خام (استخدم hash)، المرفقات
+- Retry مع exponential backoff (3 محاولات)
+"""
+
+from __future__ import annotations
+
+import logging
+
+from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.utils import timezone
+
+from developer_feedback.models import (
+    DeveloperMessage,
+    DeveloperMessageNotification,
+    NotificationChannel,
+    NotificationStatus,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def developer_recipient() -> str:
+    """مستلِمُ إشعارات المطوّر — من الإعدادات وحدَها (`DEVELOPER_FEEDBACK_RECIPIENT`).
+
+    لا بريدَ افتراضيّاً في الشيفرة: المستودعُ عامّ، والبريدُ الحقيقيّ لا يُكتب فيه.
+    """
+    return getattr(settings, "DEVELOPER_FEEDBACK_RECIPIENT", "")
+
+
+def _fail_without_recipient(
+    notification: DeveloperMessageNotification,
+) -> DeveloperMessageNotification:
+    notification.status = NotificationStatus.FAILED
+    notification.error_detail = "لا مستلِم: DEVELOPER_FEEDBACK_RECIPIENT غير مضبوط"
+    notification.save()
+    logger.error("Developer notification not sent: recipient is not configured")
+    return notification
+
+
+MAX_RETRIES = 3
+
+
+def _build_safe_payload(message: DeveloperMessage) -> dict:
+    """
+    يبني محتوى الإيميل وفق E1 escalation #3.
+    يتضمن فقط: ticket_id + timestamp + role + URL_path + body.
+    user_id الخام مُستبدَل بـ user_id_hash.
+    """
+    context_json = message.context_json or {}
+    # استخراج role + url_path من السياق (سبق تنظيفه في forms.py)
+    role = context_json.get("role", "unknown")
+    url_path = context_json.get("url_path", "")
+    view_name = context_json.get("view_name", "")
+
+    return {
+        "ticket_number": message.ticket_number,
+        "timestamp": message.created_at.isoformat() if message.created_at else "",
+        "role": role,
+        "url_path": url_path,
+        "view_name": view_name,
+        "message_type": message.get_message_type_display(),
+        "priority": message.get_priority_display(),
+        "subject": message.subject,
+        "body": message.body,
+        "user_id_hash": message.user_id_hash or "",
+        # لا اسم مستخدم — لا user_id خام — لا بريد شخصي
+    }
+
+
+def _render_email(payload: dict, edit_count: int | None = None) -> tuple[str, str, str]:
+    """يُرجع (subject, text_body, html_body).
+
+    الـHTML من `developer_feedback/email/notification.html` الوارث لأساس البريد
+    `email/_base.html` — فلا لونَ ولا نمطَ هنا، والنصُّ يُهرَّب في القالب.
+    و`edit_count` يُظهر تنبيهَ التعديل أعلى الرسالة.
+    """
+    subject = f"[SchoolOS Feedback] {payload['ticket_number']} — {payload['subject']}"
+
+    user_hash_short = (payload["user_id_hash"] or "")[:12]
+
+    text_body = (
+        f"رقم التذكرة: {payload['ticket_number']}\n"
+        f"التاريخ: {payload['timestamp']}\n"
+        f"نوع الرسالة: {payload['message_type']}\n"
+        f"الأولوية: {payload['priority']}\n"
+        f"الدور: {payload['role']}\n"
+        f"المسار: {payload['url_path']}\n"
+        f"View: {payload['view_name']}\n"
+        f"User Hash: {user_hash_short}...\n"
+        f"\n"
+        f"العنوان: {payload['subject']}\n"
+        f"\n"
+        f"الوصف:\n{payload['body']}\n"
+        f"\n"
+        f"---\n"
+        f"SchoolOS Developer Feedback — Azkia Software\n"
+        f"محتوى الإيميل مقيَّد وفق PDPPL (E1).\n"
+    )
+
+    html_body = render_to_string(
+        "developer_feedback/email/notification.html",
+        {**payload, "user_hash_short": user_hash_short, "edit_count": edit_count},
+    )
+
+    return subject, text_body, html_body
+
+
+def send_developer_notification(
+    message: DeveloperMessage,
+    recipient: str | None = None,
+) -> DeveloperMessageNotification:
+    """
+    يرسل إشعار SMTP للمطوّر.
+    ينشئ دائماً سجلاً في DeveloperMessageNotification (نجح أو فشل).
+
+    Returns:
+        DeveloperMessageNotification instance
+    """
+    to_email = recipient or developer_recipient()
+    payload = _build_safe_payload(message)
+    subject, text_body, html_body = _render_email(payload)
+
+    notification = DeveloperMessageNotification.objects.create(
+        message=message,
+        channel=NotificationChannel.SMTP,
+        recipient=to_email,
+        status=NotificationStatus.PENDING,
+    )
+    if not to_email:
+        return _fail_without_recipient(notification)
+
+    last_error: str | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        notification.attempt_count = attempt
+        try:
+            email = EmailMultiAlternatives(
+                subject=subject,
+                body=text_body,
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+                to=[to_email],
+            )
+            email.attach_alternative(html_body, "text/html")
+            if not email.send(fail_silently=False):
+                raise RuntimeError("لم يُسلَّم البريد: لا مزوّد بريد مُهيَّأ")
+
+            notification.status = NotificationStatus.SENT
+            notification.sent_at = timezone.now()
+            notification.error_detail = ""
+            notification.save()
+            logger.info(
+                "Developer notification sent: ticket=%s attempt=%d",
+                message.ticket_number,
+                attempt,
+            )
+            return notification
+        except Exception as exc:  # noqa: BLE001 — نحتاج التقاط أي فشل SMTP
+            last_error = str(exc)[:500]
+            logger.warning(
+                "Developer notification attempt %d failed: %s",
+                attempt,
+                last_error,
+            )
+            if attempt < MAX_RETRIES:
+                notification.status = NotificationStatus.RETRY
+                notification.error_detail = last_error
+                notification.save()
+                continue
+
+    # وصلنا هنا = كل المحاولات فشلت
+    notification.status = NotificationStatus.FAILED
+    notification.error_detail = last_error or "unknown"
+    notification.save()
+    logger.error(
+        "Developer notification failed after %d attempts: ticket=%s",
+        MAX_RETRIES,
+        message.ticket_number,
+    )
+    return notification
+
+
+def send_developer_edit_notification(
+    message: DeveloperMessage,
+    recipient: str | None = None,
+) -> DeveloperMessageNotification:
+    """
+    يرسل إشعار SMTP للمطوّر عندما يقوم المُرسِل بتعديل رسالة سبق إرسالها.
+
+    الفرق عن send_developer_notification:
+    - الـ subject يبدأ بـ "[تعديل]"
+    - يتضمن ملاحظة واضحة أن الرسالة عُدّلت بعد إرسالها الأصلي
+    - يتضمن edit_count ليُعلم المطوّر بعدد التعديلات السابقة
+    """
+    to_email = recipient or developer_recipient()
+    payload = _build_safe_payload(message)
+    edit_count = message.edit_history.count()
+
+    # بادئة [تعديل] + ملاحظة التعديل (في HTML يرسمها القالب من edit_count)
+    original_subject, text_body, html_body = _render_email(payload, edit_count=edit_count)
+    subject = f"[تعديل #{edit_count}] {original_subject}"
+    edit_notice_text = (
+        f"\n⚠️ تنبيه: هذه رسالة مُعدَّلة (التعديل رقم {edit_count}).\n"
+        f"تم تعديلها بعد الإرسال الأصلي.\n\n"
+    )
+    text_body = edit_notice_text + text_body
+
+    notification = DeveloperMessageNotification.objects.create(
+        message=message,
+        channel=NotificationChannel.SMTP,
+        recipient=to_email,
+        status=NotificationStatus.PENDING,
+    )
+    if not to_email:
+        return _fail_without_recipient(notification)
+
+    last_error: str | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        notification.attempt_count = attempt
+        try:
+            email = EmailMultiAlternatives(
+                subject=subject,
+                body=text_body,
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+                to=[to_email],
+            )
+            email.attach_alternative(html_body, "text/html")
+            if not email.send(fail_silently=False):
+                raise RuntimeError("لم يُسلَّم البريد: لا مزوّد بريد مُهيَّأ")
+
+            notification.status = NotificationStatus.SENT
+            notification.sent_at = timezone.now()
+            notification.error_detail = ""
+            notification.save()
+            logger.info(
+                "Developer EDIT notification sent: ticket=%s edit#=%d attempt=%d",
+                message.ticket_number,
+                edit_count,
+                attempt,
+            )
+            return notification
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)[:500]
+            logger.warning(
+                "Developer edit notification attempt %d failed: %s",
+                attempt,
+                last_error,
+            )
+            if attempt < MAX_RETRIES:
+                notification.status = NotificationStatus.RETRY
+                notification.error_detail = last_error
+                notification.save()
+                continue
+
+    notification.status = NotificationStatus.FAILED
+    notification.error_detail = last_error or "unknown"
+    notification.save()
+    logger.error(
+        "Developer edit notification failed after %d attempts: ticket=%s",
+        MAX_RETRIES,
+        message.ticket_number,
+    )
+    return notification

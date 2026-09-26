@@ -1,0 +1,165 @@
+{% load icons %}
+{# Modal: تحديث بيانات التنفيذ — يُحمَّل عبر HTMX في #modal-container #}
+
+<div class="q-modal-overlay" data-close-on-backdrop
+     role="dialog" aria-modal="true" aria-label="تحديث بيانات التنفيذ">
+  <div class="q-modal">
+
+    {# ═══ Header ═══ #}
+    <div class="q-modal-header">
+      <div class="header-content">
+        <div class="header-icon">{% icon "edit" %}</div>
+        <div>
+          <h3>تحديث بيانات التنفيذ</h3>
+          <p class="sub">رقم الإجراء: <span dir="ltr">{{ task.number }}</span></p>
+        </div>
+      </div>
+      <button class="close-btn" data-close-modal="closest:.q-modal-overlay" aria-label="إغلاق">
+        {% icon "close" %}
+      </button>
+    </div>
+
+    {# ═══ Body ═══ #}
+    <div class="q-modal-body">
+
+      {# Section 1: بيانات الإجراء والمؤشر (read-only) #}
+      <div class="q-modal-info">
+        <div class="section-title">{% icon "status_info" %} بيانات الإجراء والمؤشر</div>
+        <div class="info-grid">
+          <div>
+            <div class="info-label">الإجراء</div>
+            <div class="info-value">{{ task.text }}</div>
+          </div>
+          <div>
+            <div class="info-label">المؤشر</div>
+            <div class="info-value">{{ task.indicator.text }}</div>
+          </div>
+          <div>
+            <div class="info-label">زمن التنفيذ</div>
+            <div class="info-value">{{ task.date_range|default:"غير محدد" }}</div>
+          </div>
+          <div>
+            <div class="info-label">المنفذ</div>
+            <div class="info-value">{{ task.executor_norm }}</div>
+          </div>
+        </div>
+      </div>
+
+      {# View-only notice for non-executors #}
+      {% if not is_executor %}
+      <div class="q-view-only-notice">
+        {% icon "security" %}
+        وضع المعاينة فقط &mdash; ليس لديك صلاحية التعديل
+      </div>
+      {% endif %}
+
+      {# Form wraps sections 2 & 3 #}
+      <form action="{% url 'task_update_modal' task.id %}" method="POST" enctype="multipart/form-data">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.META.HTTP_REFERER }}">
+
+        {# Section 2: متابعة التنفيذ والأرشفة #}
+        <div class="{% if not is_executor %}q-view-only{% endif %}">
+          <div class="q-modal-form-section">
+            <div class="q-modal-form-grid">
+              {# حالة المتابعة #}
+              <div class="q-modal-field">
+                <label for="task-follow-up">حالة المتابعة</label>
+                <select name="follow_up" id="task-follow-up">
+                  <option value="">--- اختر ---</option>
+                  {% for val, label in follow_up_choices %}
+                  <option value="{{ val }}" {% if task.follow_up == val %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              {# نوع الدليل #}
+              <div class="q-modal-field">
+                <label for="task-evidence-type">نوع الدليل</label>
+                <select name="evidence_type" id="task-evidence-type">
+                  <option value="">--- اختر ---</option>
+                  {% for val, label in evidence_type_choices %}
+                  <option value="{{ val }}" {% if task.evidence_type == val %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              {# موقع الدليل #}
+              <div class="q-modal-field">
+                <label for="task-evidence-source">موقع الدليل</label>
+                <input type="text" name="evidence_source_file" id="task-evidence-source"
+                       value="{{ task.evidence_source_file }}"
+                       placeholder="مثال: القسم / الملف الإلكتروني">
+              </div>
+            </div>
+
+            {# ملاحظات المنفذ #}
+            <div class="q-modal-field full-width">
+              <label for="task-comments">ملاحظات المنفذ</label>
+              <textarea name="comments" id="task-comments" rows="3"
+                        placeholder="اكتب ما تم إنجازه...">{{ task.comments }}</textarea>
+            </div>
+          </div>
+
+          {# Section 3: رفع الدليل #}
+          {% if task.evidence_request_status == 'requested' %}
+          <div class="q-view-only-notice q-view-only-notice--danger">
+            {% icon "review_committee" %}
+            مطلوب رفع دليل من لجنة المراجعة
+            {% if task.evidence_request_note %}
+              — {{ task.evidence_request_note }}
+            {% endif %}
+          </div>
+          {% endif %}
+
+          {# Existing evidences #}
+          {% if task.evidences.exists %}
+          <div>
+            <div class="info-label">الأدلة المرفوعة سابقا:</div>
+            <div class="flex flex-wrap gap-2 mt-1">
+              {% for ev in task.evidences.all %}
+              <a data-app-file href="{{ ev.file.url }}" target="_blank" class="q-evidence-link">
+                {% icon "attach" %} {{ ev.title }}
+              </a>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+
+          {# Upload area #}
+          <label class="q-upload-area cursor-pointer" for="evidence-file-input" role="button" tabindex="0">
+            <input type="file" name="evidence_file" id="evidence-file-input" class="hidden"
+                   data-file-name="#file-name-display|PDF, Word, Images (Max 10MB)">
+            {# التسميةُ الملتفّة تشير بـ`for` إلى حقل الملفّ لا إلى هذا — فاسمُه في السمة. #}
+            <input type="text" name="evidence_title" placeholder="عنوان الدليل (اختياري)"
+                   aria-label="عنوان الدليل (اختياري)"
+                   data-action="stop"
+                   class="q-modal-field">
+            <div class="upload-icon">
+              {% icon "quality" %}
+            </div>
+            <p class="info-value">اضغط لرفع الدليل</p>
+            <p class="info-label" id="file-name-display">PDF, Word, Images (Max 10MB)</p>
+          </label>
+        </div>
+
+        {# ═══ Footer ═══ #}
+        <div class="q-modal-footer">
+          <button type="button" class="btn-secondary" data-close-modal="closest:.q-modal-overlay">إلغاء</button>
+          {% if is_executor %}
+          <button type="submit" class="btn-primary">
+            {% icon "save" %} حفظ التغييرات
+          </button>
+          {% endif %}
+        </div>
+      </form>
+
+    </div>
+  </div>
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+window.closeModal = function () {
+  document.getElementById('modal-container').innerHTML = '';
+};
+</script>

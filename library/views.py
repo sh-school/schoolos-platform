@@ -1,0 +1,153 @@
+"""
+library/views.py
+وحدة المكتبة المدرسية
+[مهمة 8] إضافة Pagination لقائمة الكتب (25 كتاب/صفحة)
+"""
+
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.core.paginator import Paginator
+from django.db.models import Q
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+
+from core import brand
+from core.capabilities import capability_required
+from core.models import CustomUser
+from library.models import BookBorrowing, LibraryBook
+from library.services import LibraryService
+
+
+@login_required
+@capability_required("library.view")
+def library_dashboard(request):
+    """لوحة تحكم المكتبة"""
+    school = request.user.get_school()
+
+    # ✅ v5.4: LibraryService.get_dashboard_context — جميع الـ queries في service layer
+    context = LibraryService.get_dashboard_context(school)
+    context["maroon_color"] = brand.MAROON
+    # اللونُ يحمل التنبيه — لا سطرَ «تنبيه» تحت الرقم ولا شريطَ يكرّره.
+    context["overdue_tone"] = "red" if context.get("overdue_borrowings") else "green"
+    return render(request, "library/dashboard.html", context)
+
+
+@login_required
+@capability_required("library.view")
+def book_list(request):
+    """
+    قائمة الكتب مع البحث
+    [مهمة 8] Pagination: 25 كتاب/صفحة
+    """
+    query = request.GET.get("q", "").strip()
+    school = request.user.get_school()
+
+    books = LibraryBook.objects.filter(school=school).order_by("title")
+    if query:
+        books = books.filter(
+            Q(title__icontains=query)
+            | Q(author__icontains=query)
+            | Q(isbn__icontains=query)
+            | Q(category__icontains=query)
+        )
+
+    paginator = Paginator(books, 25)
+    page = request.GET.get("page", 1)
+    page_obj = paginator.get_page(page)
+    # حالةُ التوفّر نصّاً ولوناً — كانت شرطاً في القالب (المتاحُ > 0 أخضر، وإلّا أحمر).
+    for book in page_obj:
+        book.stock_label = f"{book.available_qty}/{book.quantity} متوفر"
+        book.stock_tone = "success" if book.available_qty > 0 else "danger"
+
+    context = {
+        "books": page_obj,
+        "page_obj": page_obj,
+        "query": query,
+    }
+
+    # HTMX: أعد الجزء فقط (بحث حي + ترقيم)
+    if getattr(request, "htmx", None) or request.headers.get("HX-Request"):
+        return render(request, "library/partials/book_rows.html", context)
+
+    return render(request, "library/book_list.html", context)
+
+
+@login_required
+@capability_required("library.lend")
+def borrow_book(request):
+    """تسجيل عملية إعارة جديدة"""
+    if request.method == "POST":
+        book_id = request.POST.get("book_id")
+        user_id = request.POST.get("user_id")
+
+        # ✅ منع IDOR: قصر الكتاب والمستخدم على مدرسة أمين المكتبة
+        school = request.user.get_school()
+        book = get_object_or_404(LibraryBook, id=book_id, school=school)
+        user = get_object_or_404(
+            CustomUser.objects.filter(
+                memberships__school=school, memberships__is_active=True
+            ).distinct(),
+            id=user_id,
+        )
+
+        try:
+            # ✅ v5.4: LibraryService.borrow_book — select_for_update + atomic
+            # يمنع race condition عند إعارة النسخة الأخيرة من أكثر من مستخدم
+            LibraryService.borrow_book(
+                book=book,
+                user=user,
+                librarian=request.user,
+            )
+            messages.success(request, f"تمت إعارة كتاب '{book.title}' للطالب {user.full_name}")
+        except ValueError as e:
+            messages.error(request, str(e))
+
+        return redirect("library:dashboard")
+
+    school = request.user.get_school()
+    books = LibraryBook.objects.filter(school=school, available_qty__gt=0)
+    borrowers = (
+        CustomUser.objects.filter(
+            memberships__school=school,
+            memberships__is_active=True,
+        )
+        .order_by("full_name")
+        .distinct()
+    )
+
+    return render(
+        request,
+        "library/borrow_form.html",
+        {
+            "books": books,
+            "borrowers": borrowers,
+        },
+    )
+
+
+@login_required
+@capability_required("library.lend")
+def return_book(request, borrowing_id):
+    """تسجيل إرجاع كتاب"""
+    school = request.user.get_school()
+    borrowing = get_object_or_404(BookBorrowing, id=borrowing_id, book__school=school)
+
+    try:
+        # ✅ v5.4: LibraryService.return_book — select_for_update + atomic
+        borrowing = LibraryService.return_book(borrowing)
+        messages.success(request, f"تم إرجاع كتاب '{borrowing.book.title}' بنجاح.")
+    except ValueError as e:
+        messages.error(request, str(e))
+
+    return redirect("library:dashboard")
+
+
+@login_required
+@capability_required("library.view")
+def api_library_charts(request):
+    """API: بيانات الرسوم البيانية للمكتبة"""
+    school = request.user.get_school()
+
+    # ✅ v5.4: LibraryService.get_chart_data — queries في service layer
+    data = LibraryService.get_chart_data(school)
+    return JsonResponse(data)

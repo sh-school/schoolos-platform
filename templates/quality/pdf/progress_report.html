@@ -1,0 +1,140 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags %}
+{# تقرير تقدم الخطة التشغيلية — يرث من القالب القطري الأساسي #}
+
+{% block extra_styles %}
+.pct-text  { font-weight: 700; }
+.pct-green { color: {% brand_color "STATUS_SUCCESS" %} !important; }
+.pct-amber { color: {% brand_color "STATUS_WARNING" %} !important; }
+.pct-red   { color: {% brand_color "STATUS_DANGER" %} !important; }
+
+.bar-bg {
+  background: {% brand_color "BORDER" %};
+  border-radius: 4px;
+  height: 10px;
+  width: 100px;
+  display: inline-block;
+  vertical-align: middle;
+}
+/* العرضُ بكسلٌ لكلّ نقطةٍ مئويّة (الإطارُ 100px) — تمرّره السطرُ في `--bar-w`. */
+.bar-fill       { height: 10px; border-radius: 4px; display: block; width: var(--bar-w); }
+.bar-cell       { vertical-align: middle; }
+.cell-info      { color: {% brand_color "STATUS_INFO" %} !important; }
+.report-note    { font-size: 9px; color: {% brand_color "TEXT_MUTED" %}; border-top: 1px solid {% brand_color "BORDER" %}; padding-top: 6px; }
+.bar-green      { background: {% brand_color "STATUS_SUCCESS" %}; }
+.bar-amber      { background: {% brand_color "STATUS_WARNING" %}; }
+.bar-red        { background: {% brand_color "STATUS_DANGER" %}; }
+
+.stat-box {
+  flex: 1;
+  border: 1px solid {% brand_color "BORDER" %};
+  border-radius: 8px;
+  padding: 12px 8px;
+  text-align: center;
+}
+.stat-box .num  { font-size: 26px; font-weight: 700; color: {% brand_color "MAROON" %}; line-height: 1; }
+.stat-box .lbl  { font-size: 9px; color: {% brand_color "TEXT_MUTED" %}; margin-top: 4px; }
+.stat-box.green .num { color: {% brand_color "STATUS_SUCCESS" %}; }
+.stat-box.amber .num { color: {% brand_color "STATUS_WARNING" %}; }
+{% endblock %}
+
+{% block report_title_bar %}
+<h1 class="report-title-bar">تقرير تقدم الخطة التشغيلية</h1>
+{% endblock %}
+
+{% block report_meta %}
+<table class="report-meta">
+  <tr>
+    <td>المدرسة: <strong>{{ school.name }}</strong></td>
+    <td>العام الدراسي: <strong>{{ year }}</strong></td>
+    <td>تاريخ الإصدار: <strong>{{ generated_at|date:"Y/m/d" }}</strong></td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block content %}
+
+{# ── إحصائيات كلية — KPI Strip ───────────────────────────────────── #}
+<div class="kpi-strip">
+  <div class="kpi-item">
+    <span class="kpi-num">{{ total_all }}</span>
+    <span class="kpi-label">إجمالي الإجراءات</span>
+  </div>
+  <div class="kpi-item">
+    <span class="kpi-num c-green">{{ completed_all }}</span>
+    <span class="kpi-label">مكتملة</span>
+  </div>
+  <div class="kpi-item">
+    <span class="kpi-num c-orange">{{ total_all|add:"-"|add:completed_all }}</span>
+    <span class="kpi-label">قيد التنفيذ</span>
+  </div>
+  <div class="kpi-item">
+    <span class="kpi-num {% if pct_all >= 70 %}c-green{% elif pct_all >= 40 %}c-orange{% else %}c-red{% endif %}">
+      {{ pct_all }}%
+    </span>
+    <span class="kpi-label">نسبة الإنجاز</span>
+  </div>
+</div>
+
+{# ── جدول المجالات السبعة ─────────────────────────────────────────── #}
+<div class="section-head">تقدم المجالات السبعة</div>
+<table class="report-table">
+  <thead>
+    <tr>
+      <th>المجال</th>
+      <th>الإجراءات</th>
+      <th>مكتمل</th>
+      <th>جارٍ</th>
+      <th>انتظار مراجعة</th>
+      <th>النسبة</th>
+      <th>شريط التقدم</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for ds in domain_stats %}
+    <tr>
+      <td class="cell-name">{{ ds.domain.name }}</td>
+      <td class="cell-num">{{ ds.total }}</td>
+      <td class="cell-num c-green">{{ ds.completed }}</td>
+      <td class="cell-num c-orange">{{ ds.in_progress }}</td>
+      <td class="cell-num cell-info">{{ ds.pending_review }}</td>
+      <td>
+        <span class="pct-text {% if ds.pct >= 70 %}pct-green{% elif ds.pct >= 40 %}pct-amber{% else %}pct-red{% endif %}">
+          {{ ds.pct }}%
+        </span>
+      </td>
+      <td class="bar-cell">
+        <div class="bar-bg">
+          <div class="bar-fill {% if ds.pct >= 70 %}bar-green{% elif ds.pct >= 40 %}bar-amber{% else %}bar-red{% endif %}"
+               style="--bar-w:{{ ds.pct }}px"></div>
+        </div>
+      </td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="7" class="no-data">لا يوجد بيانات</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p class="mt-20 report-note">
+  * هذا التقرير تلقائي من نظام SchoolOS — {{ school.name|default:"المدرسة" }}
+</p>
+
+{% endblock %}
+
+{% block signatures %}
+<div class="sig-block">
+  <div class="sig-item">
+    <div class="sig-title">مسؤول الجودة</div>
+    <div class="sig-space"></div>
+    <div class="sig-line"></div>
+    <div class="sig-role">التوقيع والختم</div>
+  </div>
+  <div class="sig-item">
+    <div class="sig-title">مدير المدرسة</div>
+    <div class="sig-space"></div>
+    <div class="sig-line"></div>
+    <div class="sig-stamp">الختم الرسمي</div>
+  </div>
+</div>
+{% endblock %}

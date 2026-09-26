@@ -1,0 +1,51 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}درجات {{ student.full_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/parents/" parent_label="بوابة ولي الأمر" current="درجات الطالب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header student.full_name subtitle=subtitle icon="grades" %}{% endpage_header %}
+
+  {% kpi_strip label="أرقام الدرجات" %}
+    {% if avg %}{% kpi "المعدّل" avg tone="amber" %}{% endif %}
+    {% kpi "ناجح" passed tone="green" %}
+    {% kpi "راسب" failed tone=failed_tone title=failed_title %}
+    {% kpi "المواد" total tone="blue" %}
+  {% endkpi_strip %}
+
+  {% section_card "الدرجات بالمادّة" meta=year icon="grades" flush=True empty="لا درجاتٍ مسجّلة لهذا العام" empty_sub="تظهر هنا حين يرصدها المعلّمون" %}{% if rows %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">المادة</th>
+            <th scope="col">الفصل الأول <small>/40</small></th>
+            <th scope="col">الفصل الثاني <small>/60</small></th>
+            <th scope="col">المجموع <small>/100</small></th>
+            <th scope="col">التقدير</th>
+            <th scope="col">الحالة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr{% if row.annual.status == "fail" %} class="is-danger"{% endif %}>
+              <td>{{ row.subject }}</td>
+              <td class="num">{% if row.s1 and row.s1.total is not None %}{{ row.s1.total }}{% else %}—{% endif %}</td>
+              <td class="num">{% if row.s2 and row.s2.total is not None %}{{ row.s2.total }}{% else %}—{% endif %}</td>
+              <td class="num"><span class="grade-total is-{{ row.tone }}">{% if row.annual.annual_total is not None %}{{ row.annual.annual_total }}{% else %}لم تكتمل{% endif %}</span></td>
+              <td class="num"><span class="grade-total is-{{ row.tone }}">{{ row.annual.letter_grade|default:"—" }}</span></td>
+              <td>{% if row.annual.status == "pass" %}<span class="status-badge status-success">ناجح</span>{% elif row.annual.status == "fail" %}<span class="status-badge status-danger">راسب</span>{% else %}<span class="status-badge status-gray">جارٍ</span>{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}

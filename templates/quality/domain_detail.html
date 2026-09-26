@@ -1,0 +1,86 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}{{ domain.name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/quality/" parent_label="ضمان الجودة" current=domain.name %}
+{% endblock %}
+
+{% block content %}
+<div class="qdom">
+
+  {% page_header domain.name icon="wings" %}
+    <a href="{% url 'quality_dashboard' %}" class="btn-secondary btn-sm">← العودة</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام المجال" %}
+    {% kpi "الإجراءات" total_procedures %}
+    {% kpi "الأهداف" targets|length tone="teal" %}
+    {% kpi "الإنجاز" pct_label tone=pct_tone title="نسبة الإجراءات المكتملة في المجال" %}
+  {% endkpi_strip %}
+
+  {% filter_bar "ترشيحُ إجراءات المجال" css="qdom-filters" %}
+    {% field "status" "الحالة" type="select" choices=STATUS_CHOICES value=status_filter blank="— الكل —" %}
+    {# المنفّذون قواميسُ `values()` لا أزواجٌ ولا كائنات — فالقائمةُ يدويّةٌ مسمّاة. #}
+    <div class="ui-field">
+      <label for="qdom-executor" class="ui-field__label">المنفذ</label>
+      <select name="executor" id="qdom-executor" class="form-control">
+        <option value="">— الكل —</option>
+        {% for ex in executors %}
+        <option value="{{ ex.executor_norm }}" {% if executor_filter == ex.executor_norm %}selected{% endif %}>{{ ex.executor_norm }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {# بحثٌ في المتصفّح وحده (`smartFilter`) بلا اسمٍ يُرسَل — فلا يُعطى اسماً. #}
+    <div class="ui-field ui-field--grow">
+      <label for="qdom-search" class="ui-field__label">بحث نص</label>
+      <input type="text" id="qdom-search" class="form-control" placeholder="ابحث في الإجراءات...">
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="btn-primary btn-sm">فلترة</button>
+      <a href="{% url 'domain_detail' domain.id %}" class="btn-secondary btn-sm">إعادة ضبط</a>
+    </div>
+  {% endfilter_bar %}
+
+  {% for target in targets %}
+  {% section_card target.text|truncatechars:120 meta=target.number icon="kpi" flush=True %}
+    {% for indicator in target.indicators.all %}
+    <div class="qdom-indicator">
+      <div class="qdom-indicator__head">
+        <span class="qdom-indicator__num" dir="ltr">{{ indicator.number }}</span>
+        <span class="qdom-indicator__text">{{ indicator.text|truncatechars:100 }}</span>
+      </div>
+      {% for proc in indicator.visible_procedures %}
+      <div class="qdom-proc" data-text="{{ proc.text|lower }}">
+        <div class="qdom-proc__body">
+          <p class="qdom-proc__text">{{ proc.text|truncatechars:100 }}</p>
+          <div class="qdom-proc__meta">
+            <span>{% icon "kpi" %} {{ proc.executor_norm }}</span>
+            <span>{% icon "date" %} {{ proc.date_range }}</span>
+            {% if proc.evidence_type %}<span>{% icon "document" %} {{ proc.evidence_type }}</span>{% endif %}
+          </div>
+        </div>
+        <div class="qdom-proc__actions">
+          <span class="status-badge status-{{ proc.status_tone }}">{{ proc.get_status_display }}</span>
+          <a href="{% url 'procedure_detail' proc.id %}" class="qdom-proc__link">تفاصيل</a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  {% endsection_card %}
+  {% empty %}
+  {% empty_state "لا توجد أهداف لهذا المجال" icon="kpi" %}
+  {% endfor %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  window.smartFilter('qdom-search', '.qdom-proc[data-text]', { textAttr: 'data-text' });
+});
+</script>
+{% endblock %}

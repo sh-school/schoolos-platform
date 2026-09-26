@@ -1,0 +1,48 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}سجل تغييرات الصلاحيات{% endblock %}
+
+{# الصفحةُ لا تُمرَّر: الترشيحُ في الأعلى والسجلُّ يُمرَّر داخل بطاقته (200 صفٍّ). #}
+{% block main_class %}{% page_layout "list" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current="سجل الصلاحيات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "سجل تغييرات الصلاحيات" subtitle="آخر 200 تغيير في الأدوار والصلاحيات — سجلٌّ غير قابل للتعديل أو الحذف (Immutable Audit Trail)" icon="security" %}{% endpage_header %}
+
+  {% url 'permission_audit_log' as log_url %}
+  {% filter_bar "ترشيحُ سجلّ الصلاحيات" id="audit-filter-form" hx_get=log_url hx_target="#audit-table-wrap" hx_trigger="change from:select, change from:input[type=date]" hx_push_url="true" hx_indicator="#audit-loading" %}
+    {% field "q" "بحث بالاسم" id="q" value=search grow=True placeholder="اسم المنفّذ أو المستهدف..." hx_get=log_url hx_target="#audit-table-wrap" hx_trigger="input changed delay:400ms" hx_include="#audit-filter-form" hx_push_url="true" %}
+    {% field "action" "نوع الإجراء" id="action" type="select" choices=actions value=selected_action blank="— الكل —" %}
+    {% field "date_from" "من تاريخ" id="date_from" type="date" value=date_from %}
+    {% field "date_to" "إلى تاريخ" id="date_to" type="date" value=date_to %}
+    <div class="filter-actions">
+      <button type="submit" class="btn-primary btn-sm">{% icon "filter" %} تصفية</button>
+      <a href="{{ log_url }}" class="btn-secondary btn-sm">إعادة تعيين</a>
+      <span id="audit-loading" class="htmx-indicator audit-loading" aria-live="polite">{% icon "loading" %} جارٍ التحديث...</span>
+    </div>
+  {% endfilter_bar %}
+
+  {% section_card "السجلات" meta=total_count icon="document" flush=True %}
+    <ul class="chip-row audit-legend" aria-label="مفتاح الألوان">
+      <li class="status-badge status-success">تعيين دور</li>
+      <li class="status-badge status-danger">إزالة دور</li>
+      <li class="status-badge status-warning">تعطيل حساب</li>
+      <li class="status-badge status-success">تفعيل حساب</li>
+      <li class="status-badge status-info">تغييرات القسم</li>
+      <li class="status-badge status-maroon">تعيين بديل</li>
+      <li class="status-badge status-info">موافقة تبديل/تعويض</li>
+    </ul>
+    {# هدفُ HTMX: الترشيحُ يبدّل ما بداخله وحده. #}
+    <div id="audit-table-wrap">
+      {% include "core/partials/audit_log_table.html" %}
+    </div>
+  {% endsection_card %}
+
+</div>
+{% endblock %}

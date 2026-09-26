@@ -1,0 +1,72 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}طلب تبديل حصة{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/teacher/schedule/swaps/" parent_label="طلبات التبديل" current="طلب تبديل" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash form-page">
+  {% page_header "طلب تبديل حصة" icon="refresh" %}{% endpage_header %}
+  {% section_card "بيانات الطلب" icon="edit_record" %}
+
+    <form method="post">
+      {% csrf_token %}
+      <div class="form-stack">
+        {# خيارُ الحصّة تسميتُه مركّبةٌ من يومٍ ورقمٍ ومادّةٍ وشعبة — فالقائمةُ يدويّةٌ مسمّاة، ومعرّفُها يقرؤه السكربت أدناه. #}
+        <div class="ui-field">
+          <label for="slot_a" class="ui-field__label">اختر حصتك التي تريد تبديلها</label>
+          <select name="slot_a" id="slot_a" class="form-control" required>
+            <option value="">— اختر حصة —</option>
+            {% for slot in my_slots %}
+            <option value="{{ slot.pk }}">
+              {{ slot.get_day_of_week_display }} — ح{{ slot.period_number }} — {{ slot.subject|default:"مادة" }} ({{ slot.class_group.short_label }})
+            </option>
+            {% endfor %}
+          </select>
+          <p class="hint">ستظهر خيارات التبديل المتاحة بعد الاختيار</p>
+        </div>
+
+        {# يُستبدَل بجزئيّة `partials/swap_options.html` بعد اختيار الحصّة — على البنية نفسِها. #}
+        <div id="swap-options-container">
+          <div class="ui-field">
+            <label for="slot_b" class="ui-field__label">اختر حصة المعلم الآخر</label>
+            <select name="slot_b" id="slot_b" class="form-control" required>
+              <option value="">— اختر حصة أ أولاً —</option>
+            </select>
+            <p class="hint">التبديل متاح مع معلمي نفس الفصل فقط</p>
+          </div>
+        </div>
+
+        {% comment %}
+        تاريخٌ لكلّ حصّة لا تاريخٌ لهما معاً: التبديلُ يجوز في أيّام الأسبوع
+        الجاري أو الذي يليه، فقد تقع حصّتي الثلاثاءَ وحصّتُه الأحدَ من الأسبوع
+        القادم. وتاريخٌ واحدٌ كان يحصرهما في اليوم نفسِه.
+
+        والمدى محروسٌ في الخادم أيضاً — `min`/`max` هنا تيسيرٌ للقارئ لا حارس.
+        {% endcomment %}
+        {% field "swap_date_a" "تاريخ حصتك" type="date" id="swap_date_a" required=True min=window_start|date:'Y-m-d' max=window_end|date:'Y-m-d' help="في الأسبوع الجاري أو الذي يليه — ويجب أن يوافق يومَ الحصة" %}
+        {% field "swap_date_b" "تاريخ حصة المعلم الآخر" type="date" id="swap_date_b" required=True min=window_start|date:'Y-m-d' max=window_end|date:'Y-m-d' help="قد يكون يوماً آخر — والتبديل ينتهي بانتهاء الحصة الأبعد" %}
+        {% field "reason" "سبب التبديل (اختياري)" type="textarea" placeholder="مثال: لدي ارتباط في هذه الحصة..." %}
+      </div>
+
+      <button type="submit" class="btn-primary mt-4" data-loading>إرسال طلب التبديل</button>
+    </form>
+  {% endsection_card %}
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+document.getElementById('slot_a')?.addEventListener('change', function() {
+  const slotId = this.value;
+  if (!slotId) return;
+  const container = document.getElementById('swap-options-container');
+  fetch(`/teacher/schedule/swap/${slotId}/options/`, {
+    headers: {'X-Requested-With': 'XMLHttpRequest'}
+  })
+  .then(r => r.text())
+  .then(html => { container.innerHTML = html; })
+  .catch(() => {});
+});
+</script>
+{% endblock %}

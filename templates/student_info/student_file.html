@@ -1,0 +1,119 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui navigation %}
+
+{% block title %}ملفّ {{ student.full_name }}{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}page-noscroll{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-info/" parent_label="مركز معلومات الطلبة" current=student.full_name %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+  {% page_header student.full_name subtitle=subtitle icon="students" %}
+    {% if can_write %}
+    <a href="{% url 'student_info:note_create' student.id %}?year={{ year }}" class="btn-primary btn-sm">{% icon "edit_record" %} إضافة ملاحظة</a>
+    {% endif %}
+    {% if class_group %}
+    <a href="{% url 'student_info:section_students' class_group.id %}?year={{ year }}" class="btn-secondary btn-sm">رجوع للشعبة</a>
+    {% if request.user|can_open:'wings:student_search' %}<a href="{% url 'wings:absence_file' student.id %}" class="btn-secondary btn-sm">{% icon "absence" %} ملفُّ الغياب</a>{% endif %}
+    {% endif %}
+  {% endpage_header %}
+
+  {# ── التحصيل ومستواه: المتوسّطُ بلون شريحته، ثمّ نتيجةُ كلّ مادّة ── #}
+  {# لا يُعرض للمشرف الإداريّ (قرار 2026-09-15)، ولا يُحسب له في الشاشة أصلاً. #}
+  {% if shows_grades and average %}
+  {% kpi_strip label="متوسّط التحصيل" %}
+    {% kpi "المتوسّط السنوي" average.value sub=average.band_label tone=average.kpi_tone title="متوسّط المجموع السنوي في موادّ الطالب — من 100" %}
+  {% endkpi_strip %}
+  {% endif %}
+
+  <div class="fill-grid" style="--flow: row; --tc: repeat(auto-fit, minmax(24rem, 1fr))">
+  {% if shows_grades %}
+  {% section_card "التحصيل ومستواه" meta=results|length icon="grades" flush=True empty="لم تُرصد نتائج سنوية لهذا الطالب بعد" %}{% if results %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>المادّة</th>
+            <th class="col-center">المجموع السنوي</th>
+            <th class="col-center">التقدير</th>
+            <th class="col-center">المستوى</th>
+            <th class="col-center">الحالة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in results %}
+          <tr>
+            <td>{{ r.subject }}</td>
+            <td class="num">{{ r.total|default:"—" }}</td>
+            <td class="col-center">{{ r.letter }}</td>
+            <td class="col-center"><span class="status-badge status-{{ r.band_tone }}">{{ r.band_label }}</span></td>
+            <td class="col-center text-xs">{{ r.status }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+  {% endif %}
+
+  {# ── ملاحظات الجهات — ما يقرؤه صاحبُ الطلب منها ── #}
+  {% for g in note_groups %}
+    {% section_card g.label meta=g.notes|length icon="edit_record" flush=True empty="لا ملاحظات من هذه الجهة" %}{% if g.notes %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-center sinfo-col-date">التاريخ</th>
+              <th class="sinfo-col-title">العنوان</th>
+              <th>النصّ</th>
+              <th class="col-center sinfo-col-author">الكاتب</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for n in g.notes %}
+            <tr>
+              <td class="col-center text-xs">{{ n.occurred_on|date:"d/m/Y" }}</td>
+              <td class="font-semibold">{{ n.title }}</td>
+              <td class="sinfo-note-body">{{ n.body }}</td>
+              <td class="col-center text-xs">{{ n.created_by.full_name|default:"—" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}{% endsection_card %}
+  {% endfor %}
+
+  {# ── الأنشطة ── #}
+  {% section_card "الأنشطة" meta=activities|length icon="activities" flush=True empty="لا أنشطة مسجّلة لهذا الطالب هذا العام" %}{% if activities %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="col-center sinfo-col-date">التاريخ</th>
+            <th>النشاط</th>
+            <th class="col-center">النوع</th>
+            <th class="col-center">النطاق</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in activities %}
+          <tr>
+            <td class="col-center text-xs">{{ a.date|date:"d/m/Y" }}</td>
+            <td>{{ a.title }}</td>
+            <td class="col-center"><span class="status-badge status-info">{{ a.get_activity_type_display }}</span></td>
+            <td class="col-center text-xs">{{ a.get_scope_display }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+  </div>
+</div>
+{% endblock %}

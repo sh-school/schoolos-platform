@@ -1,0 +1,122 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags %}
+
+{% block extra_styles %}
+.cert-frame {
+  border: 4px double {% brand_color "MAROON" %};
+  border-radius: 8px;
+  padding: 20px;
+  margin: 10px 0;
+  text-align: center;
+}
+.cert-watermark {
+  text-align: center;
+  font-size: 52px;
+  font-weight: 700;
+  color: rgba(138,21,56,0.07);
+  letter-spacing: 8px;
+  margin: 0;
+  line-height: 1;
+}
+.cert-avg {
+  font-size: 52px;
+  font-weight: 700;
+  color: {% brand_color "MAROON" %};
+  line-height: 1;
+}
+.cert-avg-lbl {
+  font-size: 11px;
+  color: {% brand_color "TEXT_MUTED" %};
+  margin-top: 4px;
+}
+.cert-status {
+  display: inline-block;
+  padding: 8px 24px;
+  border-radius: 20px;
+  font-size: 18px;
+  font-weight: 700;
+  margin: 14px 0;
+}
+/* النغمةُ من `reports.views._set_final_status` — لا لونَ يُمرَّر في السياق. */
+.cert-status.is-success { background: {% brand_color "STATUS_SUCCESS_BG" %}; }
+.cert-status.is-danger  { background: {% brand_color "STATUS_DANGER_BG" %}; }
+.cert-status.is-warning { background: {% brand_color "STATUS_WARNING_BG" %}; }
+.is-success { color: {% brand_color "STATUS_SUCCESS_DARK" %}; }
+.is-danger  { color: {% brand_color "STATUS_DANGER" %}; }
+.is-warning { color: {% brand_color "STATUS_WARNING" %}; }
+{% endblock %}
+
+{% block report_title_bar %}
+<div class="report-title-bar">شهادة نتيجة سنوية — {{ year }}</div>
+{% endblock %}
+
+{% block report_meta %}
+<table class="report-meta">
+  <tr>
+    <td>السنة الدراسية: <strong>{{ year }}</strong></td>
+    <td>تاريخ الإصدار: <strong>{{ print_date }}</strong></td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block content %}
+{# علامة مائية نصية بدل position:fixed #}
+<div class="cert-watermark">SchoolOS</div>
+
+<div class="cert-frame">
+  <p>
+    تُشهد {{ school.name|default:"المدرسة" }} بأن الطالب:
+  </p>
+
+  <div>
+    {{ student.full_name }}
+  </div>
+  <div>
+    الرقم الشخصي: {{ student.national_id|default:"—" }}
+    {% if enrollment %} &nbsp;|&nbsp; الفصل: {{ enrollment.class_group.short_label }}{% endif %}
+  </div>
+
+  <div>
+    <div class="cert-avg">{{ avg|default:"—" }}</div>
+    <div class="cert-avg-lbl">المعدل السنوي من 100</div>
+  </div>
+
+  <div class="cert-status is-{{ status_tone }}">
+    {{ final_status }}
+  </div>
+
+  <p>
+    اجتاز الطالب العام الدراسي {{ year }} بنتيجة
+    <strong class="is-{{ status_tone }}">{{ final_status }}</strong>
+    في {{ total }} مادة دراسية، نجح في {{ passed }} منها.
+  </p>
+</div>
+
+{# ملخص المواد — الجدولُ بلا صنفٍ يأخذ شكلَ جدول الوثيقة من القالب الأساسيّ #}
+<table>
+  <thead>
+    <tr>
+      <th scope="col">المادة</th>
+      <th scope="col">الفصل الأول / 40</th>
+      <th scope="col">الفصل الثاني / 60</th>
+      <th scope="col">المجموع / 100</th>
+      <th scope="col">التقدير</th>
+      <th scope="col">الحالة</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <th scope="row">{{ row.subject }}</th>
+      <td>{% if row.annual.s1_total %}{{ row.annual.s1_total }}{% else %}—{% endif %}</td>
+      <td>{% if row.annual.s2_total %}{{ row.annual.s2_total }}{% else %}—{% endif %}</td>
+      <td><b class="c-{{ row.total_tone }}">{% if row.annual.annual_total %}{{ row.annual.annual_total }}{% else %}—{% endif %}</b></td>
+      <td><b>{{ row.annual.letter_grade|default:"—" }}</b></td>
+      <td><b class="c-{{ row.status_tone }}">{{ row.status_label }}</b></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
+
+{% block signatures %}{% include "reports/pdf/_signatures.html" with s1="المعلم المشرف" s2="ولي الأمر" s3="مدير المدرسة" %}{% endblock %}

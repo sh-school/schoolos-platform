@@ -1,0 +1,126 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}الخطة التشغيلية — {{ current_school.name|default:"المدرسة" }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/quality/" parent_label="ضمان الجودة" current="الخطة التشغيلية" %}
+{% endblock %}
+
+{% block content %}
+<div class="qd">
+
+  {% page_header "الخطة التشغيلية" subtitle=plan_subtitle icon="quality" %}
+    {% if is_admin %}
+    <a href="{% url 'quality_report' %}" class="btn-primary btn-sm">تقرير التقدم</a>
+    <a href="{% url 'execution_list' %}" class="btn-secondary btn-sm">تنفيذ الخطة</a>
+    <a href="{% url 'review_list' %}" class="btn-secondary btn-sm">المراجعة الذاتية</a>
+    <a href="{% url 'quality_committee' %}" class="btn-secondary btn-sm">لجنة الجودة</a>
+    <a href="{% url 'executor_committee' %}" class="btn-secondary btn-sm">لجنة التنفيذ</a>
+    {% if unmapped_count %}<a href="{% url 'executor_mapping' %}" class="btn-secondary btn-sm" title="منفّذون في الخطة بلا مستخدمٍ مربوط">ربط المنفذين ({{ unmapped_count }})</a>{% endif %}
+    {% else %}
+    <a href="{% url 'my_procedures' %}" class="btn-primary btn-sm">إجراءاتي</a>
+    {% if is_reviewer %}<a href="{% url 'review_list' %}" class="btn-secondary btn-sm">المراجعة الذاتية</a>{% endif %}
+    {% endif %}
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام الخطة" %}
+    {% if is_admin %}
+      {% kpi "الإجمالي" total %}
+    {% else %}
+      {% kpi "إجراءاتي" total %}
+    {% endif %}
+    {% kpi "مكتمل" completed sub=pct_label tone=pct_tone title="نسبة الإنجاز الكلي" %}
+    {% kpi "قيد التنفيذ" in_progress tone="amber" %}
+    {% kpi "بانتظار المراجعة" pending_review tone="blue" %}
+    {% if is_admin %}
+      {% kpi "متأخر" overdue_count tone="red" %}
+      {% kpi "طلبات الدليل" evidence_requested tone="orange" %}
+    {% endif %}
+  {% endkpi_strip %}
+
+  {% section_card "المجالات" meta=domains|length icon="wings" empty="لا توجد بيانات للخطة التشغيلية" %}{% if domains %}
+    <div class="qd-domains__grid" id="domains-grid">
+      {% for domain in domains %}
+      <a href="{% url 'domain_detail' domain.id %}" class="qd-domain"
+         data-pct="{{ domain.completion_pct }}"
+         data-done="{{ domain.completed_procedures }}"
+         data-total="{{ domain.total_procedures }}">
+        <div class="qd-domain__ring">
+          <svg viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="q-ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3"/>
+            <circle class="qd-domain__arc q-ring-arc is-{{ domain.progress_tone }}" cx="18" cy="18" r="15.9" fill="none"
+                    stroke-width="3" stroke-dasharray="0 100" stroke-linecap="round"/>
+          </svg>
+          <span class="qd-domain__pct">{{ domain.completion_pct }}%</span>
+        </div>
+        <div class="qd-domain__info">
+          <span class="qd-domain__name" title="{{ domain.name }}">{{ domain.name }}</span>
+          <span class="qd-domain__meta">{{ domain.completed_procedures }}/{{ domain.total_procedures }} إجراء</span>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  {% endif %}{% endsection_card %}
+
+  {% if my_procedures_count %}
+  {% section_card "إجراءاتي" meta=my_procedures_count icon="my_actions" %}
+    <div class="qd-myprocs__head">
+      <div class="period-switch qd-myprocs__tabs" role="group" aria-label="تصفية حسب الحالة">
+        <button type="button" data-call="filterProcs" data-arg="all" id="tab-all" class="period-switch__item qd-tab is-current">الكل</button>
+        <button type="button" data-call="filterProcs" data-arg="In Progress" id="tab-in-progress" class="period-switch__item qd-tab">قيد التنفيذ</button>
+        <button type="button" data-call="filterProcs" data-arg="Not Started" id="tab-not-started" class="period-switch__item qd-tab">لم يبدأ</button>
+        <button type="button" data-call="filterProcs" data-arg="Completed" id="tab-completed" class="period-switch__item qd-tab">مكتمل</button>
+      </div>
+      {% if my_procedures_count > 6 %}
+      <a href="{% url 'my_procedures' %}" class="btn-secondary btn-sm qd-myprocs__all">عرض الكل ({{ my_procedures_count }})</a>
+      {% endif %}
+    </div>
+    <ul class="plain-list" id="procedures-list">
+      {% for proc in my_procedures_preview %}
+      <li class="plain-list__row" data-status="{{ proc.status }}">
+        <a href="{% url 'procedure_detail' proc.id %}" class="plain-list__main qd-proc">
+          <span class="plain-list__title">{{ proc.text|truncatechars:60 }}</span>
+          <span class="plain-list__sub">{{ proc.indicator.target.domain.name }}</span>
+        </a>
+        <span class="status-badge status-{{ proc.status_tone }}">{{ proc.get_status_display }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endsection_card %}
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function() {
+  /* ── Domain donut animations ── */
+  var domains = document.querySelectorAll('.qd-domain');
+  domains.forEach(function(el, i) {
+    var pct  = parseInt(el.dataset.pct, 10) || 0;
+    var arc  = el.querySelector('.qd-domain__arc');
+    if (!arc) return;
+    setTimeout(function() {
+      arc.setAttribute('stroke-dasharray', pct + ' ' + (100 - pct));
+    }, 150 + i * 80);
+  });
+
+  /* ── Filter tabs ──
+     كانت الأزرارُ تمرّر «InProgress» و«NotStarted» والحالةُ المخزَّنة «In Progress»،
+     فلم يُظهر تبويبا «قيد التنفيذ» و«لم يبدأ» شيئاً قطّ. */
+  window.filterProcs = function(status) {
+    var list = document.getElementById('procedures-list');
+    if (!list) return;
+    list.querySelectorAll('[data-status]').forEach(function(row) {
+      row.hidden = !(status === 'all' || row.dataset.status === status);
+    });
+    document.querySelectorAll('.qd-tab').forEach(function(btn) {
+      var on = btn.dataset.arg === status;
+      btn.classList.toggle('is-current', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  };
+});
+</script>
+{% endblock %}

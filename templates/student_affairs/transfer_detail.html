@@ -1,0 +1,75 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block title %}تفاصيل الانتقال — {{ transfer.student.full_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-affairs/transfers/" parent_label="الانتقالات" current=transfer.student.full_name %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-page sa-form-page">
+
+  {% page_header "تفاصيل الانتقال" subtitle=page_subtitle icon="swap_requests" %}
+    <span class="status-badge
+      {% if transfer.status == 'pending' %}status-warning
+      {% elif transfer.status == 'approved' %}status-info
+      {% elif transfer.status == 'completed' %}status-success
+      {% elif transfer.status == 'rejected' %}status-danger
+      {% else %}status-gray{% endif %}">
+      {{ transfer.get_status_display }}
+    </span>
+  {% endpage_header %}
+
+  {% section_card "بيانات الانتقال" icon="swap_requests" %}
+    <dl class="detail-dl">
+      <dt>الطالب</dt><dd><strong>{{ transfer.student.full_name }}</strong></dd>
+      <dt>الاتجاه</dt><dd>{% if transfer.direction == "in" %}← وارد{% else %}→ صادر{% endif %}</dd>
+      <dt>المدرسة الأخرى</dt><dd>{{ transfer.other_school_name }}</dd>
+      <dt>تاريخ الانتقال</dt><dd>{{ transfer.transfer_date|date:"d/m/Y" }}</dd>
+      {% if transfer.from_grade %}<dt>الصف (من)</dt><dd>{{ transfer.from_grade }}</dd>{% endif %}
+      {% if transfer.to_grade %}<dt>الصف (إلى)</dt><dd>{{ transfer.to_grade }}</dd>{% endif %}
+      {% if transfer.reason %}<dt>السبب</dt><dd>{{ transfer.reason }}</dd>{% endif %}
+      {% if transfer.notes %}<dt>ملاحظات</dt><dd>{{ transfer.notes }}</dd>{% endif %}
+      <dt>تاريخ التسجيل</dt><dd>{{ transfer.created_at|date:"d/m/Y H:i" }}</dd>
+    </dl>
+  {% endsection_card %}
+
+  {% if transfer.status == "pending" or transfer.status == "approved" %}
+  {% section_card "مراجعة الطلب" icon="checklist" %}
+    <form method="post" action="{% url 'student_affairs:transfer_review' transfer.pk %}">
+      {% csrf_token %}
+      <div class="form-row">
+        {# القرار: خياراتُه مشروطةٌ بحالة الطلب — لا تُعبَّر بـchoices، فالقائمةُ باليد بتسميتها #}
+        <div class="ui-field">
+          <label for="f-action" class="ui-field__label">القرار</label>
+          <select id="f-action" name="action" class="form-control" required>
+            {% if transfer.status == "pending" %}
+            <option value="approved">موافقة</option>
+            <option value="rejected">رفض</option>
+            {% endif %}
+            {% if transfer.status == "approved" or transfer.status == "pending" %}
+            <option value="completed">مكتمل (تم الانتقال فعلياً)</option>
+            {% endif %}
+            <option value="cancelled">إلغاء</option>
+          </select>
+        </div>
+        {% if transfer.status == "pending" %}
+        {% field "notes" "ملاحظات" placeholder="ملاحظات المراجعة..." help="مطلوبة عند الرفض" %}
+        {% else %}
+        {% field "notes" "ملاحظات" placeholder="ملاحظات المراجعة..." %}
+        {% endif %}
+      </div>
+      {% if transfer.direction == "out" %}
+      {% callout "warning" %}«مكتمل» في انتقالٍ صادرٍ يعطّل قيدَ الطالب وعضويّتَه فوراً، ولا يُستردّ من هذه الصفحة.{% endcallout %}
+      {% endif %}
+      <div class="form-actions">
+        <button type="submit" class="btn-primary btn-sm">{% icon "status_success" %} تنفيذ القرار</button>
+      </div>
+    </form>
+  {% endsection_card %}
+  {% endif %}
+
+</div>
+{% endblock %}

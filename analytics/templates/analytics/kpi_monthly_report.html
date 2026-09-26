@@ -1,0 +1,206 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags %}
+{# تقرير KPIs الشهري — يرث من القالب القطري الأساسي #}
+
+{% block extra_styles %}
+/* ── ضوء المرور ─────────────────────────────── */
+.traffic-dot {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.dot-green  { background: {% brand_color "STATUS_SUCCESS" %}; }
+.dot-yellow { background: {% brand_color "STATUS_WARNING" %}; }
+.dot-red    { background: {% brand_color "STATUS_DANGER" %}; }
+.dot-grey   { background: {% brand_color "BORDER_STRONG" %}; }
+
+/* ── بطاقات الملخص ─────────────────────────── */
+.summary-grid {
+  display: flex;
+  gap: 10px;
+  margin: 14px 0 20px;
+}
+.summary-card {
+  flex: 1;
+  border-radius: 8px;
+  padding: 12px 8px;
+  text-align: center;
+}
+.summary-card .count {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+.summary-card .label {
+  font-size: 10px;
+  margin-top: 4px;
+  opacity: .85;
+}
+.card-green  { background: {% brand_color "STATUS_SUCCESS_BG" %}; color: {% brand_color "STATUS_SUCCESS_DARK" %}; border: 1px solid {% brand_color "STATUS_SUCCESS_BORDER" %}; }
+.card-yellow { background: {% brand_color "STATUS_WARNING_BG" %}; color: {% brand_color "STATUS_WARNING_FG" %}; border: 1px solid {% brand_color "STATUS_WARNING_BORDER" %}; }
+.card-red    { background: {% brand_color "STATUS_DANGER_BG" %}; color: {% brand_color "STATUS_DANGER_DARK" %}; border: 1px solid {% brand_color "STATUS_DANGER_BORDER" %}; }
+.card-grey   { background: {% brand_color "PAGE_BG" %}; color: {% brand_color "TEXT_SECONDARY" %}; border: 1px solid {% brand_color "BORDER" %}; }
+
+/* ── جدول KPIs — الشكلُ من القالب الأساسيّ، والخاناتُ أضيق ── */
+.doc-body > table:not([class]) thead th,
+.doc-body > table:not([class]) td,
+.doc-body > table:not([class]) tbody th { padding: 7px 5px; }
+.doc-body > table:not([class]) tr.row-green  td { background: {% brand_color "STATUS_SUCCESS_BG" %}; }
+.doc-body > table:not([class]) tr.row-yellow td { background: {% brand_color "STATUS_WARNING_BG" %}; }
+.doc-body > table:not([class]) tr.row-red    td { background: {% brand_color "SURFACE_ALT" %}; }
+.doc-body > table:not([class]) tr.row-grey   td { background: {% brand_color "SURFACE_ALT" %}; }
+
+.kpi-value { font-size: 13px; font-weight: 700; }
+.note-text { font-size: 10px; color: {% brand_color "TEXT_MUTED" %}; font-style: italic; }
+.muted { color: {% brand_color "TEXT_MUTED" %}; }
+
+/* ── تقدم الخطة التشغيلية ───────────────────── */
+.domain-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 0;
+}
+.domain-name { flex: 0 0 160px; font-size: 10px; text-align: right; }
+.bar-bg {
+  flex: 1;
+  background: {% brand_color "BORDER" %};
+  border-radius: 4px;
+  height: 12px;
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  width: var(--progress-w, 0);
+  border-radius: 4px;
+  background: {% brand_color "MAROON" %};
+}
+.bar-fill.pct-high   { background: {% brand_color "STATUS_SUCCESS" %}; }
+.bar-fill.pct-medium { background: {% brand_color "STATUS_WARNING" %}; }
+.bar-fill.pct-low    { background: {% brand_color "STATUS_DANGER" %}; }
+.bar-pct { flex: 0 0 36px; font-size: 10px; font-weight: 700; text-align: left; }
+
+/* ── مؤشّراتٌ تستوجب تدخّلاً ── */
+.red-kpis {
+  margin-top: 16px;
+  padding: 12px;
+  background: {% brand_color "SURFACE_ALT" %};
+  border-right: 4px solid {% brand_color "STATUS_DANGER" %};
+  border-radius: 4px;
+}
+.red-kpis__title { font-weight: 700; color: {% brand_color "STATUS_DANGER_DARK" %}; margin-bottom: 8px; }
+.red-kpis__line { font-size: 11px; margin-bottom: 4px; }
+.plan-progress { margin-top: 20px; }
+{% endblock %}
+
+{% block report_title %}تقرير المؤشرات الكمية (KPIs) — {{ month_label }}{% endblock %}
+
+{% block report_meta_cells %}
+<td>السنة الدراسية: <strong>{{ year }}</strong></td>
+<td>تاريخ الإصدار: <strong>{{ generated_at }}</strong></td>
+<td>المدرسة: <strong>{{ school.name }}</strong></td>
+{% endblock %}
+
+{% block content %}
+
+{# ── ملخص ضوء المرور ────────────────────────────────────────────── #}
+<div class="summary-grid">
+  <div class="summary-card card-green">
+    <div class="count">{{ summary.green }}</div>
+    <div class="label">مؤشرات خضراء ✓</div>
+  </div>
+  <div class="summary-card card-yellow">
+    <div class="count">{{ summary.yellow }}</div>
+    <div class="label">مؤشرات تحتاج متابعة</div>
+  </div>
+  <div class="summary-card card-red">
+    <div class="count">{{ summary.red }}</div>
+    <div class="label">مؤشرات تحت الهدف</div>
+  </div>
+  <div class="summary-card card-grey">
+    <div class="count">{{ summary.grey }}</div>
+    <div class="label">مؤشرات يدوية</div>
+  </div>
+</div>
+
+{# ── جدول المؤشرات ──────────────────────────────────────────────── #}
+<table>
+  <thead>
+    <tr>
+      <th scope="col">المؤشر</th>
+      <th scope="col">القيمة</th>
+      <th scope="col">الهدف</th>
+      <th scope="col">الحد الأدنى</th>
+      <th scope="col">الوحدة</th>
+      <th scope="col">التكرار</th>
+      <th scope="col">الحالة</th>
+      <th scope="col">ملاحظة</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for key, kpi in kpis.items %}
+    <tr class="row-{{ kpi.traffic }}">
+      <th scope="row">{{ kpi.label }}</th>
+      <td>
+        {% if kpi.value is not None %}
+          <span class="kpi-value">{{ kpi.value }}{{ kpi.unit }}</span>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>{{ kpi.target }}{{ kpi.unit }}</td>
+      <td>{{ kpi.warning }}{{ kpi.unit }}</td>
+      <td>{{ kpi.unit|default:"—" }}</td>
+      <td>{{ kpi.frequency }}</td>
+      <td>
+        <span class="traffic-dot dot-{{ kpi.traffic }}"></span>
+        {% if kpi.traffic == "green" %}ممتاز
+        {% elif kpi.traffic == "yellow" %}متابعة
+        {% elif kpi.traffic == "red" %}تدخل
+        {% else %}يدوي{% endif %}
+      </td>
+      <td class="note-text">{{ kpi.note|default:"" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{# ── تقدم الخطة التشغيلية ────────────────────────────────────────── #}
+{% if plan_domains %}
+<div class="plan-progress">
+  <h2>تقدم الخطة التشغيلية حسب المجال</h2>
+  {% for domain in plan_domains %}
+  <div class="domain-bar-wrap">
+    <div class="domain-name">{{ domain.name }}</div>
+    <div class="bar-bg">
+      <div class="bar-fill
+        {% if domain.completion_pct >= 80 %}pct-high
+        {% elif domain.completion_pct >= 60 %}pct-medium
+        {% else %}pct-low{% endif %}"
+        style="--progress-w:{{ domain.completion_pct }}%"></div>
+    </div>
+    <div class="bar-pct">{{ domain.completion_pct }}%</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── التوصيات التلقائية ──────────────────────────────────────────── #}
+{% if red_kpis %}
+<div class="red-kpis">
+  <div class="red-kpis__title">مؤشرات تستوجب تدخلاً فورياً</div>
+  {% for kpi in red_kpis %}
+  <div class="red-kpis__line">
+    • {{ kpi.label }}: القيمة الحالية
+    <strong>{{ kpi.value }}{{ kpi.unit }}</strong>
+    — الهدف <strong>{{ kpi.target }}{{ kpi.unit }}</strong>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block signatures %}{% include "reports/pdf/_signatures.html" with s1="مدير المدرسة" s2="مسؤول الجودة" s3="وكيل شؤون التعليم" %}{% endblock %}

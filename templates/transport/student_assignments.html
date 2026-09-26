@@ -1,0 +1,71 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}إسناد الطلاب للحافلات{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/transport/" parent_label="النقل المدرسي" current="إسناد الطلاب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "إسناد الطلاب للحافلات" icon="workload" %}
+    <a href="{% url 'transport:dashboard' %}" class="btn-secondary btn-sm">← رجوع</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام الإسناد" %}
+    {% kpi "غير مسندين" unassigned_students.count tone="red" %}
+    {% kpi "مسندون" assigned_students.count tone="green" %}
+  {% endkpi_strip %}
+
+  {% filter_bar "بحثٌ في الطلاب" live=True %}
+    {% field "q" "بحث باسم الطالب" id="student-search" hide_label=True grow=True placeholder="بحث باسم الطالب..." autocomplete="off" %}
+  {% endfilter_bar %}
+
+  <div class="ui-grid-2">
+    {% section_card "طلاب غير مسندين" meta=unassigned_students.count icon="status_error" empty="جميع الطلاب مسندون" %}{% if unassigned_students %}
+      <ul class="plain-list is-scroll">
+        {% for st in unassigned_students %}
+        <li class="plain-list__row" data-filter-item data-name="{{ st.full_name }}">
+          <span class="plain-list__title">{{ st.full_name }}</span>
+          <a href="{% url 'transport:buses_list' %}" class="link-maroon">اختر حافلة</a>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "طلاب مسندون" meta=assigned_students.count icon="status_success" empty="لم يُسنَد أيُّ طالبٍ بعد" %}{% if assigned_students %}
+      <ul class="plain-list is-scroll">
+        {% for st in assigned_students %}
+        <li class="plain-list__row" data-filter-item data-name="{{ st.full_name }}">
+          <span class="plain-list__title">{{ st.full_name }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function () {
+  if (typeof window.smartFilter === 'function') {
+    window.smartFilter('student-search', '[data-filter-item]', { textAttr: 'data-name' });
+  } else {
+    var inp = document.getElementById('student-search');
+    if (inp) {
+      inp.addEventListener('input', function(){
+        var q = this.value.toLowerCase();
+        document.querySelectorAll('[data-filter-item]').forEach(function(row){
+          var text = (row.getAttribute('data-name') || '').toLowerCase();
+          var ok = !q || text.indexOf(q) !== -1;
+          row.style.display = ok ? '' : 'none';
+        });
+      });
+    }
+  }
+});
+</script>
+{% endblock %}

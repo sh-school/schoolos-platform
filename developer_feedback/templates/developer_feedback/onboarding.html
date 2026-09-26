@@ -1,0 +1,131 @@
+{% extends "base/base.html" %}
+{% load static i18n icons ui %}
+{% comment %}
+الإعدادُ القانونيّ قبل أوّل استعمال — الشرحُ التمهيديّ في `section_card`،
+وقسما الاستمارة (الموافقاتُ ثمّ الاختبار) بطاقتان منه، والأزرارُ `form-actions`.
+الحقولُ وأسماؤها كما هي، والقالبُ لا يقرّر شيئاً من المنطق.
+{% endcomment %}
+
+{% block title %}{% trans "الإعداد القانوني — أرسل إلى المطوّر" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current="تواصل مع المطوّر" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash df-page">
+  {% page_header _("الإعداد القانوني — أرسل إلى المطوّر") subtitle=_("قبل استخدام الميزة لأول مرة — 3 دقائق فقط") icon="policy" %}{% endpage_header %}
+
+  {# ── المقدمة (3 دقائق) ── #}
+  {% section_card _("ما قبل الإرسال — اقرأ بعناية") icon="status_info" %}
+    <div class="df-intro-block">
+      <h3>{% trans "ما هي هذه الميزة؟" %}</h3>
+      <p>{% trans "قناة مباشرة تتيح لك إرسال ملاحظاتك (أعطال، اقتراحات، أسئلة، شكاوى) إلى فريق تطوير المنصّة — داخل النظام ودون الحاجة إلى بريد خارجي." %}</p>
+    </div>
+
+    <div class="df-intro-block">
+      <h3>{% trans "ما الذي ستفعله هنا؟" %}</h3>
+      <p>{% trans "ستكتب رسالة نصية قصيرة تصف مشكلتك أو اقتراحك. لا تُرفَق ملفات ولا صور في هذا الإصدار. سيتلقى المطوّر إشعاراً فورياً، وستصلك حالة التذكرة داخل المنصّة." %}</p>
+    </div>
+
+    <div class="df-intro-block">
+      <h3>{% trans "مسؤولياتك القانونية" %}</h3>
+      <p>
+        {% trans "وفقاً لقانون حماية البيانات الشخصية (PDPPL) — المادة 16 — يمنع منعاً باتاً إرسال أي بيانات شخصية لطلاب (أسماء، أرقام، درجات، سجلات صحية، إلخ) ضمن رسالتك." %}
+      </p>
+      <p>
+        {% trans "إرسال أي بيانات محمية يُعرّضك للمساءلة الإدارية والقانونية. استخدم الوصف العام فقط (مثل: «الطالب في الصف العاشر»)، ولا تذكر هوية أي شخص." %}
+      </p>
+    </div>
+  {% endsection_card %}
+
+  {# ── فورم الموافقة + الاختبار ── #}
+  <form method="post" novalidate class="df-form" aria-labelledby="df-form-title">
+    {% csrf_token %}
+
+    <h2 id="df-form-title" class="sr-only">{% trans "نموذج الموافقة والاختبار" %}</h2>
+
+    {# ── أخطاء عامة غير مرتبطة بحقل ── #}
+    {% if consent_form.non_field_errors %}
+      <div class="df-errorlist" role="alert">{{ consent_form.non_field_errors }}</div>
+    {% endif %}
+    {% if quiz_form.non_field_errors %}
+      <div class="df-errorlist" role="alert">{{ quiz_form.non_field_errors }}</div>
+    {% endif %}
+
+    {# قسم 1: الموافقات القانونية #}
+    {% section_card _("القسم 1 — الموافقات القانونية") icon="status_success" %}
+      {% for field in consent_form %}
+        <div class="df-form-group">
+          {% if field.field.widget.input_type == "checkbox" %}
+            <label for="{{ field.id_for_label }}" class="df-checkbox-label">
+              <input
+                type="checkbox"
+                name="{{ field.name }}"
+                id="{{ field.id_for_label }}"
+                {% if field.value %}checked{% endif %}
+                {% if field.field.required %}aria-required="true" required{% endif %}
+              >
+              <span>{{ field.label }}</span>
+            </label>
+          {% else %}
+            <label for="{{ field.id_for_label }}">
+              {{ field.label }}
+              {% if field.field.required %}<span class="required" aria-hidden="true">*</span>{% endif %}
+            </label>
+            {{ field }}
+          {% endif %}
+
+          {% if field.help_text %}
+            <small class="helptext">{{ field.help_text }}</small>
+          {% endif %}
+
+          {% if field.errors %}
+            <ul class="df-errorlist" role="alert">
+              {% for error in field.errors %}<li>{{ error }}</li>{% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      {% endfor %}
+    {% endsection_card %}
+
+    {# قسم 2: الاختبار (3 أسئلة) #}
+    {% section_card _("القسم 2 — اختبار فهم قصير") meta=_("3 أسئلة") icon="checklist" %}
+      {% for field in quiz_form %}
+        <div class="df-form-group df-quiz-question">
+          <div class="df-quiz-label" id="label-{{ field.id_for_label }}">
+            <strong>{{ forloop.counter }}.</strong> {{ field.label }}
+            {% if field.field.required %}<span class="required" aria-hidden="true">*</span>{% endif %}
+          </div>
+          <div class="df-quiz-choices" role="radiogroup" aria-labelledby="label-{{ field.id_for_label }}" aria-required="true">
+            {% for radio in field %}
+              <label for="{{ radio.id_for_label }}" class="df-quiz-choice">
+                {{ radio.tag }}
+                <span>{{ radio.choice_label }}</span>
+              </label>
+            {% endfor %}
+          </div>
+          {% if field.errors %}
+            <ul class="df-errorlist" role="alert">
+              {% for error in field.errors %}<li>{{ error }}</li>{% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      {% endfor %}
+    {% endsection_card %}
+
+    <div class="form-actions">
+      <a href="{% url 'dashboard' %}" class="btn-secondary">{% trans "إلغاء" %}</a>
+      <button type="submit" class="btn-primary">
+        {% icon "status_success" %}
+        {% trans "أؤكد وأكمل الاختبار" %}
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script src="{% static 'developer_feedback/js/feedback.js' %}?v=2" defer></script>
+{% endblock %}

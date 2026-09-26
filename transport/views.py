@@ -1,0 +1,216 @@
+from django.contrib.auth.decorators import login_required
+from django.db.models import Count, Q
+from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_http_methods
+
+from core.capabilities import capability_required
+from core.models import CustomUser
+from transport.models import BusRoute, SchoolBus
+from transport.services import TransportService
+
+
+@login_required
+@capability_required("transport.access")
+def transport_dashboard(request):
+    """لوحة تحكم النقل والمواصلات"""
+    school = request.user.get_school()
+    # ✅ v5.4: TransportService.get_dashboard_context — queries في service layer
+    context = TransportService.get_dashboard_context(school)
+    context.update(_dashboard_presentation(context))
+    return render(request, "transport/dashboard.html", context)
+
+
+def _dashboard_presentation(context: dict) -> dict:
+    """ألوانُ لوحة النقل وعناوينُها — الحكمُ يُكتب هنا مرّةً لا شرطاً في القالب.
+
+    الإشغالُ فوق 90% أحمر (العتبةُ التي كانت في القالب)، وحافلةٌ فوق 100%
+    حالتُها «فوق الطاقة» وفوق 80% «قريبةٌ من الامتلاء». واللونُ يحمل التنبيه،
+    فلا شريطَ تنبيهٍ يكرّر عددَ الحافلات الفائضة.
+    """
+    from django.urls import reverse
+
+    occupancy = context.get("overall_occupancy") or 0
+    for item in context.get("bus_data", []):
+        rate = item.get("occupancy_rate") or 0
+        bus = item["bus"]
+        item["url"] = reverse("transport:bus_detail", args=[bus.id])
+        item["seats_label"] = f"{item.get('students_count') or 0}/{bus.capacity}"
+        if rate > 100:
+            item.update(tone="red", status_tone="danger", status_label=f"فوق الطاقة · {rate:.0f}%")
+        elif rate > 80:
+            item.update(
+                tone="amber", status_tone="warning", status_label=f"قريبةٌ من الامتلاء · {rate:.0f}%"
+            )
+        else:
+            item.update(tone="green", status_tone="success", status_label=f"إشغال {rate:.0f}%")
+    return {
+        "capacity_label": f"من {context.get('total_capacity') or 0} مقعد",
+        "occupancy_label": f"{occupancy}%",
+        "occupancy_tone": "red" if occupancy > 90 else "teal",
+        "overcapacity_tone": "red" if context.get("overcapacity_count") else "green",
+        "no_supervisor_tone": "amber" if context.get("no_supervisor") else "green",
+    }
+
+
+@login_required
+@capability_required("transport.access")
+def buses_list(request):
+    """قائمة الحافلات المدرسية"""
+    school = request.user.get_school()
+    buses = SchoolBus.objects.filter(school=school).select_related("supervisor")
+
+    # تصفية حسب رقم الحافلة
+    search = request.GET.get("search")
+    if search:
+        buses = buses.filter(Q(bus_number__icontains=search) | Q(driver_name__icontains=search))
+
+    # نصوصُ البطاقة جاهزة — والتكرارُ يُبقي النتائجَ في ذاكرة الاستعلام فلا يُعاد.
+    for bus in buses:
+        bus.seats_label = f"{bus.capacity} مقعد"
+    context = {
+        "buses": buses,
+        "search": search,
+        "buses_label": f"{len(buses)} حافلة مسجلة",
+    }
+    return render(request, "transport/buses_list.html", context)
+
+
+@login_required
+@capability_required("transport.access")
+@require_http_methods(["GET", "POST"])
+def bus_detail(request, bus_id):
+    """تفاصيل الحافلة وإدارة الطلاب"""
+    school = request.user.get_school()
+    bus = get_object_or_404(SchoolBus, id=bus_id, school=school)
+
+    if request.method == "POST":
+        # تحديث بيانات الحافلة
+        bus.bus_number = request.POST.get("bus_number", bus.bus_number)
+        bus.driver_name = request.POST.get("driver_name", bus.driver_name)
+        bus.driver_phone = request.POST.get("driver_phone", bus.driver_phone)
+        bus.capacity = int(request.POST.get("capacity", bus.capacity))
+        bus.karwa_id = request.POST.get("karwa_id", bus.karwa_id)
+        bus.gps_link = request.POST.get("gps_link", bus.gps_link)
+        bus.save()
+
+        if request.headers.get("HX-Request"):
+            return render(request, "transport/bus_info.html", {"bus": bus})
+
+        return redirect("transport:bus_detail", bus_id=bus_id)
+
+    # الطلاب المسجلين — وعددُ ركّاب كلّ خطٍّ يُعدّ في الاستعلام لا لكلّ خطٍّ في القالب.
+    routes = bus.routes.annotate(students_count=Count("students"))
+    students = CustomUser.objects.filter(bus_routes__bus=bus).distinct()
+    student_count = students.count()
+
+    occupancy_rate = (student_count / bus.capacity * 100) if bus.capacity > 0 else 0
+    context = {
+        "bus": bus,
+        "routes": routes,
+        "students": students,
+        "student_count": student_count,
+        "occupancy_rate": occupancy_rate,
+        "occupancy_label": f"{occupancy_rate:.0f}%",
+        "page_title": f"حافلة {bus.bus_number}",
+    }
+    return render(request, "transport/bus_detail.html", context)
+
+
+@login_required
+@capability_required("transport.access")
+@require_http_methods(["GET", "POST"])
+def manage_route(request, bus_id, route_id=None):
+    """إدارة خطوط السير"""
+    school = request.user.get_school()
+    bus = get_object_or_404(SchoolBus, id=bus_id, school=school)
+
+    if route_id:
+        route = get_object_or_404(BusRoute, id=route_id, bus=bus)
+    else:
+        route = None
+
+    if request.method == "POST":
+        area_name = request.POST.get("area_name")
+
+        if route:
+            route.area_name = area_name
+            route.save()
+        else:
+            route = BusRoute.objects.create(bus=bus, area_name=area_name)
+
+        # إضافة الطلاب للمسار
+        student_ids = request.POST.getlist("students")
+        route.students.set(student_ids)
+
+        if request.headers.get("HX-Request"):
+            return render(request, "transport/route_card.html", {"route": route})
+
+        return redirect("transport:bus_detail", bus_id=bus_id)
+
+    # الطلاب المتاحين
+    available_students = CustomUser.objects.filter(
+        memberships__school=school, memberships__role__name="student", memberships__is_active=True
+    ).distinct()
+
+    context = {
+        "bus": bus,
+        "route": route,
+        "available_students": available_students,
+        "page_title": "تعديل خط سير" if route else "إضافة خط سير",
+        "bus_label": f"حافلة {bus.bus_number}",
+    }
+    return render(request, "transport/manage_route.html", context)
+
+
+@login_required
+@capability_required("transport.access")
+def tracking_map(request, bus_id):
+    """خريطة تتبع الحافلة (تكامل كروة و GPS)"""
+    school = request.user.get_school()
+    bus = get_object_or_404(SchoolBus, id=bus_id, school=school)
+
+    context = {
+        "bus": bus,
+        "page_title": f"تتبع حافلة {bus.bus_number}",
+        "has_karwa": bool(bus.karwa_id),
+        "has_gps": bool(bus.gps_link),
+    }
+    return render(request, "transport/tracking_map.html", context)
+
+
+@login_required
+@capability_required("transport.access")
+def student_assignments(request):
+    """إسناد الطلاب للحافلات"""
+    school = request.user.get_school()
+
+    # الطلاب غير المسندين
+    unassigned_students = (
+        CustomUser.objects.filter(
+            memberships__school=school,
+            memberships__role__name="student",
+            memberships__is_active=True,
+        )
+        .exclude(bus_routes__isnull=False)
+        .distinct()
+    )
+
+    # الطلاب المسندين
+    assigned_students = CustomUser.objects.filter(bus_routes__bus__school=school).distinct()
+
+    context = {
+        "unassigned_students": unassigned_students,
+        "assigned_students": assigned_students,
+    }
+    return render(request, "transport/student_assignments.html", context)
+
+
+@login_required
+@capability_required("transport.access")
+def transport_statistics(request):
+    """إحصائيات النقل والمواصلات"""
+    school = request.user.get_school()
+    # ✅ v5.4: TransportService.get_statistics — DB aggregate بدل Python sum loop
+    context = TransportService.get_statistics(school)
+    context["utilization_label"] = f"{context['utilization_rate']:.0f}%"
+    return render(request, "transport/statistics.html", context)

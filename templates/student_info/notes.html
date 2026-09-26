@@ -1,0 +1,57 @@
+{% extends "base/base.html" %}
+{% load sorting ui %}
+
+{% block title %}{{ label }}{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}{% page_layout "list" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-info/" parent_label="مركز معلومات الطلبة" current=label %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+  {% page_header label subtitle=year icon="edit_record" %}
+    <a href="{% url 'student_info:sections' %}" class="btn-secondary btn-sm">الشُّعب</a>
+  {% endpage_header %}
+
+  {% section_card "الملاحظات" meta=page.paginator.count icon="edit_record" flush=True empty="لا ملاحظات من هذه الجهة هذا العام" %}{% if page.object_list %}
+    <div class="table-wrap">
+      {# القائمةُ مقسَّمةٌ صفحاتٍ: الفرزُ من الخادم على كلّ البيانات لا على الصفحة. #}
+      <table data-no-sort>
+        <thead>
+          <tr>
+            {% sort_th sort "date" "التاريخ" "col-center" %}
+            {% sort_th sort "student" "الطالب" %}
+            {% sort_th sort "title" "العنوان" %}
+            <th>النصّ</th>
+            {% sort_th sort "author" "الكاتب" "col-center" %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for n in page.object_list %}
+          <tr>
+            <td class="col-center text-xs">{{ n.occurred_on|date:"d/m/Y" }}</td>
+            <td>
+              <a href="{% url 'student_info:student_file' n.student_id %}?year={{ year }}" class="font-semibold text-maroon hover:underline">{{ n.student.full_name }}</a>
+            </td>
+            <td class="font-semibold">{{ n.title }}</td>
+            <td class="sinfo-note-body">{{ n.body }}</td>
+            <td class="col-center text-xs">{{ n.created_by.full_name|default:"—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if page.has_other_pages %}
+    <div class="pagination">
+      {% if page.has_previous %}<a href="?page={{ page.previous_page_number }}" class="btn-secondary btn-xs">السابق</a>{% endif %}
+      <span>صفحة {{ page.number }} من {{ page.paginator.num_pages }}</span>
+      {% if page.has_next %}<a href="?page={{ page.next_page_number }}" class="btn-secondary btn-xs">التالي</a>{% endif %}
+    </div>
+    {% endif %}
+  {% endif %}{% endsection_card %}
+</div>
+{% endblock %}

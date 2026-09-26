@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ألوانُ العلامة تُعرَّف مرّةً واحدةً في `custom.css` داخل `:root`، ويقرأها
+   `tailwind.config.js` عبر `var()`. لا تُنسَخ قيمةٌ سداسيّةٌ هنا. */

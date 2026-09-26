@@ -1,0 +1,146 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static %}
+{% load sorting %}
+{% load ui %}
+
+{% block title %}لجنة المراجعة الذاتية — {{ current_school.name|default:"المدرسة" }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with items="الرئيسية:/,ضمان الجودة:quality_dashboard,لجنة المراجعة الذاتية:" %}
+{% endblock %}
+
+{% block content %}
+<div class="quality-page">
+
+  {# ══ Header ══════════════════════════════════════════════ #}
+  {% page_header "لجنة المراجعة الذاتية" subtitle=page_subtitle icon="review_committee" %}
+    <div class="flex flex-wrap gap-2 items-center">
+      <form method="GET" class="quality-per-page">
+        {% for key, val in request.GET.items %}
+          {% if key != 'per_page' and key != 'page' %}
+            <input type="hidden" name="{{ key }}" value="{{ val }}">
+          {% endif %}
+        {% endfor %}
+        <label for="per-page">عرض:</label>
+        <select id="per-page" name="per_page" data-autosubmit>
+          <option value="25" {% if current_per_page == 25 %}selected{% endif %}>25</option>
+          <option value="50" {% if current_per_page == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if current_per_page == 100 %}selected{% endif %}>100</option>
+          <option value="all" {% if current_per_page == "all" %}selected{% endif %}>الكل</option>
+        </select>
+      </form>
+      {% if request.user.is_admin %}
+      <a href="{% url 'executor_committee' %}" class="btn-secondary btn-sm">لجنة المنفذين</a>
+      <a href="{% url 'execution_list' %}" class="btn-secondary btn-sm">الخطة التشغيلية</a>
+      {% endif %}
+    </div>
+  {% endpage_header %}
+
+  {# ══ Filters ═════════════════════════════════════════════ #}
+  {% url 'review_list' as list_url %}
+  {% filter_bar "أدوات التصفية" id="filters-form" %}
+    <input type="hidden" name="sort" value="{{ current_sort }}">
+    <input type="hidden" name="dir" value="{{ current_dir }}">
+    {# المجال — مقفلٌ للمراجع على مجاله وحده #}
+    {% if member_domain %}
+    <div class="ui-field">
+      <label for="f-field" class="ui-field__label">المجال</label>
+      <select id="f-field" name="field" class="form-control opacity-70 cursor-not-allowed" disabled
+              title="يُعرض مجالك وحده — أنت مسؤولٌ عنه في لجنة المراجعة">
+        <option value="{{ member_domain.id }}" selected>{{ member_domain.name }}</option>
+      </select>
+    </div>
+    {% else %}
+    {% field "field" "المجال" type="select" choices=fields value=request.GET.field blank="الكل" %}
+    {% endif %}
+    {% field "target_no" "رقم الهدف" value=request.GET.target_no placeholder="مثال: 1" %}
+    {% field "proced_no" "رقم الإجراء" value=request.GET.proced_no placeholder="مثال: 3" %}
+    {% field "indicator_no" "المؤشر" value=request.GET.indicator_no placeholder="بحث..." %}
+    {% field "executor" "المنفذ" value=request.GET.executor placeholder="بحث..." %}
+    {% field "timing" "الشهر" type="select" choices=timings value=request.GET.timing blank="الكل" %}
+    {% field "status" "التنفيذ" type="select" choices=status_choices value=request.GET.status blank="الكل" %}
+    {% field "review_status" "حالة المراجعة" type="select" choices="reviewed=تمت المراجعة|not_reviewed=لم تتم المراجعة" value=request.GET.review_status blank="الكل" %}
+    {% field "evidence_req_status" "طلب الدليل" type="select" choices=evidence_request_choices value=request.GET.evidence_req_status blank="الكل" %}
+    <div class="filter-actions">
+      <button type="submit" class="btn-primary btn-sm">{% icon "search" %} بحث</button>
+      <a href="{{ list_url }}" class="btn-secondary btn-sm">مسح</a>
+    </div>
+  {% endfilter_bar %}
+
+  {# ══ Pagination (Top) ════════════════════════════════════ #}
+  {% if page_obj.has_other_pages %}
+  <div class="quality-pagination">
+    {% if page_obj.has_previous %}
+      <a href="?{% for key, val in request.GET.items %}{% if key != 'page' %}{{ key }}={{ val }}&{% endif %}{% endfor %}page={{ page_obj.previous_page_number }}"
+         class="page-link">{% icon "prev" %} السابق</a>
+    {% endif %}
+    <span class="page-info">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>
+    {% if page_obj.has_next %}
+      <a href="?{% for key, val in request.GET.items %}{% if key != 'page' %}{{ key }}={{ val }}&{% endif %}{% endfor %}page={{ page_obj.next_page_number }}"
+         class="page-link">التالي {% icon "next" %}</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ══ Table ═══════════════════════════════════════════════ #}
+  <div class="quality-table-wrap">
+    <div class="quality-table-scroll">
+      {# القائمةُ مقسَّمةٌ صفحاتٍ: الفرزُ من الخادم على الخطّة كلِّها. #}
+      <table class="plans-table" data-no-sort>
+        <thead>
+          <tr>
+            <th>قرار اللجنة</th>
+            {% sort_th sort "domain" "المجال" %}
+            {% sort_th sort "target" "رقم الهدف" %}
+            <th>الهدف</th>
+            {% sort_th sort "number" "رقم الإجراء" %}
+            <th>الإجراء</th>
+            {% sort_th sort "timing" "الشهر" %}
+            {% sort_th sort "executor" "المنفذ" %}
+            {% sort_th sort "indicator" "رقم المؤشر" %}
+            <th>المؤشر</th>
+            {% sort_th sort "status" "التنفيذ" %}
+            <th>موقع الدليل</th>
+            <th>ملاحظات التنفيذ</th>
+            <th>طلب الدليل</th>
+            {% sort_th sort "follow_up" "المتابعة" %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for task in page_obj %}
+            {% include "quality/partials/review_row.html" with task=task %}
+          {% empty %}
+            <tr>
+              <td colspan="15" class="quality-empty">
+                {% icon "empty" %}
+                <p>لا توجد إجراءات مطابقة للتصفية</p>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {# ══ Pagination (Bottom) ═════════════════════════════════ #}
+  {% if page_obj.has_other_pages %}
+  <div class="quality-pagination">
+    {% if page_obj.has_previous %}
+      <a href="?{% for key, val in request.GET.items %}{% if key != 'page' %}{{ key }}={{ val }}&{% endif %}{% endfor %}page={{ page_obj.previous_page_number }}"
+         class="page-link">{% icon "prev" %} السابق</a>
+    {% endif %}
+    <span class="page-info">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>
+    {% if page_obj.has_next %}
+      <a href="?{% for key, val in request.GET.items %}{% if key != 'page' %}{{ key }}={{ val }}&{% endif %}{% endfor %}page={{ page_obj.next_page_number }}"
+         class="page-link">التالي {% icon "next" %}</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</div>
+
+{# ══ HTMX Modal Container ══════════════════════════════ #}
+<div id="modal-container"></div>
+
+{% endblock %}

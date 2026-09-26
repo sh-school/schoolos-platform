@@ -1,0 +1,120 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}{% if is_leadership %}حصص المدرسة{% else %}جدول حصصي{% endif %}{% endblock %}
+
+{% block breadcrumbs %}
+{% if is_leadership %}
+{% include "components/breadcrumbs.html" with parent_url="/student-affairs/" parent_label="شؤون الطلاب" current="تسجيل الحضور" %}
+{% else %}
+{% include "components/breadcrumbs.html" with parent_url="/teacher/schedule/" parent_label="الأكاديمية" current="جدول حصصي" %}
+{% endif %}
+{% endblock %}
+
+{% block content %}
+
+<div class="exec-dash">
+
+{% comment %}
+عددُ الحصص يُقال مرّةً: كان في سطر الترويسة، وفي بطاقة «تحتاج تسجيل»، ومرّتين
+في شريط الجدول. فصار للقيادة شريطُ أرقامٍ من المجاميع، وعددُ المعروض بجوار
+البحث الذي يغيّره؛ وللمعلّم عددُ حصصه في طرف ترويسة الجدول.
+{% endcomment %}
+{% if is_leadership %}
+{% page_header "حصص المدرسة — تسجيل الحضور" subtitle=date_label icon="attendance_register" %}
+  {% include "teacher/partials/schedule_actions.html" %}
+{% endpage_header %}
+{% else %}
+{% page_header "جدول حصصي" subtitle=teacher_subtitle icon="periods_today" %}
+  {% include "teacher/partials/schedule_actions.html" %}
+{% endpage_header %}
+{% endif %}
+
+{# ── ملخص سريع للقيادة ── #}
+{% if is_leader %}
+{% url 'teacher_schedule' as schedule_url %}
+{% kpi_strip label="حصص اليوم" %}
+  {% kpi "إجمالي الحصص" all_count %}
+  {% kpi "مكتملة" completed_count tone="green" %}
+  {% kpi "غير مكتملة" open_count tone=open_tone sub="تشمل الملغاة" %}
+{% endkpi_strip %}
+
+{# ── فلاتر ذكية ── #}
+{% filter_bar "ترشيحُ الحصص" %}
+  <input type="hidden" name="date" value="{{ selected_date }}">
+  {# المعلّم والفصل: نصُّ الخيار مركّبٌ (اسمٌ كامل، صفٌّ/شعبة) — لا يُعبَّر بـchoices، فالقائمتان باليد بتسميتَيهما #}
+  <div class="ui-field">
+    <label for="f-teacher" class="ui-field__label">المعلم</label>
+    <select id="f-teacher" name="teacher" class="form-control" data-autosubmit>
+      <option value="">— كل المعلمين —</option>
+      {% for m in filter_teachers %}
+      <option value="{{ m.user_id }}" {% if teacher_filter == m.user_id|slugify %}selected{% endif %}>{{ m.user.full_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="ui-field">
+    <label for="f-class" class="ui-field__label">الفصل</label>
+    <select id="f-class" name="class" class="form-control" data-autosubmit>
+      <option value="">— كل الفصول —</option>
+      {% for cg in filter_classes %}
+      <option value="{{ cg.id }}" {% if class_filter == cg.id|slugify %}selected{% endif %}>{{ cg.short_label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% field "period" "الحصة" type="select" choices="1=الحصة 1|2=الحصة 2|3=الحصة 3|4=الحصة 4|5=الحصة 5|6=الحصة 6|7=الحصة 7" value=period_filter blank="— الكل —" data_autosubmit=True %}
+  {% field "status" "الحالة" type="select" choices="scheduled=لم يُسجَّل|in_progress=جارٍ|completed=مكتمل" value=status_filter blank="— الكل —" data_autosubmit=True %}
+  <div class="filter-actions">
+    <a href="{{ schedule_url }}?date={{ selected_date }}" class="btn-secondary btn-xs">إعادة ضبط</a>
+    {% if show_all %}
+    <a href="{{ schedule_url }}?date={{ selected_date }}" class="btn-primary btn-xs">إخفاء المكتملة</a>
+    {% else %}
+    <a href="{{ schedule_url }}?date={{ selected_date }}&all=1" class="btn-secondary btn-xs">عرض الكل</a>
+    {% endif %}
+  </div>
+{% endfilter_bar %}
+{% endif %}
+
+{# ── الحصة القادمة ── #}
+{% if next_session %}
+{% section_card "الحصة القادمة" meta=next_session.start_time|time:"H:i" icon="time" %}
+  <div class="plain-list__row next-session">
+    <span class="plain-list__main">
+      <b class="plain-list__title">{{ next_session.subject.name_ar|default:"حصة" }}</b>
+      <span class="plain-list__sub">{{ next_session.class_group.short_label }}</span>
+    </span>
+    <a href="{% url 'attendance' next_session.id %}" class="btn-primary btn-sm">
+      {% if is_recorder or not next_session.class_group.wing_id %}ابدأ الحضور ←{% else %}عرض الحضور ←{% endif %}
+    </a>
+  </div>
+{% endsection_card %}
+{% endif %}
+
+{# ── Sessions Table ── #}
+{% if is_leader %}
+{% section_card "الحصص" icon="periods_today" flush=True empty="لا توجد حصص في هذا اليوم" empty_sub=date_label %}{% if sessions %}
+  {% filter_bar "بحثٌ في الحصص" live=True css="schedule-search" %}
+    {% field "q" "بحث بالمادة أو المعلم أو الفصل" id="session-search" hide_label=True grow=True placeholder="بحث بالمادة أو المعلم أو الفصل..." %}
+    <span class="schedule-search__count"><span id="shown-count">{{ sessions|length }}</span> من {{ sessions|length }}</span>
+  {% endfilter_bar %}
+  {% include "teacher/partials/sessions_table.html" %}
+{% endif %}{% endsection_card %}
+{% else %}
+{% section_card "الحصص" meta=sessions|length icon="periods_today" flush=True empty="لا توجد حصص في هذا اليوم" empty_sub=date_label %}{% if sessions %}
+  {% include "teacher/partials/sessions_table.html" %}
+{% endif %}{% endsection_card %}
+{% endif %}
+
+</div>{# end .exec-dash #}
+
+{% if is_leader %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  if (typeof window.smartFilter === 'function' && document.getElementById('session-search')) {
+    window.smartFilter('session-search', '#sessions-tbody tr[data-filter-row]', {
+      textAttr: 'data-text',
+      countEl: '#shown-count'
+    });
+  }
+});
+</script>
+{% endif %}
+{% endblock %}

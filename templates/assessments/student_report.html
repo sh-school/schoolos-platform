@@ -1,0 +1,54 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui dict_filters %}
+{% block title %}كشف درجات — {{ student.full_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/assessments/" parent_label="التقييمات" current="كشف درجات الطالب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "كشف الدرجات السنوي" subtitle=subtitle icon="grades" %}{% endpage_header %}
+
+  {% kpi_strip label="أرقام الطالب" %}
+    {% kpi "المواد" total_subjects tone="blue" %}
+    {% kpi "ناجح" passed tone="green" %}
+    {% kpi "راسب" failed tone=failed_tone %}
+  {% endkpi_strip %}
+
+  {% section_card "النتائج السنوية" meta=year icon="grades" flush=True empty="لا توجد نتائج بعد" %}{% if rows %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">المادة</th>
+            <th scope="col" class="num">الفصل الأول <small>/40</small></th>
+            <th scope="col" class="num">الفصل الثاني <small>/60</small></th>
+            <th scope="col" class="num">المجموع السنوي <small>/100</small></th>
+            <th scope="col" class="num">التقدير</th>
+            <th scope="col" class="num">الحالة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          {% with result=row.result %}
+          <tr>
+            <td>{{ result.subject.name_ar }}</td>
+            <td class="num">{% if row.s1_tone %}<span class="grade-total is-{{ row.s1_tone }}">{{ result.s1_total }}</span>{% else %}<span class="grade-total is-muted">—</span>{% endif %}</td>
+            <td class="num">{% if row.s2_tone %}<span class="grade-total is-{{ row.s2_tone }}">{{ result.s2_total }}</span>{% else %}<span class="grade-total is-muted">—</span>{% endif %}</td>
+            <td class="num">{% if result.annual_total is not None %}<span class="grade-total is-{{ row.tone }}">{{ result.annual_total }}</span>{% else %}<span class="grade-total is-muted">—</span>{% endif %}</td>
+            <td class="num"><b>{{ result.letter_grade }}</b></td>
+            <td class="num"><span class="status-badge {{ status_tones|get_item:result.status|default:'status-warning' }}">{{ result.get_status_display }}</span></td>
+          </tr>
+          {% endwith %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% callout "hint" %}النجاح من 50 من 100.{% endcallout %}
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}

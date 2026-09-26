@@ -1,0 +1,31 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block title %}{{ page_title }} — {{ module_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% url 'academic_management:reports_landing' as reports_url %}
+{% include "components/breadcrumbs.html" with parent_url=reports_url parent_label="التقارير الأكاديمية" current=page_title %}
+{% endblock %}
+
+{% block content %}
+{% comment %}
+هيكلُ التقارير الأربعة: ترويسةٌ بأزرار التصدير، ثمّ شريطُ الترشيح، ثمّ جسمُ
+التقرير بطاقاتٍ. والقالبُ نفسُه يُرسم PDF (`_export_response`) بسياقٍ بلا
+`page_title`، فالعنوانُ له بديل.
+{% endcomment %}
+<div class="exec-dash">
+
+  {% page_header page_title|default:"التقارير الأكاديمية" subtitle=page_subtitle icon="document" %}
+    {% if flagship %}<span class="status-badge status-maroon">{% icon "reports" %} تقرير رئيسي</span>{% endif %}
+    <a data-app-file href="?{{ request.GET.urlencode }}{% if request.GET %}&{% endif %}export=pdf" class="btn-secondary btn-sm">{% icon "export_pdf" %} تصدير PDF</a>
+    <a data-app-file href="?{{ request.GET.urlencode }}{% if request.GET %}&{% endif %}export=excel" class="btn-secondary btn-sm">{% icon "export_excel" %} تصدير Excel</a>
+  {% endpage_header %}
+
+  {% block filters %}{% endblock %}
+
+  {% block report_body %}{% endblock %}
+
+</div>
+{% endblock %}

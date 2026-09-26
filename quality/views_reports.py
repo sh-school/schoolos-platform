@@ -1,0 +1,133 @@
+"""
+quality/views_reports.py — تقرير التقدم + PDF
+"""
+
+from django.contrib.auth.decorators import login_required
+from django.db.models import Count, Q
+from django.shortcuts import render
+from django.template.loader import render_to_string
+from django.utils import timezone
+
+from core.academic_calendar import academic_year_for, default_academic_year
+from core.capabilities import capability_required
+from core.pdf_utils import render_pdf
+
+from .models import ExecutorMapping, OperationalProcedure, QualityCommitteeMember
+from .presentation import kpi_progress_tone, progress_tone
+from .services import QualityService
+
+
+#: يُقرأ وقت الطلب لا وقت الاستيراد — ثابتُ الوحدة يتجمّد عند إقلاع العملية.
+def _default_year(request=None):
+    return academic_year_for(request) if request is not None else default_academic_year()
+
+
+@login_required
+@capability_required("quality.access")
+def progress_report(request):
+    school = request.user.get_school()
+    year = request.GET.get("year") or _default_year(request)
+    data = QualityService.get_progress_report_data(school, year)
+    overall = data["overall"]
+
+    # ── المنفذين مع اسم الموظف الفعلي ──
+    executor_raw = (
+        OperationalProcedure.objects.filter(school=school, academic_year=year)
+        .values("executor_norm")
+        .annotate(total=Count("id"), completed=Count("id", filter=Q(status="Completed")))
+        .order_by("-total")[:20]
+    )
+    # بناء خريطة اسم المنفذ → اسم الموظف
+    mapping_dict = dict(
+        ExecutorMapping.objects.filter(
+            school=school,
+            academic_year=year,
+            user__isnull=False,
+        )
+        .select_related("user")
+        .values_list("executor_norm", "user__full_name")
+    )
+    executor_stats = []
+    for ex in executor_raw:
+        ex["user_name"] = mapping_dict.get(ex["executor_norm"], "")
+        # كانت النسبةُ تُحسب في القالب بـ`widthratio` مرّتين، واللونُ بشرطٍ ثالث.
+        ex["pct"] = round(ex["completed"] * 100 / ex["total"]) if ex["total"] else 0
+        ex["tone"] = progress_tone(ex["pct"], ex["total"])
+        executor_stats.append(ex)
+
+    # ── مسؤول كل مجال (من لجنة المراجعة) ──
+    reviewer_map = {}
+    for m in QualityCommitteeMember.objects.filter(
+        school=school,
+        committee_type=QualityCommitteeMember.REVIEW,
+        academic_year=year,
+        is_active=True,
+        domain__isnull=False,
+    ).select_related("user", "domain"):
+        if m.domain_id and m.user:
+            reviewer_map[m.domain_id] = m.user.full_name
+
+    domain_stats = data["domain_stats"]
+    for ds in domain_stats:
+        ds["reviewer_name"] = reviewer_map.get(ds["domain"].pk, "")
+        ds["tone"] = progress_tone(ds["pct"], ds["total"])
+
+    base_qs = OperationalProcedure.objects.filter(school=school, academic_year=year)
+    today = timezone.now().date()
+    overdue_qs = base_qs.overdue().with_details()
+
+    overdue_procedures = [
+        {"procedure": proc, "days_overdue": (today - proc.deadline).days if proc.deadline else 0}
+        for proc in overdue_qs[:30]
+    ]
+
+    evidence_requests = base_qs.filter(evidence_request_status="requested").with_details()[:10]
+
+    return render(
+        request,
+        "quality/progress_report.html",
+        {
+            "domain_stats": domain_stats,
+            "executor_stats": executor_stats,
+            "year": year,
+            "total_all": overall["total"],
+            "completed_all": overall["completed"],
+            "in_progress_all": overall["in_progress"],
+            "pending_review_all": overall["pending_review"],
+            "pct_all": overall["pct"],
+            "pct_label": f"{overall['pct']}%",
+            "pct_tone": kpi_progress_tone(overall["pct"], overall["total"]),
+            "report_subtitle": f"{year} · {school.name}" if school else year,
+            "overdue_procedures": overdue_procedures,
+            "overdue_count": len(overdue_procedures),
+            "evidence_requests": evidence_requests,
+        },
+    )
+
+
+@login_required
+@capability_required("quality.access")
+def progress_report_pdf(request):
+    from core.audit_export import log_export
+
+    school = request.user.get_school()
+    year = request.GET.get("year") or _default_year(request)
+    data = QualityService.get_progress_report_data(school, year)
+    overall = data["overall"]
+    log_export(request, "quality.progress_report_pdf", object_repr=f"الخطّة التشغيليّة — {year}")
+
+    html_content = render_to_string(
+        "quality/pdf/progress_report.html",
+        {
+            "domain_stats": data["domain_stats"],
+            "year": year,
+            "school": school,
+            "total_all": overall["total"],
+            "completed_all": overall["completed"],
+            "pct_all": overall["pct"],
+            "generated_at": timezone.now(),
+        },
+        request=request,
+    )
+
+    return render_pdf(html_content, f"operational_plan_{year}.pdf")

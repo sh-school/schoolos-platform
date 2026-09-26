@@ -1,0 +1,60 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}إيقاف المصادقة الثنائية{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current="إيقاف المصادقة الثنائية" %}
+{% endblock %}
+
+{% block content %}
+<div class="max-w-md mx-auto py-10 px-4">
+
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">{% icon "two_factor" %} إيقاف المصادقة الثنائية</h1>
+      <p class="page-subtitle">يتطلب تأكيد رمز التحقق الحالي قبل الإيقاف</p>
+    </div>
+  </div>
+
+  {% if messages %}
+    {% for msg in messages %}
+    <div class="msg-bar mb-4 {% if msg.tags == 'error' %}msg-error{% else %}msg-success{% endif %}" role="{% if msg.tags == 'error' %}alert{% else %}status{% endif %}">
+      <span>{{ msg }}</span>
+    </div>
+    {% endfor %}
+  {% endif %}
+
+  <!-- تحذير -->
+  {% callout "warning" %}إيقاف المصادقة الثنائية يُقلّل من أمان حسابك. تأكد من هذا القرار خاصةً إذا كان حسابك إدارياً.{% endcallout %}
+
+  <div class="form-card">
+    <form method="post">
+      {% csrf_token %}
+      {# حقلُ الرمز باليد: أصنافُ العرض (توسيطٌ وخطٌّ أحاديّ وتباعدٌ) على الحقل نفسِه لا على غلافه #}
+      <div class="ui-field mb-5">
+        <label for="f-code" class="ui-field__label">رمز التحقق الحالي من التطبيق</label>
+        <input type="text"
+               id="f-code"
+               name="code"
+               maxlength="7"
+               inputmode="numeric"
+               pattern="[0-9]{3} ?[0-9]{3}"
+               autocomplete="one-time-code"
+               autofocus
+               placeholder="• • • • • •"
+               class="form-control text-center text-2xl font-mono tracking-widest">
+      </div>
+      <button type="submit" class="btn-danger w-full py-3">
+        تأكيد إيقاف المصادقة الثنائية
+      </button>
+    </form>
+  </div>
+
+  <div class="mt-4 text-center">
+    <a href="{% url 'setup_2fa' %}" class="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+      ← العودة لإعدادات الأمان
+    </a>
+  </div>
+</div>
+{% endblock %}

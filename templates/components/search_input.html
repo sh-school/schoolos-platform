@@ -1,0 +1,45 @@
+{% load icons %}
+{% comment %}
+  مكوّن البحث الحي (HTMX) — SchoolOS v5.1
+  ══════════════════════════════════════════
+  الاستخدام:
+    include "components/search_input.html" with
+       search_url=request.path
+       target="#results-container"
+       placeholder="ابحث عن طالب..."
+       value=request.GET.q
+
+  المتغيرات:
+    search_url  — URL للـ hx-get
+    target      — CSS selector لـ hx-target
+    placeholder — نص placeholder
+    value       — القيمة الحالية (GET param)
+    name        — اسم الـ param (افتراضي: q)
+    delay       — تأخير إدخال (افتراضي: 400ms)
+    indicator   — id لـ loading indicator
+{% endcomment %}
+<div class="search-wrap">
+  <span class="search-icon" aria-hidden="true">{% icon "search" %}</span>
+  <input
+    type="search"
+    name="{{ name|default:'q' }}"
+    value="{{ value|default:'' }}"
+    placeholder="{{ placeholder|default:'بحث...' }}"
+    class="form-control"
+    autocomplete="off"
+    hx-get="{{ search_url }}"
+    hx-trigger="input changed delay:{{ delay|default:'400ms' }}, search"
+    hx-target="{{ target|default:'#search-results' }}"
+    hx-swap="innerHTML"
+    hx-push-url="false"
+    hx-include="[name='sort'],[name='dir'],[name='status']"
+    {% if indicator %}hx-indicator="#{{ indicator }}"{% endif %}
+    aria-label="{{ placeholder|default:'بحث' }}"
+  >
+  {# ── مؤشر التحميل ── #}
+  <span
+    {% if indicator %}id="{{ indicator }}"{% endif %}
+    class="htmx-indicator"
+    aria-hidden="true"
+  >{% icon "time" %}</span>
+</div>

@@ -1,0 +1,74 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block title %}{% if mode == "add" %}تسجيل نشاط{% else %}تعديل نشاط{% endif %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-affairs/activities/" parent_label="الأنشطة" current=block.super %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-page sa-form-page">
+  {% if mode == "add" %}
+  {% page_header "تسجيل نشاط / إنجاز" icon="activities" %}{% endpage_header %}
+  {% else %}
+  {% page_header "تعديل النشاط" subtitle=activity.title icon="activities" %}{% endpage_header %}
+  {% endif %}
+
+  <div class="form-card">
+    <form method="post" enctype="multipart/form-data">
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+      <div class="msg-bar msg-error sa-form-errors" role="alert">
+        {% for err in form.non_field_errors %}<span class="msg-text">{{ err }}</span>{% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="form-row">
+
+        {# الطالب: خياراتٌ مركّبةٌ (معرّفُ المستخدم واسمُه الكامل) واختيارٌ بشرطَين وتعطيلٌ عند التعديل — القائمةُ باليد بتسميتها #}
+        <div class="ui-field sa-span-full">
+          <label for="f-student_id" class="ui-field__label">الطالب <span class="req-star" aria-hidden="true">*</span></label>
+          <select id="f-student_id" name="student_id" class="form-control" required {% if mode == "edit" %}disabled{% endif %}>
+            <option value="">— اختر الطالب —</option>
+            {% for m in students %}
+            <option value="{{ m.user_id }}"
+              {% if form.student_id.value|slugify == m.user_id|slugify %}selected{% endif %}
+              {% if mode == "edit" and activity.student_id == m.user_id %}selected{% endif %}>
+              {{ m.user.full_name }}
+            </option>
+            {% endfor %}
+          </select>
+          {% if mode == "edit" %}
+          <input type="hidden" name="student_id" value="{{ activity.student_id }}">
+          {% endif %}
+        </div>
+
+        {% field "title" "العنوان" value=form.title.value placeholder="مثال: المركز الأول في مسابقة الرياضيات" required=True css="sa-span-full" %}
+        {% field "activity_type" "نوع النشاط" type="select" choices=form.fields.activity_type.choices value=form.activity_type.value required=True %}
+        {% field "scope" "النطاق" type="select" choices=form.fields.scope.choices value=form.scope.value required=True %}
+        {% field "date" "التاريخ" type="date" value=form.date.value required=True %}
+        {% if mode == "edit" and activity.attachment %}
+        {% with current_attachment=activity.attachment.name|cut:"student_activities/" %}
+        {% field "attachment" "مرفق" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" help="مرفق حالي: "|add:current_attachment %}
+        {% endwith %}
+        {% else %}
+        {% field "attachment" "مرفق" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" %}
+        {% endif %}
+        {% field "description" "الوصف" type="textarea" rows=3 value=form.description.value placeholder="وصف النشاط أو الإنجاز..." css="sa-span-full" %}
+
+      </div>
+
+      <div class="form-footer">
+        <a href="{% url 'student_affairs:activity_list' %}" class="btn-secondary btn-sm">إلغاء</a>
+        <button type="submit" class="btn-primary btn-sm">
+          {% icon "status_success" %}
+          {% if mode == "add" %}تسجيل النشاط{% else %}حفظ التعديلات{% endif %}
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

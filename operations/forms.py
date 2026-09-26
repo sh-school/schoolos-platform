@@ -1,0 +1,236 @@
+"""operations/forms.py — نماذج الجداول والحضور والتبادل"""
+
+from django import forms
+
+from core.models.access import EXEMPTABLE_ROLES
+
+from .models import ScheduleSlot, TeacherAbsence, TeacherExemption
+
+
+class TeacherExemptionForm(forms.Form):
+    """مدخلاتُ التفريغ — تُفحص قبل أن تبلغ الخدمة.
+
+    كان العرضُ يقرأ `request.POST["teacher"]` و`int(request.POST["day_of_week"])`
+    مباشرةً: مفتاحٌ ناقصٌ أو رقمٌ غيرُ صالحٍ = صفحةُ خطأٍ لا رسالة. والمعلّمُ
+    يُقيَّد بمدرسة المُدخِل في `clean_teacher` — فكان أيُّ UUID يُقبل، ومديرُ
+    مدرسةٍ يُفرّغ معلّمَ مدرسةٍ أخرى بتغيير رقمٍ في الطلب.
+
+    و«المعلّم» قد يكون مجموعةً: `coordinators` تعني منسّقي المواد جميعاً —
+    اجتماعُهم الأسبوعيُّ تفريغٌ واحدٌ لا اثنا عشرَ إدخالاً. والأيّامُ تُختار
+    عدّةً معاً: الحصّةُ الأولى الأحدَ والثلاثاءَ تفريغان بطلبٍ واحد.
+    """
+
+    #: المجموعاتُ المقبولةُ مكانَ معرّف المعلّم — والقيمةُ ليست UUID عمداً.
+    GROUPS = {"coordinators": ("coordinator",)}
+    #: تفريغُ قسمٍ كاملٍ لاجتماعه الأسبوعيّ (قرارُ 2026-09-18) — معرّفُه
+    #: `dept:<uuid>` لا معرّفَ خامٍ، فلا يُخلط بمعرّف معلّمٍ ولا بمفتاح مجموعةٍ
+    #: ثابت. ومعلّمو القسم من `operations.departments.teachers_of_department`
+    #: — نفسُ قاعدة شاشة الإسناد (السجلُّ أوّلاً، فاشتقاقُ الحصص احتياطاً).
+    DEPT_PREFIX = "dept:"
+
+    #: 40 كانت تكفي معرّفَ معلّمٍ (UUID، 36 حرفاً) أو `coordinators` — ولا
+    #: تكفي `dept:<uuid>` (41 حرفاً)، فسقط تفريغُ القسم على هذا الحدّ وحدَه
+    #: قبل أن يبلغ `clean_teacher` أصلاً.
+    teacher = forms.CharField(max_length=48, label="المعلم/المنسق")
+    #: النوعُ اختياريٌّ لأنّ الشبكةَ تحمله في الخانة: «يوم:*» يومٌ كاملٌ وما
+    #: عداه حصّةٌ بعينها. وكان مطلوباً بعد أن رُفع من الشاشة، فكان كلُّ تظليلٍ
+    #: يُردّ بـ«نوع التفريغ: هذا الحقل مطلوب» — رسالةٌ عن حقلٍ لا يراه أحد.
+    exemption_type = forms.ChoiceField(
+        choices=TeacherExemption.EXEMPTION_TYPE,
+        initial="full_day",
+        required=False,
+        label="نوع التفريغ",
+    )
+    #: خاناتٌ مفردةٌ من الشبكة: «يوم:حصّة» مكرّراً. وهي المسارُ المفضَّل —
+    #: تحمل ما عجز عنه الضربُ: «الأحدَ الأولى والاثنينَ الثالثة» خانتان لا
+    #: أربع. فإن جاءت أُهملت الأيّامُ والحصصُ، وإلّا فالضربُ كما كان (وهو
+    #: البابُ الذي يُفرَّغ به المنسّقون جميعاً في يومٍ وحصّةٍ واحدة).
+    slots = forms.CharField(required=False, label="الخانات")
+    day_of_week = forms.TypedMultipleChoiceField(
+        choices=ScheduleSlot.DAYS, coerce=int, required=False, label="الأيام"
+    )
+    #: حصصٌ عدّةٌ كالأيّام: الأولى والسابعةُ تفريغان بطلبٍ واحد. وفي «يوم كامل»
+    #: تُهمَل، فالقائمةُ تصير `[None]` — حصّةً واحدةً بلا رقم.
+    period_number = forms.TypedMultipleChoiceField(
+        choices=[(p, f"الحصة {p}") for p in ScheduleSlot.PERIODS],
+        coerce=int,
+        required=False,
+        label="الحصص",
+    )
+    reason = forms.CharField(max_length=200, label="السبب")
+    source = forms.ChoiceField(
+        choices=TeacherExemption._meta.get_field("source").choices,
+        initial="school",
+        label="جهة القرار",
+    )
+
+    def __init__(self, *args, school, year, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.school = school
+        #: العامُ لازمٌ لتفريغ قسمٍ كامل: اشتقاقُ من لا عضويّةَ مسجَّلةً له
+        #: يقرأ إسناداتِ عامه — لا عامٍ لا معنى لـ«معلّمي القسم اليوم».
+        self.year = year
+
+    def clean_teacher(self):
+        """يُرجع قائمةَ المعلّمين المقصودين — واحداً بمعرّفه أو مجموعةً بدورها."""
+        import uuid
+
+        from core.models import CustomUser, Department
+
+        raw = self.cleaned_data["teacher"].strip()
+        roles = self.GROUPS.get(raw)
+        if roles:
+            teachers = list(
+                CustomUser.objects.filter(
+                    memberships__school=self.school,
+                    memberships__is_active=True,
+                    memberships__role__name__in=roles,
+                )
+                .distinct()
+                .order_by("full_name")
+            )
+            if not teachers:
+                raise forms.ValidationError("لا منسّقين في مدرستك.")
+            return teachers
+        if raw.startswith(self.DEPT_PREFIX):
+            try:
+                dept_id = uuid.UUID(raw[len(self.DEPT_PREFIX) :])
+            except ValueError as exc:
+                raise forms.ValidationError("اختر معلّماً أو مجموعة.") from exc
+            department = Department.objects.filter(
+                pk=dept_id, school=self.school, is_active=True
+            ).first()
+            if department is None:
+                raise forms.ValidationError("القسمُ المختار ليس من مدرستك.")
+            # `department.get_teachers()` عضويّاتٌ مسجَّلةٌ صراحةً وحدها — وهي
+            # فارغةٌ في أكثر المدارس اليوم (سجلُّ الأقسام لم يُملأ بعد). فمعلّمو
+            # القسم الفعليّون من `teachers_of_department`: نفسُ قاعدة شاشة
+            # الإسناد (السجلُّ أوّلاً، فاشتقاقُ الحصص لمن لا سجلَّ له).
+            from operations.departments import teachers_of_department
+
+            teachers = teachers_of_department(self.school, self.year, department)
+            if not teachers:
+                raise forms.ValidationError("لا معلّمين في هذا القسم.")
+            return teachers
+        try:
+            pk = uuid.UUID(raw)
+        except ValueError as exc:
+            raise forms.ValidationError("اختر معلّماً أو مجموعة.") from exc
+        # الشرطان في `filter()` واحدةٍ ليقعا على العضويّة نفسها: عضويّةٌ
+        # مدرِّسةٌ في مدرسةٍ أخرى لا تُجيز تفريغَ صاحبها هنا.
+        teacher = (
+            CustomUser.objects.filter(
+                pk=pk,
+                memberships__school=self.school,
+                memberships__is_active=True,
+                memberships__role__name__in=EXEMPTABLE_ROLES,
+            )
+            .distinct()
+            .first()
+        )
+        if teacher is None:
+            raise forms.ValidationError("المعلّم المختار ليس من كادر الجدولة في مدرستك.")
+        return [teacher]
+
+    def clean(self):
+        """يوحّد المسارين في `pairs`: قائمةُ (يوم، حصّة) — والحصّةُ `None` ليومٍ كامل.
+
+        فالعرضُ لا يعرف من أين جاء الطلب: من الشبكة أم من الاستمارة القديمة.
+        """
+        cleaned = super().clean()
+        from operations.exemption_grid import parse_slots
+
+        raw = (cleaned.get("slots") or "").replace("،", ",")
+        picked = parse_slots([p for p in raw.split(",") if p.strip()])
+        if picked:
+            # الشبكةُ تحمل الخانةَ بيومها، فلا معنى لأيّامٍ معها. والنوعُ
+            # يُشتقّ لكلّ زوجٍ على حدة في العرض: «يوم:*» يومٌ كاملٌ وغيرُه
+            # حصّةٌ بعينها — فالطلبُ الواحدُ قد يحمل النوعين معاً.
+            cleaned["exemption_type"] = ""
+            cleaned["pairs"] = picked
+            cleaned["day_of_week"] = sorted({day for day, _ in picked})
+            return cleaned
+
+        days = cleaned.get("day_of_week")
+        if not days:
+            # لا شبكةَ ولا أيّام: الطلبُ فارغٌ من موضعه.
+            self.add_error("slots", "ظلِّل خانةً واحدةً على الأقلّ في الشبكة.")
+            return cleaned
+        if not cleaned.get("exemption_type"):
+            cleaned["exemption_type"] = "full_day"
+        if cleaned.get("exemption_type") == "specific_period" and not cleaned.get("period_number"):
+            self.add_error("period_number", "حدّد الحصص لتفريغ حصصٍ بعينها.")
+            return cleaned
+        periods = (
+            [None] if cleaned.get("exemption_type") == "full_day" else cleaned["period_number"]
+        )
+        cleaned["period_number"] = periods
+        cleaned["pairs"] = [(day, period) for day in days for period in periods]
+        return cleaned
+
+
+class SwapRequestForm(forms.Form):
+    slot_a = forms.UUIDField(label="الحصة الأولى (طالب التبادل)")
+    slot_b = forms.UUIDField(label="الحصة الثانية (المُعروض للتبادل)")
+    swap_date = forms.DateField(
+        widget=forms.DateInput(attrs={"type": "date"}),
+        label="تاريخ التبادل",
+    )
+    reason = forms.CharField(
+        max_length=500,
+        required=False,
+        label="سبب التبادل",
+        widget=forms.TextInput(attrs={"placeholder": "سبب اختياري"}),
+    )
+
+
+class SwapRespondForm(forms.Form):
+    ACTION_CHOICES = [("accept", "قبول"), ("reject", "رفض")]
+    action = forms.ChoiceField(choices=ACTION_CHOICES, label="القرار")
+    rejection_reason = forms.CharField(
+        max_length=500,
+        required=False,
+        label="سبب الرفض",
+    )
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("action") == "reject" and not cleaned.get("rejection_reason"):
+            raise forms.ValidationError("يجب ذكر سبب الرفض.")
+        return cleaned
+
+
+class TeacherAbsenceForm(forms.Form):
+    teacher_id = forms.UUIDField(label="المعلم")
+    date = forms.DateField(
+        widget=forms.DateInput(attrs={"type": "date"}),
+        label="التاريخ",
+    )
+    reason = forms.ChoiceField(
+        choices=TeacherAbsence.REASON,
+        label="السبب",
+    )
+    notes = forms.CharField(
+        max_length=500,
+        required=False,
+        label="ملاحظات",
+    )
+
+
+class CompensatoryRequestForm(forms.Form):
+    original_slot = forms.UUIDField(label="الحصة الأصلية")
+    absence = forms.UUIDField(label="الغياب المرتبط")
+    compensatory_date = forms.DateField(
+        widget=forms.DateInput(attrs={"type": "date"}),
+        label="تاريخ الحصة التعويضية",
+    )
+    compensatory_period = forms.IntegerField(
+        min_value=1,
+        max_value=10,
+        label="الحصة (1–10)",
+    )
+    notes = forms.CharField(
+        max_length=500,
+        required=False,
+        label="ملاحظات",
+    )

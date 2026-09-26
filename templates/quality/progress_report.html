@@ -1,0 +1,164 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}تقرير التقدم — الخطة التشغيلية{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/quality/" parent_label="ضمان الجودة" current="تقرير التقدم" %}
+{% endblock %}
+
+{% block content %}
+<div class="pr-page">
+
+  {% page_header "تقرير التقدم الكلي" subtitle=report_subtitle icon="trend" %}
+    <a data-app-file href="{% url 'quality_report_pdf' %}?year={{ year }}" class="btn-primary btn-sm">{% icon "export_pdf" %} تصدير PDF</a>
+    <a href="{% url 'quality_dashboard' %}" class="btn-secondary btn-sm">الخطة التشغيلية</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام الخطة" %}
+    {% kpi "الإنجاز الكلي" pct_label tone=pct_tone title="نسبة الإجراءات المكتملة من الإجمالي" %}
+    {% kpi "إجمالي الإجراءات" total_all %}
+    {% kpi "مكتمل" completed_all tone="green" %}
+    {% kpi "قيد التنفيذ" in_progress_all tone="amber" %}
+    {% kpi "بانتظار المراجعة" pending_review_all tone="blue" %}
+    {% kpi "متأخرة" overdue_count tone="red" %}
+  {% endkpi_strip %}
+
+  {% section_card "التقدم حسب المجال" meta=domain_stats|length icon="trend" empty="لا مجالاتٍ في الخطة لهذا العام" %}{% if domain_stats %}
+    <div class="pr-domains" id="pr-domains">
+      {% for ds in domain_stats %}
+      <div class="pr-dom" data-pct="{{ ds.pct }}" data-done="{{ ds.completed }}" data-total="{{ ds.total }}">
+        <div class="pr-dom__ring">
+          <svg viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="q-ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"/>
+            <circle class="pr-dom__arc q-ring-arc is-{{ ds.tone }}" cx="18" cy="18" r="15.9" fill="none"
+                    stroke-width="3.5" stroke-dasharray="0 100" stroke-linecap="round"/>
+          </svg>
+          <span class="pr-dom__pct">{{ ds.pct }}%</span>
+        </div>
+        <div class="pr-dom__info">
+          <span class="pr-dom__name">{{ ds.domain.name }}</span>
+          {% if ds.reviewer_name %}<span class="pr-dom__reviewer">{{ ds.reviewer_name }}</span>{% endif %}
+          <span class="pr-dom__meta">{{ ds.completed }}/{{ ds.total }} مكتمل · {{ ds.in_progress }} جارٍ</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}{% endsection_card %}
+
+  {% section_card "أداء المنفذين" meta="أول 20" icon="plan_committee" empty="لا منفّذين بإجراءاتٍ لهذا العام" %}{% if executor_stats %}
+    <div class="pr-executors" id="pr-executors">
+      {% for ex in executor_stats %}
+      <div class="pr-exec" data-pct="{{ ex.pct }}">
+        <div class="pr-exec__ring">
+          <svg viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="q-ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"/>
+            <circle class="pr-exec__arc q-ring-arc is-{{ ex.tone }}" cx="18" cy="18" r="15.9" fill="none"
+                    stroke-width="3.5" stroke-dasharray="0 100" stroke-linecap="round"/>
+          </svg>
+          <span class="pr-exec__pct">{% if ex.total %}{{ ex.pct }}%{% else %}—{% endif %}</span>
+        </div>
+        <div class="pr-exec__info">
+          <span class="pr-exec__name" title="{{ ex.executor_norm }}">{{ ex.executor_norm }}</span>
+          {% if ex.user_name %}<span class="pr-exec__user">{{ ex.user_name }}</span>{% endif %}
+          <span class="pr-exec__meta"><strong>{{ ex.completed }}</strong> مكتمل من <strong>{{ ex.total }}</strong></span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}{% endsection_card %}
+
+  {% if overdue_procedures %}
+  {% section_card "الإجراءات المتأخرة" meta=overdue_count icon="quality" flush=True %}
+    <div class="table-wrap">
+      {# تقريرٌ للطباعة: لا فرزَ على الورق. #}
+      <table data-no-sort>
+        <thead>
+          <tr>
+            <th scope="col">رقم</th>
+            <th scope="col">الإجراء</th>
+            <th scope="col">المنفذ</th>
+            <th scope="col">المجال</th>
+            <th scope="col" class="num">الموعد</th>
+            <th scope="col" class="num">التأخير</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in overdue_procedures %}
+          <tr>
+            <td class="pr-code" dir="ltr">{{ item.procedure.number }}</td>
+            <td>{{ item.procedure.text|truncatewords:8 }}</td>
+            <td class="pr-muted">{{ item.procedure.executor_user.full_name|default:item.procedure.executor_norm }}</td>
+            <td class="pr-muted">{{ item.procedure.indicator.target.domain.name|default:"—" }}</td>
+            <td class="num pr-muted">{{ item.procedure.deadline|date:"Y-m-d" }}</td>
+            <td class="num"><span class="status-badge status-danger">{{ item.days_overdue }} يوم</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endsection_card %}
+  {% endif %}
+
+  {% if evidence_requests %}
+  {% section_card "طلبات الدليل المعلقة" meta=evidence_requests|length icon="document" flush=True %}
+    <div class="table-wrap">
+      {# تقريرٌ للطباعة: لا فرزَ على الورق. #}
+      <table data-no-sort>
+        <thead>
+          <tr>
+            <th scope="col">رقم</th>
+            <th scope="col">الإجراء</th>
+            <th scope="col">المنفذ</th>
+            <th scope="col">المجال</th>
+            <th scope="col" class="num">الحالة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for proc in evidence_requests %}
+          <tr>
+            <td class="pr-code" dir="ltr">{{ proc.number }}</td>
+            <td>{{ proc.text|truncatewords:8 }}</td>
+            <td class="pr-muted">{{ proc.executor_user.full_name|default:proc.executor_norm }}</td>
+            <td class="pr-muted">{{ proc.indicator.target.domain.name|default:"—" }}</td>
+            <td class="num"><span class="status-badge status-maroon">{{ proc.get_status_display }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endsection_card %}
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function() {
+  /* ── Domain donuts staggered animation ── */
+  var doms = document.querySelectorAll('.pr-dom');
+  doms.forEach(function(el, i) {
+    var pct = parseInt(el.dataset.pct, 10) || 0;
+    var arc = el.querySelector('.pr-dom__arc');
+    if (!arc) return;
+    setTimeout(function() {
+      arc.style.transition = 'stroke-dasharray .7s ease-out';
+      arc.setAttribute('stroke-dasharray', pct + ' ' + (100 - pct));
+    }, 200 + i * 100);
+  });
+
+  /* ── Executor donuts staggered animation ── */
+  var execs = document.querySelectorAll('.pr-exec');
+  execs.forEach(function(el, i) {
+    var pct = parseInt(el.dataset.pct, 10) || 0;
+    var arc = el.querySelector('.pr-exec__arc');
+    if (!arc) return;
+    setTimeout(function() {
+      arc.style.transition = 'stroke-dasharray .7s ease-out';
+      arc.setAttribute('stroke-dasharray', pct + ' ' + (100 - pct));
+    }, 400 + i * 60);
+  });
+});
+</script>
+{% endblock %}

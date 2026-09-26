@@ -1,0 +1,152 @@
+from django.contrib import admin
+
+from .models import AutoInfractionNotice, BehaviorInfraction, ViolationCategory
+
+
+@admin.register(ViolationCategory)
+class ViolationCategoryAdmin(admin.ModelAdmin):
+    list_display = [
+        "code",
+        "degree",
+        "name_ar",
+        "requires_security_referral",
+        "requires_parent_summon",
+        "is_active",
+    ]
+    list_filter = ["degree", "is_active", "requires_security_referral"]
+    search_fields = ["code", "name_ar"]
+    ordering = ["degree", "code"]
+    actions = ["seed_2025_action", "seed_abcd_action"]
+
+    def seed_2025_action(self, request, queryset):
+        created = ViolationCategory.seed_2025()
+        self.message_user(request, f"✅ تم إضافة {created} مخالفة — لائحة السلوك المُعتمدة")
+
+    seed_2025_action.short_description = "🔄 حقن لائحة الشحانية (40 مخالفة)"
+
+    def seed_abcd_action(self, request, queryset):
+        created = ViolationCategory.seed_abcd()
+        self.message_user(request, f"تم إضافة {created} مخالفة من لائحة ABCD القديمة")
+
+    seed_abcd_action.short_description = "🔄 تغذية لائحة ABCD القديمة"
+
+
+@admin.register(BehaviorInfraction)
+class BehaviorInfractionAdmin(admin.ModelAdmin):
+    list_display = [
+        "student",
+        "violation_category",
+        "level",
+        "escalation_step",
+        "date",
+        "is_resolved",
+        "parent_summoned",
+        "school",
+    ]
+    list_filter = [
+        "level",
+        "is_resolved",
+        "escalation_step",
+        "parent_summoned",
+        "security_agency",
+        "social_media_platform",
+    ]
+    search_fields = ["student__full_name", "description"]
+    autocomplete_fields = ["student", "reported_by", "violation_category"]
+    date_hierarchy = "date"
+
+    fieldsets = (
+        (
+            "المعلومات الأساسية",
+            {
+                "fields": (
+                    "school",
+                    "student",
+                    "reported_by",
+                    "violation_category",
+                    "level",
+                    "description",
+                ),
+            },
+        ),
+        (
+            "الإجراء المتخذ",
+            {
+                "fields": (
+                    "action_taken",
+                    "escalation_step",
+                    "is_resolved",
+                ),
+            },
+        ),
+        (
+            "استدعاء ولي الأمر",
+            {
+                "fields": (
+                    "parent_summoned",
+                    "parent_summon_date",
+                    "parent_undertaking_signed",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "الإيقاف",
+            {
+                "fields": ("suspension_type", "suspension_days"),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "التشهير الرقمي",
+            {
+                "fields": ("social_media_platform", "digital_evidence_notes"),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "الإحالة الأمنية (الدرجة 4)",
+            {
+                "fields": (
+                    "security_referral_date",
+                    "security_agency",
+                    "security_reference_number",
+                    "security_notes",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+
+
+@admin.register(AutoInfractionNotice)
+class AutoInfractionNoticeAdmin(admin.ModelAdmin):
+    """للقراءة وحدَها: العلامةُ أثرُ إرسالٍ وقع — تعديلُها أو حذفُها يُعيد الرسالةَ أو يُخفيها."""
+
+    # المعرّفُ لا الاسم: سجلُّ إرسالٍ للتتبّع لا لقراءة أسماء الطلاب (تقليلُ البيانات)،
+    # ولا استعلامَ لكلّ صفٍّ لرسم الاسم.
+    list_display = [
+        "student_ref",
+        "date",
+        "auto_rule",
+        "start_time",
+        "kind",
+        "recipients",
+        "sent_at",
+    ]
+    list_filter = ["kind", "auto_rule", "date"]
+    date_hierarchy = "date"
+
+    @admin.display(description="الطالب (المعرّف)", ordering="student_id")
+    def student_ref(self, obj):
+        # `student_id` مباشرةً: الحقلُ نفسُه في `list_display` يجلب الطالبَ لكلّ صفّ.
+        return obj.student_id
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

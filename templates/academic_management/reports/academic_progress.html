@@ -1,0 +1,55 @@
+{% extends "academic_management/reports/_base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block filters %}
+{% url 'academic_management:academic_progress_reports' as reset_url %}
+{% filter_bar "تصفية تقرير التقدم الأكاديمي" %}
+  {% field "class_group_id" "الشعبة" type="select" choices=data.classes value=data.filters.class_group_id blank="— اختر شعبة —" required=True %}
+  {% field "date_from" "من تاريخ" type="date" value=data.filters.date_from %}
+  {% field "date_to" "إلى تاريخ" type="date" value=data.filters.date_to %}
+  <div class="filter-actions">
+    <button type="submit" class="btn-primary btn-sm">{% icon "search" %} عرض التقرير</button>
+    <a href="{{ reset_url }}" class="btn-secondary btn-sm">مسح</a>
+  </div>
+{% endfilter_bar %}
+{% endblock %}
+
+{% block report_body %}
+  {% if data.class_group %}
+    {% kpi_strip label="ملخّص الشعبة" %}
+      {% kpi "الشعبة" data.class_group.short_label %}
+      {% kpi "الطلاب" data.students|length tone="blue" %}
+      {% kpi "المتوسط العام %" data.overall_avg|default_if_none:"—" tone="teal" %}
+    {% endkpi_strip %}
+
+    {% section_card "ترتيب الطلاب" icon="stats" empty="لا توجد بيانات تقييمات لهذه الشعبة في الفترة المحددة" flush=True %}{% if data.students %}
+      <div class="table-wrap">
+        <table aria-label="جدول التقدم الأكاديمي">
+          <thead>
+            <tr>
+              <th scope="col" class="num">الترتيب</th>
+              <th scope="col">اسم الطالب</th>
+              <th scope="col" class="num">عدد التقييمات</th>
+              <th scope="col" class="num">المتوسط %</th>
+              <th scope="col" class="num">الأدنى–الأعلى %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in data.students %}
+            <tr>
+              <td class="num">{{ s.rank }}</td>
+              <td>{{ s.student_name }}</td>
+              <td class="num">{{ s.assessments_count }}</td>
+              <td class="num"><b>{{ s.avg_pct|default_if_none:"—" }}</b></td>
+              <td class="num">{{ s.range_label }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}{% endsection_card %}
+  {% else %}
+    {% section_card "ترتيب الطلاب" icon="stats" empty="اختر شعبةً لعرض تقرير التقدم الأكاديمي" %}{% endsection_card %}
+  {% endif %}
+{% endblock %}

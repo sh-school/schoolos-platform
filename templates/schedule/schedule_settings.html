@@ -1,0 +1,261 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+{% block title %}إعدادات الجدول والتفريغات — {{ year }}{% endblock %}
+
+{% block breadcrumbs %}
+{% url 'smart_schedule' as smart_url %}
+{% include "components/breadcrumbs.html" with parent_url=smart_url parent_label="الجدولة الذكية" current="إعدادات الجدول والتفريغات" %}
+{% endblock %}
+
+{% block content %}
+
+<div class="exec-dash">
+
+{% page_header "إعدادات الجدول والتفريغات" subtitle=year icon="settings" %}
+  <a href="{% url 'smart_schedule' %}" class="btn-secondary btn-sm">{% icon "back" %} الجدولة الذكية</a>
+{% endpage_header %}
+
+{% comment %}بطاقتان جنباً إلى جنب لا متتاليتان (قرارُ 2026-09-18): كلٌّ منهما
+مستقلّةٌ عن الأخرى، فلا سببَ لتطويل الصفحة برصّهما رأسيّاً بدل عمودَين.{% endcomment %}
+<div class="auto-grid">
+{# ══ القسم 1: تفريغات المعلمين ══ #}
+{% section_card "تفريغات المعلمين والمنسقين" meta=exemptions|length icon="exemptions" %}
+    {# نموذج إضافة تفريغ #}
+    <form method="post" action="{% url 'add_exemption' %}" class="exemption-form">
+      {% csrf_token %}
+      <input type="hidden" name="year" value="{{ year }}">
+
+      {% comment %}
+      ثلاثةُ عناصرَ سطرٍ واحدٍ في أعلى البطاقة (قرارُ 2026-09-18): من، والسبب،
+      وجهةُ القرار — قبل الشبكة لا بينها. وزرُّ الإضافة انتقل إلى سطر الشبكة
+      نفسِها أسفلَ (قرارٌ لاحقٌ في اليوم نفسه): القرارُ يقع حيث تُختار الخانات
+      لا فوقها بسطرٍ لا صلةَ له بالاختيار.
+      {% endcomment %}
+      {# خيارُ المجموعة قبل الأشخاص لا يُعبَّر بـ`choices` — فالقائمةُ يدويّةٌ مسمّاة، ومعرّفُها تقرؤه الشبكةُ بـHTMX. #}
+      <div class="ui-field">
+        <label for="exemption-teacher" class="ui-field__label">المعلم/المنسق</label>
+        <select name="teacher" id="exemption-teacher" class="form-control" required>
+          <option value="">— اختر —</option>
+          {# مجموعةٌ لا شخص: اجتماعُ المنسّقين تفريغٌ واحدٌ لهم جميعاً. #}
+          <option value="coordinators">★ كلّ منسّقي المواد</option>
+          {% if departments %}
+          {% comment %}
+          تفريغُ قسمٍ كاملٍ لاجتماعه الأسبوعيّ (قرارُ 2026-09-18) — معرّفُه
+          `dept:<uuid>` تقرؤه `TeacherExemptionForm.clean_teacher` فيُفرَّغ
+          كلُّ معلّمي القسم بطلبٍ واحد، لا المنسّقَ وحدَه.
+          {% endcomment %}
+          <optgroup label="اجتماعُ قسمٍ كامل">
+            {% for d in departments %}
+            <option value="dept:{{ d.id }}">★ {{ d.name }}</option>
+            {% endfor %}
+          </optgroup>
+          {% endif %}
+          {% for t in teachers %}
+          <option value="{{ t.id }}">{{ t.full_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      {% callout "warning" %}اختيار «كلّ منسّقي المواد» أو قسمٍ كامل يفرّغ كلَّ أعضائه في الخانات المحدَّدة دفعةً واحدة، ويُحسب الحدّ المسموح لكلّ معلّمٍ على حدة.{% endcallout %}
+
+      {% field "reason" "السبب" placeholder="مثال: دورة تدريبية خارج المدرسة" required=True %}
+
+      {% comment %}
+      جهةُ القرار: تفريغُ يومٍ كاملٍ يُخرج المعلّمَ من الجدول يوماً في الأسبوع
+      كلّه، فيُسأل عن مصدره كما تُسأل خطّةُ النصاب.
+
+      و«لتوليد الجدول» أداةُ تشكيلٍ لا قرارُ جهة: المولّدُ يحترمها، والبديلُ
+      والتبديلُ يجوزان فيها.
+      {% endcomment %}
+      {% field "source" "جهة القرار" type="select" choices="ministry=قرار الوزارة|school=قرار إدارة المدرسة|department=قرار القسم الأكاديمي|generation=لتوليد الجدول — يجوز فيها البديل والتبديل|other=أخرى" value="school" %}
+
+      {% comment %}
+      الشبكةُ محلَّ «نوعُ التفريغ × الأيّام × الحصص».
+
+      الاستمارةُ القديمةُ كانت تضرب مصفوفةً — (الأيّامُ المختارة) × (الحصصُ
+      المختارة) — فعجزت عن «الأحدَ الأولى والاثنينَ الثالثة»: اختيارُ اليومين
+      والحصّتين يُنتج أربعَ خاناتٍ لا اثنتين. ولهذا سكنت قيودُ معلّمٍ واحدٍ
+      عشرين تفريغاً منفصلاً.
+
+      والشبكةُ تُظلَّل خانةً خانة، وتُظهر شاغلَ كلِّ خانةٍ فيُرى ثمنُ التفريغ
+      قبل اتّخاذه، وتقيس السعةَ مقابل النصاب بالدالّة نفسِها التي تحرس صفحةَ
+      التفضيلات. وارتفاعُها الأدنى ثابتٌ قبل الاختيار وبعده — لا تُخفض البطاقةُ
+      ولا تقفز حين تُملأ الشبكةُ (قرارُ المستخدم 2026-09-18: «ثابتٌ ظاهرٌ
+      دائماً لا عند اختيار معلّمٍ فقط»).
+      {% endcomment %}
+      <div class="form-group mb-0 exemption-grid-slot" id="exemption-grid"
+           hx-get="{% url 'exemption_grid' %}?year={{ year }}"
+           hx-trigger="change from:#exemption-teacher"
+           hx-include="#exemption-teacher"
+           hx-swap="innerHTML">
+        {# نفسُ الجزئيّة التي يُعيدها HTMX بلا اختيار — مصدرٌ واحدٌ للهيكل، فلا يتبدّل الشكلُ عند أوّل تحميل. #}
+        {% include "schedule/partials/exemption_grid.html" with days=days periods=periods %}
+      </div>
+      <input type="hidden" name="slots" id="exemption-slots" value="">
+    </form>
+
+    {% comment %}قائمة التفريغات الحالية — قابلةٌ للطيّ (قرارُ 2026-09-18): سجلٌّ
+    يُراجَع أحياناً لا نموذجٌ يُستعمل كلَّ مرّة، فيُطوى افتراضاً كبقيّة سجلّات
+    الصفحة.{% endcomment %}
+    {% if exemptions %}
+    <details class="settings-fold">
+      <summary class="settings-fold__summary">
+        التفريغاتُ الحاليّة <span class="settings-fold__count">({{ exemptions|length }})</span>
+      </summary>
+    {% comment %}
+    الاختيارُ في الجدول والزرُّ في نموذجٍ فوقَه: النماذجُ لا تتداخل، ولكلّ سطرٍ
+    نموذجُ إلغائه المفرد. فالمربّعاتُ تُنسَب إلى نموذج الحذف بسمة `form`.
+    {% endcomment %}
+    <div data-bulk>
+      <form method="post" action="{% url 'remove_exemptions' %}" id="bulk-exemptions"
+            class="settings-bulk"
+            data-bulk-confirm="إلغاء {n} تفريغاً محدَّداً؟">
+        {% csrf_token %}
+        <input type="hidden" name="year" value="{{ year }}">
+        <button type="submit" class="btn-danger btn-sm" data-bulk-action disabled>
+          {% icon "delete" size="sm" %}
+          إلغاء المحدَّد (<span data-bulk-count>0</span>)
+        </button>
+      </form>
+      {% comment %}
+      عمودان قديمان («اليوم»، «الحصة») دُمجا في «التوقيت» — كانا يتّسعان دائماً
+      خانتين فارغتَين جنبَ رقمٍ قصير، وهما معاً لحظةٌ واحدة لا تُقرآن منفصلتين.
+      و«الجهة» تُلوَّن بحكم `binds_people` (قرارُ 2026-09-11): الملزمُ رماديٌّ
+      عاديٌّ، و«لتوليد الجدول» وحدَه مرنٌ يُسمح فيه بالبديل والتبديل فيُميَّز.
+      والغلافُ محدودُ العرض (68rem) — تسعةُ أعمدةٍ قصيرةٍ لا تحتاج عرضَ الصفحة
+      كاملاً، وسقفُ ارتفاعٍ بسكرولٍ داخليٍّ ورأسٍ ثابت لتسعةٍ وتسعين تفريغاً
+      لا تُطيل صفحةَ الإعدادات كلَّها (نمطُ `.load-scroll` القائم في
+      `teacher_load.html`).
+      {% endcomment %}
+      <div class="table-wrap exemption-table">
+      <table>
+        <thead>
+          <tr>
+            <th class="text-center" data-sort="none">
+              <input type="checkbox" class="check-lg" data-bulk-all aria-label="تحديد كلّ التفريغات">
+            </th>
+            <th>المعلم</th>
+            <th>النوع</th>
+            <th>التوقيت</th>
+            <th>السبب</th>
+            <th>الجهة</th>
+            <th>بواسطة</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ex in exemptions %}
+          <tr>
+            <td class="text-center">
+              <input type="checkbox" form="bulk-exemptions" name="exemption_id" value="{{ ex.id }}"
+                     class="check-lg" data-bulk-item aria-label="اختيار تفريغ {{ ex.teacher.full_name }}">
+            </td>
+            <td class="font-semibold text-maroon">{{ ex.teacher.full_name }}</td>
+            <td>
+              {% if ex.exemption_type == "full_day" %}
+              <span class="status-badge status-warning">يوم كامل</span>
+              {% else %}
+              <span class="status-badge status-info">حصة محددة</span>
+              {% endif %}
+            </td>
+            <td class="text-sm">{{ ex.get_day_of_week_display }}{% if ex.period_number %} · ح{{ ex.period_number }}{% endif %}</td>
+            <td class="text-sm">{{ ex.reason }}</td>
+            <td>
+              <span class="status-badge {% if ex.binds_people %}status-gray{% else %}status-info{% endif %}"
+                    title="{% if ex.binds_people %}يمنع البديلَ والتبديل{% else %}يُسمح فيه بالبديل والتبديل{% endif %}">
+                {{ ex.get_source_display }}
+              </span>
+            </td>
+            <td class="text-sm text-muted">{{ ex.created_by.full_name|default:"—" }}</td>
+            <td>
+              <form method="post" action="{% url 'remove_exemption' ex.id %}" data-confirm="إلغاء تفريغ {{ ex.teacher.full_name }}؟">
+                {% csrf_token %}
+                <button type="submit" class="btn-ghost text-xs text-danger" aria-label="إلغاء التفريغ">{% icon "delete" size="sm" %} إلغاء</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+    </details>
+    {% else %}
+    {% empty_state "لا توجد تفريغات حالياً" sub="يُضاف التفريغُ من الشبكة أعلاه" icon="exemptions" %}
+    {% endif %}
+{% endsection_card %}
+
+{% comment %}
+«إعدادُ الحصص المزدوجة» انتقل إلى شاشة الإسناد (قرارُ المستخدم 2026-09-09).
+
+كان جدولاً بمادّةٍ في كلّ سطر، والقرارُ فيه عامٌّ للمدرسة كلِّها — والواقعُ أنّ
+الازدواجَ صفةُ تدريسِ مادّةٍ في صفٍّ بعينه: الفنّيّةُ مزدوجةٌ في الإعداديّ
+مفردةٌ في الثانويّ. فصار القرارُ حيث يُتَّخذ: عمودٌ في بطاقة الإسناد إلى جانب
+الحصص والتوازي، يراه المنسّقُ وهو يوزّع.
+
+وكان معه عمودُ «أيّامٌ مختلفة»، وقد سقط: التباعدُ نتيجةٌ تحسبها القسمةُ في HC6
+لا قراراً يُتَّخذ — ومادّةُ خمسِ حصصٍ فأقلَّ متباعدةٌ من نفسها.
+
+والمسارُ `save_subject_scheduling` باقٍ بحارسه — يخدم الاستيرادَ والأوامر،
+ولا شاشةَ تستدعيه.
+{% endcomment %}
+
+{# ══ القسم 3: تفضيلات المعلمين (للمراجعة) ══ #}
+{% section_card "تفضيلات المعلمين المسجلة" meta=teacher_prefs|length icon="staff" empty="لم يسجّل أيُّ معلّمٍ تفضيلاته بعد" %}{% if teacher_prefs %}
+    <div data-bulk>
+      <form method="post" action="{% url 'remove_preferences' %}" id="bulk-prefs"
+            class="settings-bulk"
+            data-bulk-confirm="حذف {n} تفضيلاً محدَّداً؟ ولا يعيده إلّا صاحبُه.">
+        {% csrf_token %}
+        <input type="hidden" name="year" value="{{ year }}">
+        <button type="submit" class="btn-danger btn-sm" data-bulk-action disabled>
+          {% icon "delete" size="sm" %}
+          حذف المحدَّد (<span data-bulk-count>0</span>)
+        </button>
+      </form>
+      {% comment %}سقفُ ارتفاعٍ بسكرولٍ داخليٍّ ورأسٍ ثابت — نفسُ نمط جدول
+      التفريغات المجاور، لعشرات المعلّمين المسجَّلين تفضيلاتُهم.{% endcomment %}
+      <div class="table-wrap preferences-table">
+      <table>
+        <thead>
+          <tr>
+            <th class="text-center" data-sort="none">
+              <input type="checkbox" class="check-lg" data-bulk-all aria-label="تحديد كلّ التفضيلات">
+            </th>
+            <th>المعلم</th>
+            <th class="text-center">أقصى يومي</th>
+            <th class="text-center">أقصى متتالي</th>
+            <th class="text-center">أقصى فجوة</th>
+            <th class="text-center">يوم التفريغ</th>
+            <th>ملاحظات</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in teacher_prefs %}
+          <tr>
+            <td class="text-center">
+              <input type="checkbox" form="bulk-prefs" name="preference_id" value="{{ p.id }}"
+                     class="check-lg" data-bulk-item aria-label="اختيار تفضيلات {{ p.teacher.full_name }}">
+            </td>
+            <td class="font-semibold text-maroon">{{ p.teacher.full_name }}</td>
+            <td class="text-center">{{ p.max_daily_periods }}</td>
+            <td class="text-center">{{ p.max_consecutive }}</td>
+            <td class="text-center">{% if p.max_gap is None %}—{% else %}{{ p.max_gap }}{% endif %}</td>
+            <td class="text-center">{{ p.get_free_day_display|default:"—" }}</td>
+            <td class="text-sm text-muted">{{ p.notes|truncatewords:10|default:"—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+    {% endif %}{% endsection_card %}
+</div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/exemption-grid.js' %}" defer></script>
+{% endblock %}

@@ -1,0 +1,29 @@
+{% comment %}
+  Partial: قائمة الكتب — SchoolOS v5.1
+  يُعاد هذا القالب في طلبات HTMX (البحث الحي والترقيم)
+  Target: #books-container
+{% endcomment %}{% load ui %}
+{% if books %}
+<div class="ui-entity-grid" id="books-grid">
+  {% for book in books %}
+    {% entity_card book.title who=book.author tone="maroon" %}
+      {% entity_chips %}
+        <span class="chip">{{ book.get_book_type_display }}</span>
+        {% if book.category %}<span class="chip">{{ book.category }}</span>{% endif %}
+        {% if book.isbn %}<span class="chip" dir="ltr">ISBN {{ book.isbn }}</span>{% endif %}
+      {% endentity_chips %}
+      {% entity_status tone=book.stock_tone %}
+        {{ book.stock_label }}
+        {% if book.available_qty > 0 %}<a href="{% url 'library:borrow_book' %}?book={{ book.id }}" class="library-borrow-link">إعارة ←</a>{% endif %}
+      {% endentity_status %}
+    {% endentity_card %}
+  {% endfor %}
+</div>
+
+{% if page_obj %}
+  {% include "components/pagination.html" with page_obj=page_obj target="#books-container" %}
+{% endif %}
+
+{% else %}
+{% include "components/empty_state.html" with icon="library" title="لا توجد نتائج" subtitle=query|yesno:"لا توجد كتب مطابقة للبحث,لا توجد كتب مسجلة في النظام" %}
+{% endif %}

@@ -1,0 +1,65 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}تقرير إنجاز: {{ member.display_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/quality/" parent_label="ضمان الجودة" parent2_url="/quality/executor-committee/" parent2_label="لجنة المنفذين" current="تقرير الإنجاز" %}
+{% endblock %}
+
+{% block content %}
+<div class="qexec">
+
+  {% page_header member.display_name subtitle=member_subtitle icon="profile" %}
+    <a href="{% url 'executor_committee' %}?year={{ year }}" class="btn-secondary btn-sm">← لجنة المنفذين</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام المنفذ" %}
+    {% kpi "الكلي" total %}
+    {% kpi "مكتمل" completed tone="green" %}
+    {% kpi "جارٍ" in_progress tone="amber" %}
+    {% kpi "الإنجاز" pct_label tone=pct_tone %}
+  {% endkpi_strip %}
+
+  {% filter_bar "ترشيحُ إجراءات المنفّذ" css="qexec-filters" %}
+    <input type="hidden" name="year" value="{{ year }}">
+    {% field "status" "الحالة" type="select" choices=STATUS_CHOICES value=status_filter blank="كل الحالات" %}
+    {% field "domain" "المجال" type="select" choices=domains value=domain_filter blank="كل المجالات" %}
+    <div class="filter-actions">
+      <button type="submit" class="btn-primary btn-sm">تصفية</button>
+      {% if status_filter or domain_filter %}
+      <a href="?year={{ year }}" class="btn-secondary btn-sm">إزالة الفلتر</a>
+      {% endif %}
+    </div>
+  {% endfilter_bar %}
+
+  {% section_card "الإجراءات" meta=procedures|length icon="observation" empty="لا توجد إجراءات تطابق معايير الفلتر" flush=True %}{% if procedures %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">رقم الإجراء</th>
+            <th scope="col">المجال</th>
+            <th scope="col">نص الإجراء</th>
+            <th scope="col" class="num">الفترة</th>
+            <th scope="col" class="num">الحالة</th>
+            <th scope="col" class="num">الأدلة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for proc in procedures %}
+          <tr>
+            <td class="pr-code" dir="ltr">{{ proc.number }}</td>
+            <td class="pr-muted">{{ proc.indicator.target.domain.name }}</td>
+            <td><a href="{% url 'procedure_detail' proc.id %}" class="qexec-proc-link">{{ proc.text|truncatechars:80 }}</a></td>
+            <td class="num pr-muted">{{ proc.date_range }}</td>
+            <td class="num"><span class="status-badge status-{{ proc.status_tone }}">{{ proc.get_status_display }}</span></td>
+            <td class="num">{{ proc.evidence_count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}

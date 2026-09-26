@@ -1,0 +1,284 @@
+name: Security Scan — SAST + CVEs
+
+# لا ZAP هنا (قرارُ 2026-09-14). كانت وظيفةُ «OWASP ZAP — DAST Baseline» تعمل
+# أسبوعيّاً بـ`continue-on-error: true` على `STAGING_URL` — سرٌّ لا وجودَ له —
+# فتسقط إلى `https://staging.schoolos.qa` الذي لا يخدم شيئاً، بملفِّ قواعد
+# `.zap/rules.tsv` غيرِ موجودٍ في المستودع. أي فحصٌ لا هدفَ له ولا قواعدَ ولا
+# حكم، يُطبع كلَّ أحدٍ ولا يقرؤه أحد. وحين تُوجد بيئةُ اختبارٍ حقيقيّة يُعاد
+# بفشلٍ حقيقيّ على القواعد الحرجة — لا قبل ذلك.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # طابورُ الدمج: الفحصُ الإلزاميُّ يُشغَّل على «main + الطلب» قبل الدمج، فلا يُطلب
+  # تحديثُ الفرع يدويّاً كلّما دمجت محادثةٌ أخرى (قرارُ 2026-09-13).
+  merge_group:
+  schedule:
+    - cron: "0 4 * * 0"  # every Sunday 4:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ══════════════════════════════════════════════════════
+  #  1. pip-audit — PyPI advisory database
+  # ══════════════════════════════════════════════════════
+  pip-audit-pypi:
+    name: pip-audit — PyPI advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies for native packages
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update && sudo apt-get install -y libcairo2-dev pkg-config
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+
+      - name: Scan for known CVEs
+        run: |
+          pip-audit -r requirements.txt \
+            --vulnerability-service pypi \
+            --format json \
+            --output pip-audit-pypi-report.json \
+            --desc \
+            --progress-spinner off
+
+      - name: Upload pip-audit Report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pip-audit-pypi-report
+          path: pip-audit-pypi-report.json
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════
+  #  2. Bandit — Python SAST
+  # ══════════════════════════════════════════════════════
+  bandit:
+    name: Bandit — SAST Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install bandit
+        run: pip install bandit[toml]==1.7.8
+
+      - name: Bandit SAST scan (fail on HIGH)
+        run: |
+          bandit -r . \
+            -x .venv,migrations,tests,manage.py,scripts \
+            --severity-level high \
+            --confidence-level high \
+            -f json -o bandit-report.json
+
+      - name: Bandit full report (all severities — تقريرٌ لا حكم)
+        if: always()
+        # `--exit-zero` صريحٌ بدل `|| true`: التقريرُ الكامل معلوماتيّ، والحكمُ في
+        # الخطوة السابقة (HIGH/HIGH). والفرقُ أنّ انهيارَ bandit نفسِه يبقى فشلاً.
+        run: |
+          bandit -r . \
+            -x .venv,migrations,tests,manage.py,scripts \
+            --severity-level low \
+            --confidence-level low \
+            --exit-zero \
+            -f html -o bandit-full-report.html
+
+      - name: Upload Bandit Reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bandit-reports
+          path: |
+            bandit-report.json
+            bandit-full-report.html
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════
+  #  3. pip-audit — OSV advisory database
+  # ══════════════════════════════════════════════════════
+  #
+  # مصدرُ بياناتٍ ثانٍ لا أداةٌ ثانية. `pip-audit` يقرأ افتراضياً قاعدة
+  # Python Packaging Advisory عبر PyPI، و`--vulnerability-service osv` يقرأ
+  # OSV.dev — فتغطيتان قد تسبق إحداهما الأخرى في نشر تحذير.
+  #
+  # وحلّ هذا محلّ `safety check`، وهي تُصنَّف deprecated في توثيق أداتها لصالح
+  # `safety scan` — والأخيرة تتطلّب مصادقةً وترسل نتائج المسح إلى منصّتها.
+  # وذلك قرار خدمةٍ خارجية وسياسة بيانات، لا ترقية مكتبة، فلا يُتخذ داخل إصلاح
+  # بوابة.
+  #
+  # وكانت `safety==3.2.3` تنهار عند الاستيراد أصلاً:
+  #     AttributeError: module 'typer' has no attribute 'rich_utils'
+  # فتُنتج صفر فحص. وأخفى ذلك `|| true` ومُحلِّلٌ يخرج بنجاح عند غياب التقرير —
+  # حتى كشفته البوابة المُغلقة في PR #52.
+  pip-audit-osv:
+    name: pip-audit — OSV advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies for native packages
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update && sudo apt-get install -y libcairo2-dev pkg-config
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+
+      - name: Scan against OSV
+        run: |
+          pip-audit -r requirements.txt \
+            --vulnerability-service osv \
+            --format json \
+            --output pip-audit-osv-report.json \
+            --desc \
+            --progress-spinner off
+
+      - name: Upload OSV Report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pip-audit-osv-report
+          path: pip-audit-osv-report.json
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════
+  #  4. Django Deployment Check
+  # ══════════════════════════════════════════════════════
+  django-check:
+    name: Django — Deployment Security Check
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SETTINGS_MODULE: shschool.settings.production
+      # ≥ 50 حرفاً و≥ 5 محارفَ مختلفة: دون ذلك يُصدر Django تحذيرَ security.W009، وهو
+      # تحذيرٌ حقيقيّ — كان المفتاحُ القصيرُ هنا (49 حرفاً) يقع فيه والأنبوبُ يُخفيه.
+      SECRET_KEY: "test-ci-secret-key-not-for-production-use-only-ci-0123456789"  # pragma: allowlist secret
+      FERNET_KEY: "dGVzdC1jaS1mZXJuZXQta2V5LW5vdC1mb3ItcHJvZHVjdGlvbg=="
+      ALLOWED_HOSTS: "localhost,127.0.0.1"
+      DATABASE_URL: "postgres://test_user:test_pass@localhost:5432/test_db"
+      EXCEL_PROTECTION_PASSWORD: "ci-test-password"
+      # S3 إلزاميٌّ في الإنتاج (البند 11، #382): بلا هذه الثلاث تنهار الإعداداتُ عند الاستيراد
+      # بـImproperlyConfigured فلا يفحص الأمرُ شيئاً. قيمٌ وهميّةٌ — لا اتّصالَ بأيّ خدمة.
+      AWS_ACCESS_KEY_ID: "test-only-access-key"
+      AWS_SECRET_ACCESS_KEY: "test-only-secret-key"  # pragma: allowlist secret
+      AWS_STORAGE_BUCKET_NAME: "test-only-bucket"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system libraries
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*  # مستودعاتٌ لا نستعملها تُسقط apt-get update حين يسقط توقيعها
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev \
+            libffi-dev shared-mime-info pkg-config
+
+      - name: Install requirements
+        run: pip install -r requirements.txt
+
+      - name: Django deployment check
+        run: |
+          # `| tee` وحدها تُخفي فشلَ الأمر: صدفةُ GitHub الافتراضيّة `bash -e` بلا pipefail، فخروجُ
+          # الخطوة هو خروجُ tee (صفرٌ) مهما فعل الفحص — هكذا نجحت الوظيفةُ وفحصُها يُبلِّغ عن
+          # مشكلاتٍ لا يُقرأ منها شيء. يحرس ذلك tests/test_ci_gates_are_honest.py.
+          set -o pipefail
+          python manage.py check --deploy --fail-level WARNING 2>&1 | tee django-deploy-check.txt
+
+      - name: Upload Django Check Report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: django-deploy-check
+          path: django-deploy-check.txt
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════
+  #  Summary
+  # ══════════════════════════════════════════════════════
+  summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [pip-audit-pypi, pip-audit-osv, bandit, django-check]
+    if: always()
+    steps:
+      - name: Security scan results
+        run: |
+          echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| pip-audit (PyPI) | ${{ needs.pip-audit-pypi.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| pip-audit (OSV) | ${{ needs.pip-audit-osv.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bandit (SAST) | ${{ needs.bandit.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Django --deploy | ${{ needs.django-check.result == 'success' && 'PASS' || 'FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+
+      # هذه الوظيفة أحد سياقين مطلوبين في حماية `main` — أي أنها بوابة دمج
+      # فعلية لا تقريراً.
+      #
+      # وكانت تفشل على `== "failure"` لوظيفتين من أربع، فيعبرها أمران:
+      #
+      #   - وظيفةٌ أُلغيت أو تجاوزت مهلتها تُنتج `cancelled` لا `failure`،
+      #     فتمرّ البوابة وهي لم تفحص شيئاً. وليس هذا افتراضاً: وقع فعلاً
+      #     لوظيفة pytest في خطّ النشر (15:22 مقابل timeout-minutes: 15).
+      #   - و`safety` و`django-check` كانتا تُطبَعان في الجدول ولا تحكمان.
+      #
+      # فالشرط الآن `!= "success"` للأربع. ولا نُعدّد صيغ الفشل — نقبل النجاح
+      # وحده، فصيغةٌ جديدة من GitHub غداً تُغلق البوابة بدل أن تفتحها.
+      - name: Fail if any required security check did not succeed
+        run: |
+          if [[ "${{ needs.pip-audit-pypi.result }}" != "success" ]] || \
+             [[ "${{ needs.pip-audit-osv.result }}" != "success" ]] || \
+             [[ "${{ needs.bandit.result }}" != "success" ]] || \
+             [[ "${{ needs.django-check.result }}" != "success" ]]; then
+            echo "CRITICAL: one or more required security checks did not succeed"
+            echo "  pip-audit-pypi = ${{ needs.pip-audit-pypi.result }}"
+            echo "  pip-audit-osv  = ${{ needs.pip-audit-osv.result }}"
+            echo "  bandit         = ${{ needs.bandit.result }}"
+            echo "  django-check   = ${{ needs.django-check.result }}"
+            exit 1
+          fi

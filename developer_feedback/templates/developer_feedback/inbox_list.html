@@ -1,0 +1,125 @@
+{% extends "base/base.html" %}
+{% load i18n icons sorting ui %}
+{% comment %}
+صندوقُ المطوّر — كانت الوحدةُ ترسم ترويستَها وبطاقاتِها وجدولَها ومرشِّحَها
+وتقسيمَها بنظامٍ خاصٍّ (`df-*`) لا يتبع مكوّنات المنصّة. فصارت الترويسةُ
+`page_header`، والجدولُ في `section_card` بعدّه في طرف الشريط، والمرشِّحُ
+`filter-bar` كسائر الشاشات، والتقسيمُ `pagination-wrap` بروابطَ تحمل ما
+قبلها من ترشيحٍ (`page_query`). وبقيت شاراتُ الحالة والأولويّة ورقمُ
+التذكرة بصنفها — فهي خاصّةٌ بالوحدة حقّاً.
+{% endcomment %}
+
+{% block title %}{% trans "صندوق المطوّر" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/developer-feedback/" parent_label="تواصل مع المطوّر" current="صندوق الوارد" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash df-page">
+  {% page_header _("صندوق المطوّر") subtitle=_("كلُّ ما أرسله المنتسبون إلى المطوّر — يُرشَّح بالحالة والنوع والأولويّة") icon="dev_inbox" %}{% endpage_header %}
+
+  {% filter_bar _("فلترة الرسائل") %}
+    {% field "q" _("بحث") type="search" id="df-q" value=current_q grow=True placeholder=_("العنوان أو الوصف…") %}
+    {% field "status" _("الحالة") type="select" id="df-status" choices=status_choices value=current_status blank=_("— الكل —") %}
+
+    {# النوع والأولويّة: خياراتٌ حرفيّةٌ مترجَمةٌ بـ{% trans %} لا تُعبَّر بـchoices — القائمتان باليد بتسميتَيهما #}
+    <div class="ui-field">
+      <label class="ui-field__label" for="df-type">{% trans "النوع" %}</label>
+      <select name="type" id="df-type" class="form-control">
+        <option value="">{% trans "— الكل —" %}</option>
+        <option value="bug" {% if current_type == "bug" %}selected{% endif %}>{% trans "عطل / مشكلة" %}</option>
+        <option value="feature" {% if current_type == "feature" %}selected{% endif %}>{% trans "اقتراح ميزة" %}</option>
+        <option value="question" {% if current_type == "question" %}selected{% endif %}>{% trans "سؤال" %}</option>
+        <option value="complaint" {% if current_type == "complaint" %}selected{% endif %}>{% trans "شكوى" %}</option>
+        <option value="praise" {% if current_type == "praise" %}selected{% endif %}>{% trans "شكر / ثناء" %}</option>
+        <option value="other" {% if current_type == "other" %}selected{% endif %}>{% trans "أخرى" %}</option>
+      </select>
+    </div>
+
+    <div class="ui-field">
+      <label class="ui-field__label" for="df-priority">{% trans "الأولوية" %}</label>
+      <select name="priority" id="df-priority" class="form-control">
+        <option value="">{% trans "— الكل —" %}</option>
+        <option value="high" {% if current_priority == "high" %}selected{% endif %}>{% trans "عالية" %}</option>
+        <option value="normal" {% if current_priority == "normal" %}selected{% endif %}>{% trans "عادية" %}</option>
+        <option value="low" {% if current_priority == "low" %}selected{% endif %}>{% trans "منخفضة" %}</option>
+      </select>
+    </div>
+
+    <div class="filter-actions">
+      <button type="submit" class="btn-primary btn-sm">
+        {% icon "search" %}
+        {% trans "بحث" %}
+      </button>
+      <a href="{% url 'developer_feedback:inbox_list' %}" class="btn-secondary btn-sm">
+        {% icon "refresh" %}
+        {% trans "إعادة تعيين" %}
+      </a>
+    </div>
+  {% endfilter_bar %}
+
+  {# الصفحةُ خمسٌ وعشرون من الكلّ، والفرزُ لا يُدّعى في المتصفّح على جزءٍ من القائمة. #}
+  {% section_card _("الرسائل") meta=page_obj.paginator.count icon="messages" flush=True empty=_("لا توجد رسائل مطابقة") empty_sub=_("حاول تعديل معايير البحث أو أعد التعيين لعرض كل الرسائل.") %}{% if messages_list %}
+    <div class="table-wrap" role="region" aria-label="{% trans 'جدول رسائل المطوّر' %}">
+      <table data-no-sort>
+        <thead>
+          <tr>
+            <th scope="col">{% trans "رقم التذكرة" %}</th>
+            <th scope="col">{% trans "المستخدم" %}</th>
+            <th scope="col">{% trans "النوع" %}</th>
+            <th scope="col">{% trans "الأولوية" %}</th>
+            <th scope="col">{% trans "العنوان" %}</th>
+            <th scope="col">{% trans "الحالة" %}</th>
+            <th scope="col">{% trans "التاريخ" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for msg in messages_list %}
+            <tr>
+              <td>
+                <a href="{% url 'developer_feedback:inbox_detail' pk=msg.pk %}" class="df-ticket-link">
+                  <code class="df-ticket-inline" dir="ltr">{{ msg.ticket_number }}</code>
+                </a>
+                {% if msg.edit_history.exists %}
+                <span class="df-badge df-badge-edited"
+                      title="{% blocktrans count counter=msg.edit_history.count %}عُدّلت مرة واحدة بعد الإرسال{% plural %}عُدّلت {{ counter }} مرات بعد الإرسال{% endblocktrans %}">
+                  {% trans "مُعدَّلة" %}
+                </span>
+                {% endif %}
+              </td>
+              <td>
+                {% if msg.user %}
+                  {{ msg.user.full_name|default:msg.user }}
+                {% else %}
+                  <em>{% trans "محذوف" %}</em>
+                {% endif %}
+              </td>
+              <td><span class="df-badge df-badge-type">{{ msg.get_message_type_display }}</span></td>
+              <td><span class="df-badge df-badge-priority-{{ msg.priority }}">{{ msg.get_priority_display }}</span></td>
+              <td class="df-cell-subject">{{ msg.subject|truncatechars:60 }}</td>
+              <td>{% include "developer_feedback/_status_badge.html" with status=msg.status %}</td>
+              <td><time datetime="{{ msg.created_at|date:'c' }}">{{ msg.created_at|date:"Y/m/d H:i" }}</time></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {# روابطُ الصفحات تحمل الترشيحَ والبحثَ كما هما (`page_query`). #}
+    {% if is_paginated %}
+      <nav class="pagination-wrap" aria-label="{% trans 'تصفّح الصفحات' %}">
+        {% if page_obj.has_previous %}
+          <a href="?{% page_query page_obj.previous_page_number %}" class="btn-secondary">{% trans "السابق" %}</a>
+        {% endif %}
+        <span class="pagination-info">
+          {% blocktrans with current=page_obj.number total=page_obj.paginator.num_pages %}صفحة {{ current }} من {{ total }}{% endblocktrans %}
+        </span>
+        {% if page_obj.has_next %}
+          <a href="?{% page_query page_obj.next_page_number %}" class="btn-secondary">{% trans "التالي" %}</a>
+        {% endif %}
+      </nav>
+    {% endif %}
+  {% endif %}{% endsection_card %}
+</div>
+{% endblock %}

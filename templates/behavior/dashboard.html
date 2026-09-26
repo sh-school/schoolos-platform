@@ -1,0 +1,130 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+{% block title %}لوحة السلوك{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with current="السلوك المدرسي" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "لوحة السلوك" subtitle=today_label icon="behavior" %}
+    <a data-app-file href="{% url 'behavior:policy_pdf' %}" class="btn-secondary btn-sm">{% icon "export_pdf" %} لائحة السلوك (PDF)</a>
+  {% endpage_header %}
+
+  {# نظامُ النقاط ملغى — الأرقامُ عددُ مخالفات. #}
+  {% kpi_strip label="أرقام السلوك" %}
+    {% kpi "مخالفات العام الدراسي" year_total tone="maroon" %}
+    {% kpi "آخر 7 أيّام" week_total tone="blue" %}
+    {% if is_committee %}
+      {% url 'behavior:committee' as committee_url %}
+      {% kpi "جسيمة بلا قرار لجنة" critical_count sub="الدرجة 3–4" tone=critical_tone href=committee_url %}
+    {% else %}
+      {% kpi "جسيمة بلا قرار لجنة" critical_count sub="الدرجة 3–4" tone=critical_tone %}
+    {% endif %}
+  {% endkpi_strip %}
+
+  <div class="ui-grid-2">
+    {% section_card "الاتجاه الشهري" meta="آخر 6 أشهر" icon="trend" empty="لا مخالفاتٍ في آخر 6 أشهر" %}{% if monthly_trend %}
+      <div class="dash-chart-wrap">
+        <canvas id="chartBehaviorTrend" role="img" aria-label="رسم بياني: المخالفات شهرياً آخر 6 أشهر"></canvas>
+      </div>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "توزيع المخالفات حسب الدرجة" meta="العام الدراسي" icon="stats" empty="لا مخالفاتٍ هذا العام" %}{% if level_dist %}
+      <div class="dash-chart-wrap">
+        <canvas id="chartLevelDist" role="img" aria-label="رسم بياني: توزيع المخالفات حسب الدرجة"></canvas>
+      </div>
+    {% endif %}{% endsection_card %}
+  </div>
+
+  <div class="ui-grid-2">
+    {% section_card "أكثر المخالفات شيوعاً" meta="العام الدراسي" icon="stats" empty="لا مخالفاتٍ هذا العام" %}{% if top_violations %}
+      <ul class="plain-list">
+        {% for v in top_violations %}
+          <li class="plain-list__row">
+            <span class="plain-list__title">{{ v.violation_category__name_ar|default:"بلا تصنيف" }}</span>
+            <span class="status-badge status-maroon">{{ v.count }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "المخالفات الجسيمة المعلّقة" icon="behavior_violation" empty="لا مخالفاتٍ جسيمةً بلا قرار" empty_sub="تظهر هنا مخالفاتُ الدرجة 3 و4 حتى تبتّ فيها اللجنة" %}{% if critical_unresolved %}
+      <ul class="plain-list is-scroll">
+        {% for inf in critical_unresolved %}
+          <li class="plain-list__row">
+            <span class="plain-list__main"><b class="plain-list__title">{{ inf.student.full_name }}</b><span class="plain-list__sub" title="{{ inf.description }}">{{ inf.description|truncatechars:80 }}</span></span>
+            <span class="status-badge status-danger">درجة {{ inf.level }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/vendor/chart.umd.min.js' %}"></script>
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  Chart.defaults.font.family='Tajawal,sans-serif';
+  Chart.defaults.font.size=11;
+
+  // ── Monthly Trend ──
+  var monthLabels = [{% for m in monthly_trend %}'{{ m.month|date:"m/Y" }}'{% if not forloop.last %},{% endif %}{% endfor %}];
+  var monthData   = [{% for m in monthly_trend %}{{ m.count }}{% if not forloop.last %},{% endif %}{% endfor %}];
+
+  var el1 = document.getElementById('chartBehaviorTrend');
+  if(el1 && monthLabels.length){
+    new Chart(el1, {
+      type:'line',
+      data:{
+        labels: monthLabels,
+        datasets:[{
+          label:'المخالفات',
+          data: monthData,
+          borderColor:chartColor('chart-1'),
+          backgroundColor:chartAlpha('chart-1', .1),
+          fill:true,
+          tension:0.3
+        }]
+      },
+      options:{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins:{ legend:{ display:false } },
+        scales:{ y:{ beginAtZero:true, ticks:{ precision:0 } } }
+      }
+    });
+  }
+
+  // ── Level Distribution ──
+  var levelLabels = [{% for l in level_dist %}'الدرجة {{ l.level }}'{% if not forloop.last %},{% endif %}{% endfor %}];
+  var levelData   = [{% for l in level_dist %}{{ l.count }}{% if not forloop.last %},{% endif %}{% endfor %}];
+  var levelColors = [chartColor('chart-4'), chartColor('status-warning'), chartColor('status-danger'), chartColor('chart-1')];
+
+  var el2 = document.getElementById('chartLevelDist');
+  if(el2 && levelLabels.length){
+    new Chart(el2, {
+      type:'doughnut',
+      data:{
+        labels: levelLabels,
+        datasets:[{
+          data: levelData,
+          backgroundColor: levelColors.slice(0, levelData.length)
+        }]
+      },
+      options:{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins:{ legend:{ position:'bottom', labels:{ font:{ size:10 } } } }
+      }
+    });
+  }
+});
+</script>
+{% endblock %}

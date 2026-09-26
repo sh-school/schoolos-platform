@@ -1,0 +1,422 @@
+"""
+notifications/views.py
+لوحة إدارة الإشعارات للمدير
+"""
+
+import logging
+
+from django.contrib import messages
+
+logger = logging.getLogger(__name__)
+from django.contrib.auth.decorators import login_required
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_POST
+
+from core.capabilities import capability_required
+from core.sorting import apply_sort
+
+from .models import NotificationLog, NotificationSettings
+from .services import NotificationService
+
+# حقولُ الفرز المسموحة — `?sort=` نصٌّ من المستخدم لا يبلغ ORM إلّا مصفّى.
+LOG_SORTS = {
+    "date": ("sent_at",),
+    "student": ("student__full_name", "-sent_at"),
+    "recipient": ("recipient", "-sent_at"),
+    "channel": ("channel", "-sent_at"),
+    "type": ("notif_type", "-sent_at"),
+    "status": ("status", "-sent_at"),
+}
+
+
+@login_required
+@capability_required("notifications.broadcast")
+def notifications_dashboard(request):
+    school = request.user.get_school()
+    year = request.GET.get("year") or academic_year_for(request)
+
+    # آخر الإشعارات — paginated
+    from django.core.paginator import Paginator
+
+    page_num = request.GET.get("page", 1)
+    logs_qs = NotificationLog.objects.filter(school=school).select_related("student", "sent_by")
+    # الفرزُ على السجلّ كلِّه قبل التقسيم — لا على الصفحة الظاهرة وحدَها.
+    logs_qs, sort = apply_sort(
+        logs_qs, request, LOG_SORTS, "date", default_desc=True, desc_first=("date",)
+    )
+    paginator = Paginator(logs_qs, 25)
+    logs_page = paginator.get_page(page_num)
+
+    # نقرةُ الفرز أو التنقّل تُبدّل لوحَ السجلّ وحدَه: لا إحصاءاتٍ تُعاد ولا
+    # صفحةً تُحمَّل من جديد، فلا يقفز القارئُ إلى رأسها وتغيب عنه ترويسته.
+    if getattr(request, "htmx", None) and request.htmx.target == "notif-log-panel":
+        return render(
+            request,
+            "notifications/partials/log_panel.html",
+            {"logs": logs_page, "logs_page": logs_page, "sort": sort},
+        )
+
+    # ✅ v5.4: NotificationService.get_dashboard_stats — 5 queries في service layer
+    stats = NotificationService.get_dashboard_stats(school, year=year)
+
+    # الإعدادات
+    cfg, _ = NotificationSettings.objects.get_or_create(school=school)
+
+    return render(
+        request,
+        "notifications/dashboard.html",
+        {
+            "logs": logs_page,
+            "logs_page": logs_page,
+            "sort": sort,
+            "cfg": cfg,
+            "year": year,
+            **stats,
+            **_dashboard_presentation(stats, year),
+            # كم وليَّ أمرٍ سيبلغه كلُّ زر — استعلامان، ولا يُحسبان إن لم يكن ما يُرسَل.
+            "recipients": (
+                NotificationService.count_alert_recipients(school, year)
+                if stats.get("pending_absence_count") or stats.get("failing_students")
+                else {"absence": 0, "fail": 0}
+            ),
+        },
+    )
+
+
+def _dashboard_presentation(stats: dict, year) -> dict:
+    """ألوانُ شريط الأرقام وسطرُ الترويسة — الحكمُ هنا لا شرطاً في القالب.
+
+    كان الفشلُ أحمرَ دائماً وتحته «يحتاج مراجعة» حين يوجد، وتنبيهاتُ الغياب
+    برتقاليّةً وتحتها عددُها مرّةً ثانية. فصار اللونُ وحدَه التنبيه: أحمرُ أو
+    برتقاليٌّ حين يوجد ما يُراجَع أو يُرسَل، وأخضرُ حين لا شيء.
+    """
+    return {
+        "subtitle": f"إشعارات البريد الإلكتروني وSMS لأولياء الأمور · {year}",
+        "failed_tone": "red" if stats.get("total_failed") else "green",
+        "pending_tone": "amber" if stats.get("total_pending") else "green",
+        "absence_alerts_tone": "orange" if stats.get("pending_absence_count") else "green",
+        "failing_tone": "red" if stats.get("failing_students") else "green",
+    }
+
+
+def _deferred_note(counts) -> str:
+    """ما لم يخرج بعد لأنّ مستلمَه في ساعات هدوء: يُقال صراحةً لا يُحسب «أُرسل»."""
+    deferred = getattr(counts, "deferred", 0)
+    if not deferred:
+        return ""
+    return f" — منها {deferred} مؤجَّلٌ إلى انتهاء ساعات هدوء المستلم"
+
+
+@login_required
+@capability_required("notifications.broadcast")
+@require_POST
+def send_absence_alerts(request):
+    """إرسال كل تنبيهات الغياب المعلقة"""
+    school = request.user.get_school()
+    counts = NotificationService.send_pending_absence_alerts(school=school, sent_by=request.user)
+    sent, failed = counts
+    messages.success(
+        request,
+        f"✓ تم إرسال {sent} إشعار غياب"
+        + (f" — فشل {failed}" if failed else "")
+        + _deferred_note(counts),
+    )
+    return redirect("notifications_dashboard")
+
+
+@login_required
+@capability_required("notifications.broadcast")
+@require_POST
+def send_fail_alerts(request):
+    """إرسال إشعارات الرسوب للسنة الدراسية"""
+    school = request.user.get_school()
+    year = request.POST.get("year") or academic_year_for(request)
+    counts = NotificationService.send_fail_alerts_for_year(
+        school=school, year=year, sent_by=request.user
+    )
+    sent, failed = counts
+    messages.success(
+        request,
+        f"✓ تم إرسال {sent} إشعار رسوب"
+        + (f" — فشل {failed}" if failed else "")
+        + _deferred_note(counts),
+    )
+    return redirect("notifications_dashboard")
+
+
+@login_required
+@capability_required("notifications.broadcast")
+@require_POST
+def resend_notification(request, log_id):
+    """إعادة إرسال إشعار فشل"""
+    school = request.user.get_school()
+    log = get_object_or_404(NotificationLog, id=log_id, school=school)
+
+    if log.channel == "email":
+        ok, err = NotificationService.send_email(
+            school=school,
+            recipient_email=log.recipient,
+            subject=log.subject,
+            body_text=log.body,
+            student=log.student,
+            notif_type=log.notif_type,
+            sent_by=request.user,
+        )
+    else:
+        ok, err = NotificationService.send_sms(
+            school=school,
+            phone_number=log.recipient,
+            message=log.body,
+            student=log.student,
+            notif_type=log.notif_type,
+            sent_by=request.user,
+        )
+
+    if ok:
+        messages.success(request, f"✓ أُعيد إرسال الإشعار إلى {log.recipient}")
+    else:
+        messages.error(request, f"فشل: {err}")
+    return redirect("notifications_dashboard")
+
+
+@login_required
+@capability_required("notifications.broadcast")
+def save_settings(request):
+    """حفظ إعدادات الإشعارات"""
+    if request.method != "POST":
+        return HttpResponse("غير مسموح", status=403)
+
+    school = request.user.get_school()
+    cfg, _ = NotificationSettings.objects.get_or_create(school=school)
+
+    cfg.email_enabled = "email_enabled" in request.POST
+    cfg.absence_email_enabled = "absence_email_enabled" in request.POST
+    cfg.fail_email_enabled = "fail_email_enabled" in request.POST
+    cfg.sms_enabled = "sms_enabled" in request.POST
+    cfg.absence_threshold = int(request.POST.get("absence_threshold", 3))
+    cfg.from_name = request.POST.get("from_name", school.name)
+    cfg.reply_to = request.POST.get("reply_to", "")
+    cfg.sms_from_number = request.POST.get("sms_from_number", "")
+    cfg.twilio_account_sid = request.POST.get("twilio_account_sid", "")
+    # Auth Token: only update if a new value was provided (empty = keep existing)
+    new_token = request.POST.get("twilio_auth_token", "").strip()
+    if new_token:
+        cfg.twilio_auth_token = new_token
+    cfg.absence_email_subject = request.POST.get("absence_email_subject", cfg.absence_email_subject)
+    cfg.fail_email_subject = request.POST.get("fail_email_subject", cfg.fail_email_subject)
+    cfg.save()
+
+    messages.success(request, "✓ تم حفظ إعدادات الإشعارات")
+    return redirect("notifications_dashboard")
+
+
+# ════════════════════════════════════════════════════════════════════
+# ✅ v6: إشعارات المنصة — الجرس + الصندوق + التفضيلات
+# ════════════════════════════════════════════════════════════════════
+
+from core.academic_calendar import academic_year_for
+
+from .models import InAppNotification, UserNotificationPreference
+
+
+@login_required
+def api_unread_count(request):
+    """API: عدد الإشعارات غير المقروءة (للجرس في Navbar)"""
+    count = InAppNotification.objects.unread_count(request.user)
+    return JsonResponse({"count": count})
+
+
+@login_required
+def api_recent_notifications(request):
+    """API: آخر 5 إشعارات (للقائمة المنسدلة في الجرس)"""
+    notifs = InAppNotification.objects.unread_for_user(request.user)[:5]
+    data = [
+        {
+            "id": str(n.id),
+            "title": n.title,
+            "body": n.body[:100],
+            "event_type": n.event_type,
+            "priority": n.priority,
+            "url": n.related_url,
+            "created_at": n.created_at.strftime("%Y-%m-%d %H:%M"),
+        }
+        for n in notifs
+    ]
+    count = InAppNotification.objects.unread_count(request.user)
+    return JsonResponse({"notifications": data, "unread_count": count})
+
+
+@login_required
+def notification_inbox(request):
+    """صفحة صندوق الإشعارات"""
+    from .inbox_presentation import (
+        event_type_chips,
+        group_by_day,
+        group_by_type,
+        inbox_query,
+        role_event_types,
+    )
+    from .selectors import inbox_notifications, inbox_type_counts, inbox_unread_count
+
+    event_filter = request.GET.get("type", "")
+    unread_only = request.GET.get("unread") == "1"
+    # «حسب النوع» تجميعٌ لا ترشيح: الصندوقُ كلُّه، كلُّ نوعٍ مجموعتُه.
+    group_mode = "type" if request.GET.get("group") == "type" else "day"
+
+    notifications = inbox_notifications(request.user, event_filter, unread_only)
+    # العاجلُ غيرُ المقروء يُثبَّت أعلى الصندوق **ويُطرح من القائمة تحته**.
+    # كان القالبُ يعرضه في الموضعين، ويفتح قسمَه بـ`forloop.first` للقائمة كلّها —
+    # فلا يُفتح إلّا إن كان أوّلُ إشعارٍ عاجلاً، ويتكرّر `id` العنصر في الصفحة.
+    urgent = [n for n in notifications if n.priority == "urgent" and not n.is_read]
+    rest = [n for n in notifications if not (n.priority == "urgent" and not n.is_read)]
+    unread_count = inbox_unread_count(request.user)
+
+    role = getattr(request.user, "get_role", lambda: "")()
+    role_types = role_event_types(role, InAppNotification.EVENT_TYPES)
+    type_counts = inbox_type_counts(request.user)
+    state = {"type": event_filter, "unread": unread_only, "group": group_mode}
+    event_types = event_type_chips(role_types, type_counts, event_filter, state)
+    if group_mode == "type":
+        groups = group_by_type(rest, dict(InAppNotification.EVENT_TYPES))
+    else:
+        groups = group_by_day(rest)
+
+    return render(
+        request,
+        "notifications/inbox.html",
+        {
+            "notifications": notifications,
+            "urgent_notifications": urgent,
+            "other_notifications": rest,
+            "groups": groups,
+            "group_mode": group_mode,
+            "unread_count": unread_count,
+            "total_count": sum(type_counts.values()),
+            "event_filter": event_filter,
+            "unread_only": unread_only,
+            "event_types": event_types,
+            "all_types_url": inbox_query(**{**state, "type": ""}),
+            "unread_toggle_url": inbox_query(**{**state, "unread": not unread_only}),
+            "group_day_url": inbox_query(**{**state, "group": "day"}),
+            "group_type_url": inbox_query(**{**state, "group": "type"}),
+        },
+    )
+
+
+@login_required
+@require_POST
+def mark_notification_read(request, notif_id):
+    """تحديد إشعار واحد كمقروء"""
+    import json
+
+    notif = get_object_or_404(InAppNotification, id=notif_id, user=request.user)
+    notif.mark_read()
+
+    if request.headers.get("HX-Request"):
+        # HTMX: أعد العنصر المحدَّث (is_read=True) + أطلق حدث تحديث الـ badge
+        count = InAppNotification.objects.unread_count(request.user)
+        response = render(request, "notifications/partials/notif_item.html", {"notif": notif})
+        response["HX-Trigger"] = json.dumps({"updateBadge": {"count": count}})
+        return response
+
+    return redirect(notif.related_url or "notification_inbox")
+
+
+@login_required
+@require_POST
+def mark_all_read(request):
+    """تحديد كل الإشعارات كمقروءة"""
+    InAppNotification.objects.mark_all_read(request.user)
+    messages.success(request, "✓ تم تحديد كل الإشعارات كمقروءة")
+    return redirect("notification_inbox")
+
+
+@login_required
+def notification_preferences(request):
+    """صفحة تفضيلات الإشعارات للمستخدم"""
+    prefs, created = UserNotificationPreference.objects.get_or_create(user=request.user)
+
+    if request.method == "POST":
+        prefs.in_app_enabled = "in_app_enabled" in request.POST
+        prefs.push_enabled = "push_enabled" in request.POST
+        prefs.whatsapp_enabled = "whatsapp_enabled" in request.POST
+        prefs.email_enabled = "email_enabled" in request.POST
+        prefs.sms_enabled = "sms_enabled" in request.POST
+
+        # ساعات الهدوء
+        quiet_start = request.POST.get("quiet_hours_start", "")
+        quiet_end = request.POST.get("quiet_hours_end", "")
+        if quiet_start:
+            from datetime import time as dt_time
+
+            h, m = map(int, quiet_start.split(":"))
+            prefs.quiet_hours_start = dt_time(h, m)
+        else:
+            prefs.quiet_hours_start = None
+        if quiet_end:
+            from datetime import time as dt_time
+
+            h, m = map(int, quiet_end.split(":"))
+            prefs.quiet_hours_end = dt_time(h, m)
+        else:
+            prefs.quiet_hours_end = None
+
+        prefs.save()
+        messages.success(request, "✓ تم حفظ تفضيلات الإشعارات")
+        return redirect("notification_preferences")
+
+    return render(
+        request,
+        "notifications/preferences.html",
+        {
+            "prefs": prefs,
+        },
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# ✅ v5.1: البث الطارئ عبر WebSocket (مدير / مدير مدرسة فقط)
+# ══════════════════════════════════════════════════════════════
+
+
+@login_required
+@capability_required("notifications.broadcast")
+@require_POST
+def emergency_broadcast(request):
+    """
+    يبث رسالة طارئة لجميع مستخدمي المدرسة المتصلين عبر WebSocket.
+    مقيَّد للمدير والمدير المساعد فقط.
+    """
+    from asgiref.sync import async_to_sync
+    from channels.layers import get_channel_layer
+
+    from core.permissions import is_leadership
+
+    if not is_leadership(request.user):
+        return JsonResponse({"error": "غير مصرح"}, status=403)
+
+    message = request.POST.get("message", "").strip()
+    if not message:
+        return JsonResponse({"error": "الرسالة فارغة"}, status=400)
+
+    school = request.user.school
+    if not school:
+        return JsonResponse({"error": "لا مدرسة مرتبطة بالمستخدم"}, status=400)
+
+    layer = get_channel_layer()
+    if not layer:
+        return JsonResponse({"error": "WebSocket غير مُعدَّل"}, status=503)
+
+    try:
+        async_to_sync(layer.group_send)(
+            f"school_{school.pk}",
+            {
+                "type": "emergency.broadcast",
+                "message": message,
+            },
+        )
+        return JsonResponse({"status": "ok", "recipients": f"school_{school.pk}"})
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.exception("Emergency broadcast failed: %s", exc)
+        return JsonResponse({"error": "فشل الإرسال"}, status=500)

@@ -1,0 +1,42 @@
+{% load dict_filters ui %}
+{% comment %}
+جدولُ توزيعٍ على الشرائح — يُستعمل للصفوف وللمواد بالبنية نفسها.
+والصفوفُ مرتَّبةٌ من `_sorted_rows` بنسبة «دون مستوى النجاح» تنازلياً:
+الأحوجُ إلى النظر أوّلاً، لا أبجدياً. وجدولٌ بلا صفوفٍ يقول ذلك بحالة
+الفراغ الموحّدة — فالجزئيّةُ تملك فراغَها أينما ضُمِّنت، لا تتّكل على بطاقة
+القسم التي تحتضنها (وهي ترسم الحالةَ نفسَها لو خلا محتواها).
+{% endcomment %}
+{% if rows %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>{{ head }}</th>
+        {% for key, label, floor, tone in bands %}
+        <th class="col-center">{{ label }}</th>
+        {% endfor %}
+        <th class="col-center">المجموع</th>
+        <th class="col-center">نسبة دون المستوى</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td class="font-semibold">{{ row.name }}</td>
+        {% for key, label, floor, tone in bands %}
+        <td class="num sinfo-band is-{{ tone }}">{{ row.counts|dictkey:key }}</td>
+        {% endfor %}
+        <td class="num">{{ row.total }}</td>
+        <td class="col-center">
+          <span class="status-badge {% if row.below_pct >= 25 %}status-danger{% elif row.below_pct >= 10 %}status-warning{% else %}status-success{% endif %}">
+            {{ row.below_pct }}%
+          </span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+{% empty_state "لا بيانات" %}
+{% endif %}

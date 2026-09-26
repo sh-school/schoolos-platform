@@ -1,0 +1,96 @@
+{% load icons %}
+{% load privacy %}
+{% load labels %}
+{# partial: جدول ارتباطات أولياء الأمور — يُحدَّث بـ HTMX #}
+{% load sorting %}
+
+<div class="table-wrap">
+{% if page_obj.object_list %}
+  <div class="overflow-x-auto">
+    {# القائمةُ مقسَّمةٌ صفحاتٍ: الفرزُ من الخادم على الارتباطات كلِّها. #}
+    <table class="w-full text-sm" data-no-sort>
+      <thead>
+        <tr>
+          {% sort_th sort "student" "الطالب" "text-right" %}
+          <th scope="col" class="text-center">الرقم الشخصيّ</th>
+          {% sort_th sort "klass" "الصف/الشعبة" "text-center" %}
+          {% sort_th sort "parent" "ولي الأمر" "text-right" %}
+          {% sort_th sort "relationship" "صلة القرابة" "text-center" %}
+          {% comment %}
+          «جوّالُ وليّ الأمر» هو الفعلُ المقصودُ من هذه الشاشة — والاتّصالُ
+          بالأسرة سببُ الربط. وكان غائباً والجدولُ يعرف الرقمَ لكلّ وليّ أمر.
+
+          وسقط عمودا «الدرجات» و«الغياب»: قِستُهما فوجدتُهما `True` في
+          الارتباطات كلِّها بلا استثناء — عمودان يكتبان «مفعّل» في كلّ صفّ لا
+          يفرّقان شيئاً، ويأخذان عرضاً يحتاجه ما يُقرأ.
+          {% endcomment %}
+          <th scope="col" class="text-center">جوّال ولي الأمر</th>
+          <th scope="col" class="text-center">حذف</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for lnk in page_obj %}
+        <tr>
+          {% comment %}
+          قيمةٌ واحدةٌ لكلّ خليّة — كما في سجلّ الطلاب وسجلّ الكادر. كان
+          الاسمُ والرقمُ محشورَين في خليّةٍ واحدة، والرقمُ بـ`dir="ltr"`
+          يرتدّ إلى الحافة المقابلة فيظهر السطرُ مفكوكاً لا كأخواته.
+          {% endcomment %}
+          <td data-label="الطالب">
+            <a href="{% url 'student_affairs:student_profile' lnk.student.id %}"
+               class="font-semibold text-maroon hover:underline">{{ lnk.student.full_name }}</a>
+          </td>
+          {# آخرُ أربعِ خاناتٍ وما قبلها مستور — والرقمُ كاملاً في ملفّ صاحبه. #}
+          <td data-label="الرقم الشخصيّ" class="col-num text-center font-mono text-xs"
+              title="الرقم كاملاً في ملفّ الطالب">{{ lnk.student.national_id|mask_id|default:"—" }}</td>
+          {# «07/2» كما تكتبه الوزارة — ومن غادر لا صفَّ له فيُقال ذلك #}
+          <td data-label="الصف/الشعبة" class="text-center">
+            {% if lnk.grade_code and lnk.section_code %}
+              <span class="status-badge status-info">{% class_label lnk.grade_code lnk.section_code %}</span>
+            {% else %}
+              <span class="text-xs text-muted">غادر</span>
+            {% endif %}
+          </td>
+          {% comment %}
+          ورقمُ وليِّ الأمر سقط: الفعلُ المقصودُ هنا الاتّصالُ به، والجوّالُ
+          عمودٌ قائم. ورقمُه كاملاً في ملفّه — كما لا يعرضه سجلُّ الطلاب.
+          {% endcomment %}
+          <td data-label="ولي الأمر">{{ lnk.parent.full_name }}</td>
+          <td data-label="صلة القرابة" class="text-center">
+            <span class="status-badge status-maroon">{{ lnk.get_relationship_display }}</span>
+          </td>
+          <td data-label="جوّال ولي الأمر" class="text-center col-num text-xs">
+            {% if lnk.parent.phone %}
+              <a href="tel:{{ lnk.parent.phone }}" class="text-maroon">{{ lnk.parent.phone }}</a>
+            {% else %}—{% endif %}
+          </td>
+          <td data-label="حذف" class="text-center">
+            <form method="post" action="{% url 'remove_parent_link' lnk.id %}"
+                  data-confirm="هل أنت متأكد من حذف ربط {{ lnk.parent.full_name }} بـ {{ lnk.student.full_name }}؟">
+              {% csrf_token %}
+              <button type="submit" class="btn-danger btn-xs">
+                حذف
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {# Pagination #}
+  {% if page_obj.paginator.num_pages > 1 %}
+  {% include "components/pagination.html" with page_obj=page_obj target="#links-container" base_url=request.path %}
+  {% endif %}
+
+{% else %}
+  <div class="empty-state-v2 py-8">
+    <div class="es-icon">{% icon "link" size="2xl" %}</div>
+    <div class="es-title">لا توجد ارتباطات</div>
+    <div class="es-sub">
+      {% if search %}لا توجد نتائج تطابق البحث. جرّب كلمات أخرى.{% else %}لم يتم ربط أي ولي أمر بطالب بعد. أضف ربطاً جديداً من النموذج أعلاه.{% endif %}
+    </div>
+  </div>
+{% endif %}
+</div>

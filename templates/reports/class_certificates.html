@@ -1,0 +1,134 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags privacy %}
+{# شهادات الفصل — شهادة لكل طالب على صفحة منفصلة #}
+{# ملفٌّ واحدٌ لفصلٍ كامل كشفٌ جماعيّ: الرقمُ مستور، والشهادةُ الفرديّةُ (certificate.html) تحمله كاملاً #}
+
+{% block extra_styles %}
+.cert-page        { page-break-after: always; padding: 20px 0; }
+.cert-page:last-child { page-break-after: avoid; }
+.cert-frame       { border: 6px double {% brand_color "MAROON" %}; border-radius: 8px; padding: 28px 36px; min-height: 520px; }
+.cert-inner       { border: 1.5px solid {% brand_color "GOLD" %}; border-radius: 4px; padding: 22px 30px; }
+.cert-header      { text-align: center; margin-bottom: 18px; }
+.cert-header .school-name { font-size: 16px; font-weight: 700; color: {% brand_color "MAROON" %}; }
+.cert-title       { font-size: 22px; font-weight: 700; color: {% brand_color "MAROON" %}; text-align: center; margin: 12px 0; border-top: 2px solid {% brand_color "GOLD" %}; border-bottom: 2px solid {% brand_color "GOLD" %}; padding: 8px 0; }
+.cert-body        { font-size: 13px; line-height: 2.2; margin: 16px 0; }
+.cert-student     { font-size: 18px; font-weight: 700; color: {% brand_color "TEXT_PRIMARY" %}; }
+.cert-avg         { font-size: 42px; font-weight: 800; color: {% brand_color "MAROON" %}; text-align: center; line-height: 1; }
+.cert-avg-label   { font-size: 12px; color: {% brand_color "TEXT_MUTED" %}; text-align: center; margin-bottom: 12px; }
+.cert-status      { display: inline-block; padding: 5px 20px; border-radius: 20px; font-size: 14px; font-weight: 700; text-align: center; margin: 8px auto; }
+/* النغمةُ من `reports.views._set_final_status`: خلفيّةٌ فاتحةٌ وإطارٌ ونصٌّ من اللون نفسه. */
+.cert-status.is-success { background: {% brand_color "STATUS_SUCCESS_BG" %}; color: {% brand_color "STATUS_SUCCESS_DARK" %}; border: 1.5px solid {% brand_color "STATUS_SUCCESS_DARK" %}; }
+.cert-status.is-danger  { background: {% brand_color "STATUS_DANGER_BG" %};  color: {% brand_color "STATUS_DANGER" %};  border: 1.5px solid {% brand_color "STATUS_DANGER" %}; }
+.cert-status.is-warning { background: {% brand_color "STATUS_WARNING_BG" %}; color: {% brand_color "STATUS_WARNING" %}; border: 1.5px solid {% brand_color "STATUS_WARNING" %}; }
+.cert-subjects    { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 11px; }
+.cert-subjects th { background: {% brand_color "MAROON" %}; color: {% brand_color "ON_FILL" %}; padding: 5px 8px; text-align: center; }
+.cert-subjects td { border: 1px solid {% brand_color "BORDER" %}; padding: 4px 8px; text-align: center; }
+.cert-subjects tr:nth-child(even) td { background: {% brand_color "SURFACE_ALT" %}; }
+/* خاناتُ التوقيع الثلاث: خطٌّ يُوقَّع فوقه، والصفةُ تحته. */
+.cert-sigs        { width: 100%; border-collapse: collapse; margin-top: 24px; }
+.cert-sigs td     { width: 33.33%; padding: 0 16px; border: none; background: transparent; vertical-align: bottom; }
+.cert-sig-line    { border-top: 2px solid {% brand_color "TEXT_SECONDARY" %}; margin: 28px 0 4px; }
+.cert-sig-label   { font-size: 10px; color: {% brand_color "TEXT_SECONDARY" %}; text-align: center; }
+{% endblock %}
+
+{% block report_title_bar %}
+<div class="report-title-bar">شهادات نتائج الفصل — {{ class_group.short_label }} — {{ year }}</div>
+{% endblock %}
+
+{% block report_meta %}
+<table class="report-meta">
+  <tr>
+    <td>الفصل: <strong>{{ class_group.short_label }}</strong></td>
+    <td>السنة الدراسية: <strong>{{ year }}</strong></td>
+    <td>تاريخ الطباعة: <strong>{{ print_date }}</strong></td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block content %}
+{% for ctx in students_ctx %}
+<div class="cert-page">
+  <div class="cert-frame">
+    <div class="cert-inner">
+
+      <div class="cert-header">
+        <div class="school-name">{{ ctx.school.name }}</div>
+        <div>دولة قطر — وزارة التربية والتعليم والتعليم العالي</div>
+      </div>
+
+      <div class="cert-title">شهادة نتيجة دراسية</div>
+
+      <div class="cert-body">
+        يُشهد بأن الطالب/ة:
+        <span class="cert-student">{{ ctx.student.full_name }}</span>
+        &nbsp;—&nbsp;
+        الرقم الشخصي: <strong dir="ltr">{{ ctx.student.national_id|mask_id|default:"—" }}</strong>
+        <br>
+        المنتسب/ة إلى: <strong>{{ class_group.short_label }}</strong>
+        &nbsp;&nbsp;|&nbsp;&nbsp;
+        السنة الدراسية: <strong>{{ year }}</strong>
+        <br>
+        قد أتمّ/ت المتطلبات الدراسية للعام وحقق/ت النتيجة الآتية:
+      </div>
+
+      <div class="cert-avg">{{ ctx.avg|default:"—" }}</div>
+      <div class="cert-avg-label">المعدل السنوي (من 100)</div>
+
+      <div>
+        <span class="cert-status is-{{ ctx.status_tone }}">
+          {{ ctx.final_status }}
+        </span>
+      </div>
+
+      {% if ctx.rows %}
+      <table class="cert-subjects">
+        <thead>
+          <tr>
+            <th scope="col">المادة</th>
+            <th scope="col">الفصل الأول</th>
+            <th scope="col">الفصل الثاني</th>
+            <th scope="col">المجموع السنوي</th>
+            <th scope="col">التقدير</th>
+            <th scope="col">الحالة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in ctx.rows %}
+          <tr>
+            <td>{{ r.subject_name }}</td>
+            <td>{{ r.s1_total|default:"—" }}</td>
+            <td>{{ r.s2_total|default:"—" }}</td>
+            <td>{{ r.annual_total|default:"—" }}</td>
+            <td>{{ r.letter_grade|default:"—" }}</td>
+            <td>
+              {% if r.status == "pass" %}ناجح
+              {% elif r.status == "fail" %}راسب
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      {% comment %}
+      التوقيعات — table بدل flex. كانت أصنافَ Tailwind لا يحملها الـPDF،
+      فتلتصق الأسماءُ الثلاثةُ سطراً واحداً بلا خطٍّ يُوقَّع عليه.
+      {% endcomment %}
+      <table class="cert-sigs">
+        <tr>
+          <td><div class="cert-sig-line"></div><div class="cert-sig-label">ولي الأمر</div></td>
+          <td><div class="cert-sig-line"></div><div class="cert-sig-label">مدير المدرسة</div></td>
+          <td><div class="cert-sig-line"></div><div class="cert-sig-label">وكيل شؤون التعليم</div></td>
+        </tr>
+      </table>
+
+    </div>
+  </div>
+</div>
+{% empty %}
+<p>لا توجد بيانات طلاب</p>
+{% endfor %}
+{% endblock %}
+
+{% block signatures %}{% endblock %}

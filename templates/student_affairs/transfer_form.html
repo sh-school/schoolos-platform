@@ -1,0 +1,55 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load privacy ui %}
+
+{% block title %}طلب انتقال جديد{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-affairs/transfers/" parent_label="الانتقالات" current="طلب جديد" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-page sa-form-page">
+  {% page_header "طلب انتقال جديد" icon="refresh" %}{% endpage_header %}
+
+  <div class="form-card">
+    <form method="post">
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+      <div class="msg-bar msg-error sa-form-errors" role="alert">
+        {% for err in form.non_field_errors %}<span class="msg-text">{{ err }}</span>{% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="form-row">
+
+        {# الطالب: نصُّ الخيار مركّبٌ (الاسمُ ورقمُه المستور) — لا يُعبَّر بـchoices، فالقائمةُ باليد بتسميتها #}
+        <div class="ui-field sa-span-full">
+          <label for="f-student_id" class="ui-field__label">الطالب <span class="req-star" aria-hidden="true">*</span></label>
+          <select id="f-student_id" name="student_id" class="form-control" required>
+            <option value="">— اختر الطالب —</option>
+            {% for m in students %}
+            <option value="{{ m.user_id }}" {% if form.student_id.value|slugify == m.user_id|slugify %}selected{% endif %}>
+              {{ m.user.full_name }} ({{ m.user.national_id|mask_id }})
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        {% field "direction" "اتجاه الانتقال" type="select" choices="in=وارد (← إلى مدرستنا)|out=صادر (→ من مدرستنا)" value=form.direction.value required=True %}
+        {% field "transfer_date" "تاريخ الانتقال" type="date" value=form.transfer_date.value required=True %}
+        {% field "other_school_name" "المدرسة الأخرى" value=form.other_school_name.value placeholder="اسم المدرسة المنقول منها/إليها" required=True css="sa-span-full" %}
+        {% field "from_grade" "الصف (من)" value=form.from_grade.value placeholder="مثال: G9" %}
+        {% field "to_grade" "الصف (إلى)" value=form.to_grade.value placeholder="مثال: G10" %}
+        {% field "reason" "السبب" type="textarea" rows=3 value=form.reason.value placeholder="سبب الانتقال..." css="sa-span-full" %}
+      </div>
+
+      <div class="form-footer">
+        <a href="{% url 'student_affairs:transfer_list' %}" class="btn-secondary btn-sm">إلغاء</a>
+        <button type="submit" class="btn-primary btn-sm">{% icon "status_success" %} تسجيل الانتقال</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

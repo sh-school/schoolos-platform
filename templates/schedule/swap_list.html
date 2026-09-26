@@ -1,0 +1,55 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}طلبات التبديل{% endblock %}
+
+{# الجدولُ يُمرَّر وحدَه، لا الصفحةُ فوقه أيضاً. #}
+{% block main_class %}{% page_layout "list" %}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/teacher/weekly-schedule/" parent_label="الجدول" current="طلبات التبديل" %}
+{% endblock %}
+
+{% block content %}
+{% comment %}
+كانت الشاشةُ بأغلفةٍ خاصّةٍ بها (`swap-page` و`swap-header` و`swap-filters`)،
+فلا ترث من بنية المنصّة شيئاً: لا بطاقةَ ترشيحٍ ولا سطرَ شرحٍ تحت العنوان،
+وحالةُ فراغٍ مكتوبةٌ بيدٍ لا المكوّنَ الموحَّد. فبدت غريبةً عن أخواتها.
+{% endcomment %}
+<div class="exec-dash">
+  {% page_header "طلبات التبديل" subtitle="تبديلُ حصّةٍ بحصّة — يوافق عليه المعلّمُ الآخر ثمّ منسّقُ المادّة" icon="refresh" %}
+    {% if current_role == "teacher" or current_role == "ese_teacher" or current_role == "principal" or current_role == "vice_academic" %}
+    <a href="{% url 'swap_request' %}" class="btn-primary btn-sm">{% icon "edit_record" %} طلب تبديل</a>
+    {% endif %}
+    <form method="post" action="{% url 'build_free_slots' %}">{% csrf_token %}
+      <button type="submit" class="btn-secondary btn-sm">{% icon "generate" %} بناء سجل الحصص الحرة</button>
+    </form>
+  {% endpage_header %}
+
+  {% filter_bar "ترشيحُ طلبات التبديل" %}
+    {% field "status" "الحالة" type="select" choices=status_choices value=status_filter blank="كل الحالات" data_autosubmit=True %}
+    {# بحثٌ في المتصفّح وحده (`smartFilter`) بلا اسمٍ يُرسَل — فلا يُعطى اسماً. #}
+    <div class="ui-field ui-field--grow">
+      <label for="swap-search" class="ui-field__label">بحث بالاسم</label>
+      <input type="text" id="swap-search" class="form-control"
+             placeholder="ابحث باسم المعلم..." autocomplete="off">
+    </div>
+  {% endfilter_bar %}
+
+  {% section_card "الطلبات" icon="refresh" flush=True empty="لا توجد طلبات تبديل" empty_sub="ستظهر هنا حين يطلب معلّمٌ تبديلَ حصّة" %}{% if swaps %}
+    <div class="table-wrap-scroll schedule-cards" id="swap-cards">
+    {% for swap in swaps %}
+    {% include "schedule/partials/swap_card.html" with swap=swap %}
+    {% endfor %}
+    </div>
+  {% endif %}{% endsection_card %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function () {
+  window.smartFilter('swap-search', '[data-filter-row]', { textAttr: 'data-text' });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,95 @@
+{% extends "base/base.html" %}
+{% load privacy ui %}
+{% block title %}الطلاب الراسبون{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/assessments/" parent_label="التقييمات" current="الطلاب الراسبون" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "الطلاب الراسبون" subtitle=subtitle icon="failing_students" %}
+    <nav class="period-switch" aria-label="الفصل الدراسي">
+      {% for val, label in SEMESTERS %}
+        <a href="?semester={{ val }}&year={{ year }}" class="period-switch__item{% if semester == val %} is-current{% endif %}"{% if semester == val %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+  {% endpage_header %}
+
+  {% filter_bar "ترشيحُ الطلاب الراسبين" live=True %}
+    {% field "q" "بحث باسم الطالب" id="searchInput" hide_label=True grow=True placeholder="بحث باسم الطالب..." autocomplete="off" %}
+    {# خياراتُ الصفوف تُبنى في المتصفّح من البطاقات — فالقائمةُ هنا فارغةٌ عمداً #}
+    {% field "grade" "الصف" type="select" id="gradeFilter" choices="" blank="كل الصفوف" hide_label=True %}
+    <span id="filterCount" class="text-muted hidden" aria-live="polite"></span>
+  {% endfilter_bar %}
+
+  {% if by_student %}
+  <div id="studentCards" class="ui-entity-grid">
+    {% for item in by_student %}
+    <div class="js-student-card" data-name="{{ item.student.full_name }}" data-grade="{{ item.grade }}">
+      {% entity_card item.student.full_name who=item.grade count=item.count_label href=item.report_url tone="red" %}
+        {% entity_chips %}{% for result in item.subjects %}<span class="chip">{{ result.subject.name_ar }} · {{ result.annual_total|default:"—" }}</span>{% endfor %}{% endentity_chips %}
+        {% entity_status title="الرقم الشخصي" %}{{ item.student.national_id|mask_id }}{% endentity_status %}
+      {% endentity_card %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+    {% empty_state "لا يوجد طلاب راسبون" sub="لا نتائجَ سنويّةً راسبةً في هذا العام" icon="status_success" %}
+  {% endif %}
+  <div id="noResults" class="hidden">
+    {% empty_state "لا توجد نتائج مطابقة للبحث" icon="search" %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  var search = document.getElementById('searchInput');
+  var gradeSelect = document.getElementById('gradeFilter');
+  var cards = document.querySelectorAll('.js-student-card');
+  var countEl = document.getElementById('filterCount');
+  var noResults = document.getElementById('noResults');
+
+  // Build grade options from cards
+  var grades = {};
+  cards.forEach(function(c){
+    var g = c.dataset.grade;
+    if(g && !grades[g]) grades[g] = true;
+  });
+  Object.keys(grades).sort().forEach(function(g){
+    var opt = document.createElement('option');
+    opt.value = g; opt.textContent = g;
+    gradeSelect.appendChild(opt);
+  });
+
+  function filterCards(){
+    var q = search.value.trim();
+    var grade = gradeSelect.value;
+    var visible = 0;
+    cards.forEach(function(c){
+      var nameMatch = typeof window.smartMatch === 'function'
+        ? window.smartMatch(q, c.dataset.name)
+        : (!q || c.dataset.name.toLowerCase().indexOf(q.toLowerCase()) !== -1);
+      var gradeMatch = !grade || c.dataset.grade === grade;
+      var show = nameMatch && gradeMatch;
+      c.style.display = show ? '' : 'none';
+      if(show) visible++;
+    });
+    if(q || grade){
+      countEl.textContent = visible + ' من ' + cards.length;
+      countEl.classList.remove('hidden');
+    } else {
+      countEl.classList.add('hidden');
+    }
+    noResults.classList.toggle('hidden', visible > 0 || cards.length === 0);
+  }
+
+  search.addEventListener('input', filterCards);
+  gradeSelect.addEventListener('change', filterCards);
+});
+</script>
+{% endblock %}

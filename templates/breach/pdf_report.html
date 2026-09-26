@@ -1,0 +1,120 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags %}
+{# تقرير خرق البيانات PDPPL م.11 — يرث من القالب القطري الأساسي #}
+
+{% block extra_styles %}
+.badge-critical { background: {% brand_color "TEXT_PRIMARY" %};    color: {% brand_color "ON_FILL" %}; padding: 2px 8px; border-radius: 4px; font-size: 10px; }
+.badge-high     { background: {% brand_color "STATUS_DANGER" %}; color: {% brand_color "ON_FILL" %}; padding: 2px 8px; border-radius: 4px; font-size: 10px; }
+.badge-medium   { background: {% brand_color "STATUS_WARNING" %}; color: {% brand_color "ON_FILL" %}; padding: 2px 8px; border-radius: 4px; font-size: 10px; }
+.badge-low      { background: {% brand_color "TEXT_MUTED" %}; color: {% brand_color "ON_FILL" %}; padding: 2px 8px; border-radius: 4px; font-size: 10px; }
+.breach-section {
+  border: 1px solid {% brand_color "BORDER" %};
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  font-size: 11px;
+  color: {% brand_color "TEXT_PRIMARY" %};
+  line-height: 1.7;
+}
+pre {
+  background: {% brand_color "SURFACE_ALT" %};
+  padding: 10px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  font-size: 10px;
+  line-height: 1.6;
+  direction: ltr;
+  text-align: left;
+}
+{% endblock %}
+
+{% block report_title_bar %}
+<h1 class="report-title-bar">تقرير خرق البيانات — PDPPL م.11</h1>
+{% endblock %}
+
+{% block report_meta %}
+<table class="report-meta">
+  <tr>
+    <td>المدرسة: <strong>{{ school.name|default:"المدرسة" }}</strong></td>
+    <td>تاريخ الإصدار: <strong>{{ generated_at|date:"Y/m/d H:i" }}</strong></td>
+    <td>أُعدّ بواسطة: <strong>{{ generated_by.full_name }}</strong></td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block content %}
+
+{# ── بيانات الخرق ─────────────────────────────────────────────────── #}
+<div class="section-head">بيانات الخرق</div>
+<table class="info-table">
+  <tr>
+    <th>العنوان</th>
+    <td colspan="3">{{ breach.title }}</td>
+  </tr>
+  <tr>
+    <th>الخطورة</th>
+    <td><span class="badge-{{ breach.severity }}">{{ breach.get_severity_display }}</span></td>
+    <th>البيانات المتأثرة</th>
+    <td>{{ breach.get_data_type_affected_display }}</td>
+  </tr>
+  <tr>
+    <th>عدد المتأثرين</th>
+    <td class="cell-danger">{{ breach.affected_count }} شخص</td>
+    <th>الحالة</th>
+    <td>{{ breach.get_status_display }}</td>
+  </tr>
+  <tr>
+    <th>وقت الاكتشاف</th>
+    <td>{{ breach.discovered_at }}</td>
+    <th>موعد NCSA (72h)</th>
+    <td>{{ breach.ncsa_deadline }}</td>
+  </tr>
+  <tr>
+    <th>تم الإشعار</th>
+    <td>{{ breach.ncsa_notified_at|default:"لم يُشعَر بعد" }}</td>
+    <th>المُبلِّغ</th>
+    <td>{{ breach.reported_by.full_name }}</td>
+  </tr>
+  <tr>
+    <th>المسؤول (DPO)</th>
+    <td colspan="3">{{ breach.assigned_to.full_name|default:"—" }}</td>
+  </tr>
+</table>
+
+{# ── الوصف التفصيلي ──────────────────────────────────────────────── #}
+<div class="section-head mt-20">الوصف التفصيلي</div>
+<div class="breach-section">{{ breach.description }}</div>
+
+{# ── الإجراء الفوري ──────────────────────────────────────────────── #}
+<div class="section-head mt-16">الإجراء الفوري</div>
+<div class="breach-section">{{ breach.immediate_action|default:"—" }}</div>
+
+{# ── إجراءات الاحتواء ────────────────────────────────────────────── #}
+<div class="section-head mt-16">إجراءات الاحتواء</div>
+<div class="breach-section">{{ breach.containment_action|default:"—" }}</div>
+
+{# ── نص الإشعار لـ NCSA ──────────────────────────────────────────── #}
+{% if breach.notification_text %}
+<div class="section-head mt-16">نص الإشعار لـ NCSA</div>
+<pre>{{ breach.notification_text }}</pre>
+{% endif %}
+
+{% endblock %}
+
+{% block signatures %}
+<div class="sig-block">
+  <div class="sig-item">
+    <div class="sig-title">مسؤول حماية البيانات (DPO)</div>
+    <div class="sig-space"></div>
+    <div class="sig-line"></div>
+    <div class="sig-name">{{ breach.assigned_to.full_name|default:"________________________" }}</div>
+    <div class="sig-role">التوقيع والختم</div>
+  </div>
+  <div class="sig-item">
+    <div class="sig-title">مدير المدرسة</div>
+    <div class="sig-space"></div>
+    <div class="sig-line"></div>
+    <div class="sig-stamp">الختم الرسمي</div>
+  </div>
+</div>
+{% endblock %}

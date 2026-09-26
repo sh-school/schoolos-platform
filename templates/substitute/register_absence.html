@@ -1,0 +1,50 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}تسجيل غياب معلم{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/teacher/absences/" parent_label="غيابات المعلمين" current="تسجيل غياب" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash substitute-form-page">
+
+  {% page_header "تسجيل غياب معلم" subtitle="يُطلق نظامُ البديل تلقائيّاً لتغطية حصصه" icon="attendance_teacher_absence" %}{% endpage_header %}
+
+  {% section_card "بيانات الغياب" icon="attendance_teacher_absence" %}
+    <form method="post">
+      {% csrf_token %}
+      <div class="form-group">
+        <label class="form-label" for="absence-teacher">المعلم الغائب <span class="required">*</span></label>
+        <select id="absence-teacher" name="teacher" required class="form-select">
+          <option value="">اختر المعلم</option>
+          {% for t in teachers %}
+          <option value="{{ t.id }}">{{ t.full_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="absence-date">التاريخ <span class="required">*</span></label>
+        <input type="date" id="absence-date" name="date" value="{{ today|date:'Y-m-d' }}" required class="form-control">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="absence-reason">سبب الغياب <span class="required">*</span></label>
+        <select id="absence-reason" name="reason" required class="form-select">
+          {% for val, label in reasons %}
+          <option value="{{ val }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="absence-notes">تفاصيل إضافية</label>
+        <textarea id="absence-notes" name="reason_notes" rows="2" class="form-control" placeholder="ملاحظات اختيارية..."></textarea>
+      </div>
+      <div class="form-actions">
+        <a href="{% url 'absence_list' %}" class="btn-secondary btn-sm">إلغاء</a>
+        <button type="submit" class="btn-primary btn-sm">تسجيل الغياب</button>
+      </div>
+    </form>
+  {% endsection_card %}
+
+</div>
+{% endblock %}

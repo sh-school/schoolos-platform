@@ -1,0 +1,82 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load privacy ui %}
+
+{% block title %}{% if mode == "add" %}إضافة طالب{% else %}تعديل طالب{% endif %}{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}page-noscroll{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/student-affairs/list/" parent_label="سجل الطلاب" current=block.super %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash sa-page sa-form-page">
+
+  {# ── Header ── #}
+  {% if mode == "add" %}
+  {% page_header "إضافة طالب جديد" subtitle=year icon="student_add" %}{% endpage_header %}
+  {% else %}
+  {% page_header "تعديل بيانات الطالب" subtitle=student.full_name icon="student_add" %}{% endpage_header %}
+  {% endif %}
+
+  {# ── النموذج ── #}
+  <div class="form-card">
+    <form method="post" enctype="multipart/form-data">
+      {% csrf_token %}
+
+      {# ── أخطاء عامة ── #}
+      {% if form.non_field_errors %}
+      <div class="msg-bar msg-error sa-form-errors" role="alert">
+        {% for err in form.non_field_errors %}
+        <span class="msg-text">{{ err }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="form-row">
+
+        {# الرقم الشخصي — في الإضافة يُكتب، وفي التعديل يُعرض مستوراً (|mask_id) معطَّلاً فلا يُرسَل #}
+        {% if mode == "add" %}
+        {% field "national_id" "الرقم الشخصي" value=form.national_id.value placeholder="مثال: 29812345678" required=True dir="ltr" error=form.national_id.errors.0 %}
+        {% else %}
+        {% field "national_id" "الرقم الشخصي" value=student.national_id|mask_id disabled=True required=True dir="ltr" css="sa-span-full" error=form.national_id.errors.0 %}
+        {% endif %}
+
+        {% field "full_name" "الاسم الكامل" value=form.full_name.value placeholder="الاسم الرباعي" required=True css="sa-span-full" error=form.full_name.errors.0 %}
+        {% field "gender" "الجنس" type="select" choices="M=ذكر|F=أنثى" value=form.gender.value %}
+        {% field "nationality" "الجنسية" value=form.nationality.value|default:'قطري' placeholder="مثال: قطري" %}
+        {% field "birth_date" "تاريخ الميلاد" type="date" value=form.birth_date.value %}
+        {% field "grade" "الصف" type="select" choices=grades value=form.grade.value blank="— اختر الصف —" required=True error=form.grade.errors.0 %}
+        {% field "section" "الشعبة" value=form.section.value placeholder="مثال: أ" required=True error=form.section.errors.0 %}
+        {% field "phone" "الجوال" value=form.phone.value placeholder="مثال: 55001234" dir="ltr" %}
+        {% field "email" "البريد الإلكتروني" type="email" value=form.email.value placeholder="student@example.com" dir="ltr" %}
+
+        {% if mode == "edit" %}
+        {# ملاحظات — فقط في التعديل #}
+        {% field "notes" "ملاحظات" type="textarea" rows=3 value=form.notes.value placeholder="ملاحظات إضافية عن الطالب..." css="sa-span-full" %}
+        {% endif %}
+
+      </div>
+
+      {% if mode == "add" %}
+      {% callout "warning" %}الرقمُ الشخصيّ لا يُعدَّل بعد الحفظ؛ راجعه قبل إضافة الطالب.{% endcallout %}
+      {% endif %}
+
+      {# ── الأزرار ── #}
+      <div class="form-footer">
+        <a href="{% url 'student_affairs:student_list' %}" class="btn-secondary btn-sm">إلغاء</a>
+        <button type="submit" class="btn-primary btn-sm">
+          {% if mode == "add" %}
+            {% icon "status_success" %} إضافة الطالب
+          {% else %}
+            {% icon "status_success" %} حفظ التعديلات
+          {% endif %}
+        </button>
+      </div>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

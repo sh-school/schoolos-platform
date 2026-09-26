@@ -1,0 +1,782 @@
+{% load brand_tags %}
+{% load static dict_filters schedule_filters exemption_tags week_tags %}
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }} — {{ year }}</title>
+<style>
+  /* ── Reset & Base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Tajawal', 'Segoe UI', sans-serif;
+    color: {% brand_color "TEXT_PRIMARY" %};
+    background: {% brand_color "SURFACE" %};
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ── Print Controls — hidden when printing ── */
+  .print-controls {
+    padding: 14px 24px;
+    background: {% brand_color "SURFACE_ALT" %};
+    border-bottom: 2px solid {% brand_color "MAROON" %};
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-family: 'Tajawal', sans-serif;
+  }
+  .print-controls .print-label {
+    font-weight: 700;
+    color: {% brand_color "MAROON" %};
+    font-size: 15px;
+  }
+  .print-controls select,
+  .print-controls button {
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: 1px solid {% brand_color "BORDER_STRONG" %};
+    font-family: inherit;
+    font-size: 13px;
+    background: {% brand_color "SURFACE" %};
+  }
+  .print-controls button {
+    background: {% brand_color "MAROON" %};
+    color: {% brand_color "ON_FILL" %};
+    border: none;
+    cursor: pointer;
+    font-weight: 600;
+    padding: 8px 20px;
+  }
+  .print-controls button:hover { background: {% brand_color "MAROON_DARK" %}; }
+  .print-controls a {
+    color: {% brand_color "MAROON" %};
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .print-controls a:hover { text-decoration: underline; }
+  /* نماذجُ الاختيار في الشريط تجري مع أزراره في سطرٍ واحد. */
+  .print-controls .controls-form { display: inline; }
+  /* زرّا التصدير: كالزرّ شكلاً ورابطٌ حقيقةً — فالتنزيلُ انتقالٌ لا حدثُ زرّ. */
+  .print-controls a.btn-export {
+    border: 1px solid {% brand_color "MAROON" %};
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+  }
+  .print-controls a.btn-export:hover {
+    background: {% brand_color "MAROON" %};
+    color: {% brand_color "ON_FILL" %};
+    text-decoration: none;
+  }
+
+  /* ── Schedule Container ── */
+  .schedule-print {
+    padding: 24px;
+  }
+
+  /* ── Header ── */
+  .schedule-header {
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  /* الشعارُ فوق الاسم: ورقةٌ رسميّةٌ تُعرف من رأسها قبل أن تُقرأ. */
+  .print-emblem {
+    display: block;
+    height: 62px;
+    width: auto;
+    margin: 0 auto 6px;
+  }
+  .matrix-head .print-emblem { height: 44px; margin-bottom: 2px; }
+  @media print {
+    .print-emblem { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  }
+  .schedule-header .ministry {
+    font-size: 13px;
+    color: {% brand_color "TEXT_SECONDARY" %};
+    margin-bottom: 4px;
+  }
+  .schedule-header .school-name {
+    font-size: 22px;
+    font-weight: 700;
+    color: {% brand_color "MAROON" %};
+    margin: 6px 0;
+  }
+  .schedule-header .title {
+    font-size: 16px;
+    font-weight: 600;
+    color: {% brand_color "TEXT_PRIMARY" %};
+  }
+  .schedule-header .year {
+    font-size: 12px;
+    color: {% brand_color "TEXT_MUTED" %};
+    margin-top: 4px;
+  }
+
+  /* ── Footer ── */
+  .schedule-footer {
+    text-align: center;
+    margin-top: 16px;
+    font-size: 11px;
+    color: {% brand_color "TEXT_MUTED" %};
+    border-top: 1px solid {% brand_color "BORDER" %};
+    padding-top: 10px;
+  }
+
+  /* على الشاشة الورقةُ بعرض الإطار كلِّه. وشبكةُ المعلّم والشعبة بأبعاد الورق
+     نفسِها (pdf/week_grid_css.html)، فالمعروضُ هو المطبوع. */
+  @media screen {
+    .schedule-print { padding: 12px 14px; }
+  }
+
+  /* ── الجدول العام للمعلمين — مصفوفة: سطرٌ لكل معلّم، والأسبوعُ عرضاً ──
+     ورقةٌ من ثلاثٍ وسبعين سطراً وستٍّ وثلاثين خانة: كلُّ زخرفةٍ فيها تأكل
+     من عرض الخانة، فبقيت بالأسود والأبيض كورقة المدرسة. ── */
+  .matrix-wrap { overflow-x: auto; }
+  .schedule-matrix {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 8px;
+    color: {% brand_color "TEXT_PRIMARY" %};
+  }
+  .schedule-matrix th,
+  .schedule-matrix td {
+    border: 1px solid {% brand_color "TEXT_PRIMARY" %};
+    text-align: center;
+    padding: 0;
+    line-height: 1.35;
+    height: 13px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .schedule-matrix .m-day {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 3px 0;
+    background: {% brand_color "SURFACE" %};
+  }
+  .schedule-matrix .m-period {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 0;
+  }
+  /* عمودُ الاسم: أعرضُ الأعمدة. وأطولُ اسمٍ ثمانيةٌ وثلاثون حرفاً، فسُدُسُ
+     العرض يسعه كاملاً — ومن قُصَّ اسمه بنقاطٍ ثلاثٍ لم يجد سطره. */
+  .schedule-matrix .m-name {
+    width: 14%;
+    text-align: right;
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* تخصّصُ من أُلحق إدارياً بقسمٍ غيرِ تخصّصه — بلونٍ يفرّقه عن الاسم كي
+     يُقرأ لاحقةً لا جزءاً منه. */
+  .schedule-matrix .m-specialty {
+    color: {% brand_color "MAROON" %};
+    font-weight: 500;
+    font-size: 7px;
+  }
+  /* والسطرُ الذي يحمل تاجاً يُصغَّر حرفُه درجةً: خانةُ الاسم أربعةَ عشرَ في
+     المئة، والاسمُ مع التاج كان يتجاوزها تسعةَ بكسلاتٍ فيقصّه `ellipsis`.
+     وسبعةٌ ونصفٌ لا ثمانية: عند الثمانية يفيض بكسلٌ واحدٌ وحدَه، وهامشُ بكسلٍ
+     يسقط بأوّل خطٍّ يختلف قياسُه في مولّد PDF.
+     وصنفٌ على الخانة أسلمُ من `:has()` — فمولّدُ PDF لا يضمنه. */
+  /* والصنفان معاً في المُحدِّد: `.m-name` و`.m-name-tagged` متساويا الوزن
+     (0,2,0)، والأوّلُ يسبق في الملفّ فيغلب — فلا يقع أثرُ الثاني. */
+  .schedule-matrix .m-name.m-name-tagged { font-size: 7.5px; }
+
+  /* عمودُ القسم: خانةٌ واحدةٌ ممتدّةٌ على سطور معلّميه — والسطورُ مرتّبةٌ
+     بالقسم أصلاً فلا تنقطع مجموعته. واسمُه يُكتب مرّةً لا في كلِّ سطر.
+     والخمسةُ في المئة عشرون ملّيمتراً على A3 عرضيّة: يسعُ أطولَ الأسماء
+     («التكنولوجيا وعلوم الحاسب») في سطرين، وأقصرَها في سطر. ولفُّ النصّ
+     مسموحٌ هنا وحدَه — وسائرُ الخانات سطرٌ لا يُلَفّ. */
+  .schedule-matrix .m-dept {
+    width: 5%;
+    font-size: 8px;
+    font-weight: 700;
+    padding: 1px 3px;
+    line-height: 1.2;
+    white-space: normal;
+    vertical-align: middle;
+    border-right-width: 2px;
+  }
+  /* عرضُ الخانة نقص من 2.328% إلى 2.214% ليُفسح لعمود القسم: تسعةُ
+     ملّيمتراتٍ تسعُ «11/2» في ثمانية — والورقةُ لم تزدد عرضاً ولا سطراً. */
+  .schedule-matrix .m-cell { width: 2.214%; direction: ltr; position: relative; }
+  {% comment %}
+  نقطةُ تفريغٍ صغيرةٌ في زاوية الخليّة الفارغة (قرارُ 2026-09-18) — القراراتُ
+  الثلاثةُ الملوَّنة وحدها (`operations.schedule_paper.EXEMPTION_COLORS`).
+  صنفٌ لا `:has()` (مولّدُ PDF لا يضمنه، انظر تعليق `.m-name.m-name-tagged`
+  أعلاه)، ولونُها من `core.brand` لا `var()` — القاعدةُ نفسُها في هذا الملفّ.
+  {% endcomment %}
+  .m-exempt-dot {
+    position: absolute; top: 0; left: 0;
+    inline-size: 6.5px; block-size: 6.5px; line-height: 6.5px;
+    font-size: 5px; font-weight: 700; text-align: center;
+    color: {% brand_color "ON_FILL" %};
+    border-radius: 0 0 2px 0;
+  }
+  .m-exempt-dot.exempt-ministry,   .matrix-legend__swatch.exempt-ministry   { background: {% brand_color "ACCENT_SKY" %}; }
+  .m-exempt-dot.exempt-school,     .matrix-legend__swatch.exempt-school     { background: {% brand_color "ACCENT_ROSE" %}; }
+  .m-exempt-dot.exempt-department, .matrix-legend__swatch.exempt-department { background: {% brand_color "ACCENT_GREEN" %}; }
+  .matrix-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 9px; color: {% brand_color "TEXT_PRIMARY" %}; margin-top: 4px; }
+  .matrix-legend__item { display: inline-flex; align-items: center; gap: 4px; }
+  .matrix-legend__swatch {
+    display: inline-block; inline-size: 9px; block-size: 9px; line-height: 9px;
+    font-size: 6px; font-weight: 700; text-align: center;
+    color: {% brand_color "ON_FILL" %}; border-radius: 2px;
+  }
+  {% comment %}
+  الأسبوعُ الفعليّ: خانةُ حصّةٍ حُوّل معلّمُها تُلوَّن وتُثقَّل (والثقلُ يبقى على طابعةٍ بالأبيض والأسود)،
+  ومفتاحُها أسفل الجدول وتفسيرُها «عن فلان» في بطاقة الخانة على الشاشة. والمحدِّدُ أثقلُ من لون القسم
+  (`tbody tr.dept-x td`) بصنفٍ زائد — وإلّا غلبها لونُ القسم.
+  {% endcomment %}
+  .schedule-matrix tbody td.m-cell.mk-cover, .matrix-legend__swatch.mk-cover { background: {% brand_color "STATUS_WARNING_BG" %}; }
+  .schedule-matrix tbody td.m-cell.mk-swap,  .matrix-legend__swatch.mk-swap  { background: {% brand_color "STATUS_INFO_BG" %}; }
+  .schedule-matrix tbody td.m-cell.mk-comp,  .matrix-legend__swatch.mk-comp  { background: {% brand_color "STATUS_SUCCESS_BG" %}; }
+  .schedule-matrix tbody td.m-cell.mk-cover, .schedule-matrix tbody td.m-cell.mk-swap,
+  .schedule-matrix tbody td.m-cell.mk-comp { font-weight: 700; }
+  .matrix-legend__swatch.mk-cover, .matrix-legend__swatch.mk-swap, .matrix-legend__swatch.mk-comp { border: 1px solid {% brand_color "BORDER_STRONG" %}; }
+  .matrix-note { font-size: 9px; color: {% brand_color "TEXT_PRIMARY" %}; margin-top: 3px; }
+  .schedule-matrix .m-total { width: 3.5%; font-weight: 700; }
+  /* حدُّ اليوم أغلظُ من حدِّ الحصّة — وإلّا ضاعت الأيامُ في خمسٍ وثلاثين
+     خانةً متشابهة. والجهةُ هنا ماديّةٌ (يمين) لا منطقيّة: خانةُ الحصّة
+     `direction: ltr` كي لا يقلب المحرّكُ رمز الشعبة، و`inline-start`
+     تنقلب معها فيقع حدُّ اليوم بين الحصّة الأولى والثانية — أي خارج
+     اليوم الذي يحدّه. */
+  .schedule-matrix .m-day-start { border-right-width: 2px; }
+  .schedule-matrix thead th { border-bottom-width: 2px; }
+  .schedule-matrix .m-name,
+  .schedule-matrix .m-total { border-right-width: 2px; }
+  /* ── فرزُ الأقسام لوناً ──
+     السطورُ مرتّبةٌ بالقسم أصلاً، واللونُ يفصل بينها بلا شريطِ عنوانٍ يأكل
+     سطراً ولا عمودٍ يأكل عرضاً. والألوانُ فاتحةٌ كي يبقى الأسودُ مقروءاً
+     فوقها، ومتباعدةٌ في الدرجة بين كلّ قسمين متجاورين في الترتيب. */
+  .schedule-matrix tbody tr.dept-sharia       td { background: {% brand_color "DEPT_SHARIA" %}; }
+  .schedule-matrix tbody tr.dept-arabic       td { background: {% brand_color "DEPT_ARABIC" %}; }
+  .schedule-matrix tbody tr.dept-math         td { background: {% brand_color "DEPT_MATH" %}; }
+  .schedule-matrix tbody tr.dept-english      td { background: {% brand_color "DEPT_ENGLISH" %}; }
+  .schedule-matrix tbody tr.dept-science_prep td { background: {% brand_color "DEPT_SCIENCE" %}; }
+  .schedule-matrix tbody tr.dept-science_sec  td { background: {% brand_color "DEPT_BIOLOGY" %}; }
+  .schedule-matrix tbody tr.dept-chemistry    td { background: {% brand_color "DEPT_CHEMISTRY" %}; }
+  .schedule-matrix tbody tr.dept-physics      td { background: {% brand_color "DEPT_PHYSICS" %}; }
+  .schedule-matrix tbody tr.dept-social       td { background: {% brand_color "DEPT_SOCIAL" %}; }
+  .schedule-matrix tbody tr.dept-tech         td { background: {% brand_color "DEPT_TECH" %}; }
+  .schedule-matrix tbody tr.dept-business     td { background: {% brand_color "DEPT_BUSINESS" %}; }
+  .schedule-matrix tbody tr.dept-pe           td { background: {% brand_color "DEPT_PE" %}; }
+  .schedule-matrix tbody tr.dept-arts         td { background: {% brand_color "DEPT_ARTS" %}; }
+  .schedule-matrix tbody tr.dept-life_skills  td { background: {% brand_color "DEPT_LIFE_SKILLS" %}; }
+  .schedule-matrix tbody tr.dept-other        td { background: {% brand_color "DEPT_OTHER" %}; }
+  /* رموزُ جدول الأقسام المسجَّل — وما فوقها رموزُ الاشتقاق الاحتياطيّ. */
+  .schedule-matrix tbody tr.dept-islamic      td { background: {% brand_color "DEPT_SHARIA" %}; }
+  .schedule-matrix tbody tr.dept-science      td { background: {% brand_color "DEPT_SCIENCE" %}; }
+  .schedule-matrix tbody tr.dept-biology      td { background: {% brand_color "DEPT_BIOLOGY" %}; }
+  .schedule-matrix tbody tr.dept-art          td { background: {% brand_color "DEPT_ARTS" %}; }
+  /* سطرُ المجموع: أبيضُ بلا لونِ قسمٍ — فهو للجدول كلّه لا لقسمٍ منه. */
+  .schedule-matrix tfoot td {
+    background: {% brand_color "SURFACE" %};
+    font-weight: 700;
+    border-top-width: 2px;
+  }
+  /* خانةٌ دون المتوقَّع = شعبةٌ بلا معلّم في تلك الحصّة. والعلامةُ لونٌ
+     وخطٌّ تحته معاً: اللونُ يضيع على طابعةٍ بالأبيض والأسود، والخطُّ يبقى. */
+  .schedule-matrix tfoot td.m-short {
+    color: {% brand_color "STATUS_DANGER_FG" %};
+    text-decoration: underline;
+  }
+  .matrix-empty {
+    text-align: center;
+    padding: 40px 0;
+    color: {% brand_color "TEXT_MUTED" %};
+    font-size: 14px;
+  }
+  /* ترويسةُ الجدول العام: اسمُ المدرسة سطرٌ صغير، والعنوانُ كبيرٌ تحته. وعلى الشاشة داخل إطار المنصّة تُخفى:
+     عنوانُ الصفحة فوقها يقول ما فيها، وشعارُ المدرسة واسمُها للورق (الطباعة وPDF) — «ما على الشاشة يطابق
+     ما يُطبع» (D-16، 7.7). والورقةُ المستقلّةُ المفتوحةُ مباشرةً تبقى بترويستها. */
+  .matrix-head { text-align: center; margin-bottom: 8px; }
+  .matrix-head .ministry { font-size: 11px; color: {% brand_color "TEXT_PRIMARY" %}; }
+  .matrix-head .title { font-size: 26px; font-weight: 700; color: {% brand_color "TEXT_PRIMARY" %}; margin: 2px 0; }
+  @media screen { .is-embed .matrix-head { display: none; } }
+  /* سطرُ «الوزارة | العام | الأسبوع» تحت الجدول لا فوقه، قبل ذيله. */
+  .matrix-sub { text-align: center; font-size: 11px; color: {% brand_color "TEXT_PRIMARY" %}; margin-top: 6px; }
+  .matrix-foot .foot-short { color: {% brand_color "STATUS_DANGER_FG" %}; font-weight: 700; }
+  .matrix-foot {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: {% brand_color "TEXT_PRIMARY" %};
+    margin-top: 6px;
+  }
+
+  /* ── Print Styles ── */
+  @media print {
+    .print-controls { display: none !important; }
+    body { margin: 0; padding: 0; }
+    .schedule-print { padding: 8mm; }
+
+    @page {
+      margin: 12mm;
+    }
+  }
+
+  {% if view_type == 'teacher' or view_type == 'class' %}
+  /* جدولُ معلّمٍ أو شعبة: ورقةٌ واحدةٌ بالملّيمتر (operations/schedule_paper.py)،
+     وبين الحصص الفسحةُ والصلاة (pdf/week_grid.html).
+
+     وكانت الورقةُ عموداً مرناً والجدولُ `flex: 1; height: 1px` يأخذ ما بقي بعد
+     الرأس والذيل — يمتدّ في المتصفّح ولا يمتدّ في مولّد PDF (WeasyPrint 70)،
+     فيشغل الجدولُ في الملفّ ثُلثَ الورقة وتحته فراغ (بلاغ 2026-09-14). فالرأسُ
+     والذيلُ الآن ثابتا الارتفاع، وارتفاعُ الصفّ ما بقي مقسوماً على الأيّام. */
+{% include "schedule/pdf/week_grid_css.html" %}
+  @page { size: {% if paper == 'a3' %}A3{% else %}A4{% endif %} {{ orient }}; margin: {{ geo.css.margin }}; }
+  @media print {
+    html, body { height: auto; }
+    .schedule-print { padding: 0; }
+    .schedule-header { height: {{ geo.css.header_h }}; margin: 0 0 {{ geo.css.gap }}; overflow: hidden; box-sizing: border-box; }
+    .print-emblem { height: {% if orient == 'landscape' %}11mm{% else %}14mm{% endif %}; margin-bottom: 0.5mm; }
+    .schedule-header .ministry, .schedule-header .year { font-size: 7.5pt; line-height: 3.2mm; margin: 0; }
+    .schedule-header .school-name { font-size: 12pt; line-height: 5.4mm; margin: 0; }
+    .schedule-header .title { font-size: 10pt; line-height: 4.4mm; margin: 0; }
+    .schedule-footer { height: {{ geo.css.footer_h }}; margin-top: {{ geo.css.gap }}; padding-top: 1.2mm; box-sizing: border-box; overflow: hidden; font-size: 6.5pt; line-height: 1.45; }
+  }
+  {% endif %}
+
+  {% if view_type == 'all_teachers' %}
+  /* الورقةُ عرضيّةٌ لأنّ الأسبوع خمسةٌ وثلاثون عموداً — ولا يُطبع عمودياً. */
+  @page { size: {% if paper == 'a3' %}A3{% else %}A4{% endif %} {{ orient }}; margin: 7mm; }
+  @media print {
+    .schedule-print { padding: 0; }
+    /* التمريرُ الأفقيّ للشاشة وحدها — وهو في الورق يحجز علوّاً فارغاً
+       فوق الجدول فيدفع آخره إلى ورقةٍ ثانية. */
+    .matrix-wrap { overflow: visible; }
+    /* ثلاثةٌ وسبعون سطراً على ورقة A3 عرضيّة: القياسُ محسوبٌ ليملأ الورقة
+       ولا يفيض عنها — ومن زاد عددُ معلّميه انتقل الفائضُ إلى ورقةٍ ثانية
+       بترويسةٍ متكرّرة. */
+    .schedule-matrix { font-size: 7.5px; }
+    .schedule-matrix th, .schedule-matrix td { height: auto; line-height: 1.3; }
+    .schedule-matrix .m-name { font-size: 8px; }
+    /* أصغرُ من اسم المعلّم بدرجة: خانةُ قسمٍ من سطرٍ واحد (إدارة الأعمال
+       معلّمٌ واحد) لا تُطيل سطرها فتدفع آخرَ الورقة إلى ورقةٍ ثانية. */
+    .schedule-matrix .m-dept { font-size: 7px; padding: 0 2px; }
+    .schedule-matrix .m-day { font-size: 12px; padding: 2px 0; }
+    .schedule-matrix .m-period { font-size: 9px; }
+    /* ترويسةُ الأيام والحصص تتكرّر مع الصفحة إن فاض الجدول عن ورقة. */
+    .schedule-matrix thead { display: table-header-group; }
+    .schedule-matrix tr { break-inside: avoid; }
+    .matrix-foot { font-size: 8px; }
+  }
+  /* على الشاشة الورقةُ بعرض الإطار كلِّه: هامشٌ صغير، والخطُّ يكبر مع العرض
+     (على 2560px تصير الخانةُ مقروءةً بلا تكبير) ولا يتجاوز سقفاً يُبقي
+     الأسبوعَ في سطرٍ واحد. والطباعةُ على قياسها المحسوب لا تُمَسّ. */
+  @media screen {
+    .schedule-print { padding: 10px 12px; }
+    .schedule-matrix { font-size: clamp(8px, 0.5vw, 12px); }
+    .schedule-matrix .m-name { font-size: clamp(9px, 0.56vw, 13px); }
+    .schedule-matrix .m-dept, .schedule-matrix .m-period { font-size: clamp(8px, 0.5vw, 12px); }
+    .schedule-matrix .m-day { font-size: clamp(11px, 0.7vw, 16px); }
+    .schedule-matrix th, .schedule-matrix td { height: auto; line-height: 1.5; }
+  }
+  {% endif %}
+</style>
+{% comment %}
+خطُّ الورقة تجوّل — على الشاشة من `/static/`، وفي PDF من القرص.
+
+و`{% static %}` يُخرج رابطاً نسبيّاً على الويب (`/static/…`)، ومولّدُ PDF
+يقرأ من القرص لا من الخادم فلا يجده ويسقط صامتاً إلى خطٍّ آخر. وهو يحقن
+`@font-face` بمسارات القرص المطلقة من نفسه — ما لم يجد في الصفحة
+`@font-face` باسم الخطّ، فيظنّها كافيةً ويكفّ. فتُحذف هنا في مسار PDF
+ليعمل حقنُه، وتبقى على الشاشة حيث الرابطُ الوحيدُ الذي يعمل.
+{% endcomment %}
+{% if not for_pdf %}
+  <style>
+    @font-face{font-family:'Tajawal';font-weight:400;font-display:swap;src:url("{% static 'fonts/Tajawal-Regular.woff2' %}") format('woff2');}
+    @font-face{font-family:'Tajawal';font-weight:500;font-display:swap;src:url("{% static 'fonts/Tajawal-Medium.woff2' %}") format('woff2');}
+    @font-face{font-family:'Tajawal';font-weight:700;font-display:swap;src:url("{% static 'fonts/Tajawal-Bold.woff2' %}") format('woff2');}
+  </style>
+{% endif %}
+{% comment %}
+── طبقةُ التفاعل: نمطُها ──
+داخل إطار المنصّة وحدَه (`embed`)، وعلى الشاشة وحدَها (`@media screen`) —
+فالمطبوعُ وملفُّ PDF لا يريان منها محرفاً. وألوانُها فاتحةٌ دائماً: الورقةُ
+بيضاءُ ولو كانت المنصّةُ في وضعها الليليّ.
+{% endcomment %}
+{% if embed and view_type == 'all_teachers' %}
+<style>
+@media screen {
+  /* شريطُ الإرشاد: سطرٌ يقول ما تفعله اليدُ قبل أن تجرّب. */
+  .mx-hint {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    font-size: 11px; color: {% brand_color "TEXT_SECONDARY" %}; margin: 0 0 6px; padding: 5px 8px;
+    background: {% brand_color "SURFACE_ALT" %}; border: 1px solid {% brand_color "BORDER" %}; border-radius: 6px;
+  }
+  .mx-hint b { color: {% brand_color "MAROON" %}; font-weight: 700; }
+  .mx-hint .mx-clear {
+    margin-inline-start: auto; border: 1px solid {% brand_color "BORDER_STRONG" %}; background: {% brand_color "SURFACE" %};
+    border-radius: 5px; padding: 2px 10px; font: inherit; color: {% brand_color "TEXT_SECONDARY" %}; cursor: pointer;
+  }
+  .mx-hint .mx-clear:hover { background: {% brand_color "BORDER" %}; border-color: {% brand_color "MAROON" %}; color: {% brand_color "MAROON" %}; }
+  .mx-hint[hidden] { display: none; }
+
+  .schedule-matrix { cursor: default; }
+  .schedule-matrix tbody td { transition: background-color .08s linear; }
+
+  /* ── التقاطع: الصفُّ بالمرور، والعمودُ بسمةٍ على الجدول ──
+     وألوانُ الأقسام مصبوبةٌ على `tbody tr.dept-x td`، فرفعُ الوزن هنا
+     ضرورةٌ لا زينة — وإلّا غلبَ لونُ القسمِ الإضاءةَ. */
+  .schedule-matrix tbody tr:hover > td { background: {% brand_color "STATUS_WARNING_BG" %}; }
+  .schedule-matrix[data-hl-col="0"] td[data-col="0"], .schedule-matrix[data-hl-col="1"] td[data-col="1"],
+  .schedule-matrix[data-hl-col="2"] td[data-col="2"], .schedule-matrix[data-hl-col="3"] td[data-col="3"],
+  .schedule-matrix[data-hl-col="4"] td[data-col="4"], .schedule-matrix[data-hl-col="5"] td[data-col="5"],
+  .schedule-matrix[data-hl-col="6"] td[data-col="6"], .schedule-matrix[data-hl-col="7"] td[data-col="7"],
+  .schedule-matrix[data-hl-col="8"] td[data-col="8"], .schedule-matrix[data-hl-col="9"] td[data-col="9"],
+  .schedule-matrix[data-hl-col="10"] td[data-col="10"], .schedule-matrix[data-hl-col="11"] td[data-col="11"],
+  .schedule-matrix[data-hl-col="12"] td[data-col="12"], .schedule-matrix[data-hl-col="13"] td[data-col="13"],
+  .schedule-matrix[data-hl-col="14"] td[data-col="14"], .schedule-matrix[data-hl-col="15"] td[data-col="15"],
+  .schedule-matrix[data-hl-col="16"] td[data-col="16"], .schedule-matrix[data-hl-col="17"] td[data-col="17"],
+  .schedule-matrix[data-hl-col="18"] td[data-col="18"], .schedule-matrix[data-hl-col="19"] td[data-col="19"],
+  .schedule-matrix[data-hl-col="20"] td[data-col="20"], .schedule-matrix[data-hl-col="21"] td[data-col="21"],
+  .schedule-matrix[data-hl-col="22"] td[data-col="22"], .schedule-matrix[data-hl-col="23"] td[data-col="23"],
+  .schedule-matrix[data-hl-col="24"] td[data-col="24"], .schedule-matrix[data-hl-col="25"] td[data-col="25"],
+  .schedule-matrix[data-hl-col="26"] td[data-col="26"], .schedule-matrix[data-hl-col="27"] td[data-col="27"],
+  .schedule-matrix[data-hl-col="28"] td[data-col="28"], .schedule-matrix[data-hl-col="29"] td[data-col="29"],
+  .schedule-matrix[data-hl-col="30"] td[data-col="30"], .schedule-matrix[data-hl-col="31"] td[data-col="31"],
+  .schedule-matrix[data-hl-col="32"] td[data-col="32"], .schedule-matrix[data-hl-col="33"] td[data-col="33"],
+  .schedule-matrix[data-hl-col="34"] td[data-col="34"] { background: {% brand_color "STATUS_WARNING_BG" %}; }
+
+  /* ── التثبيت: الشعبةُ المثبَّتةُ تُضاء وما عداها يخفت ── */
+  .schedule-matrix.has-pin tbody td { opacity: .34; }
+  .schedule-matrix.has-pin tbody td.is-pin {
+    opacity: 1; background: {% brand_color "MAROON" %}; color: {% brand_color "ON_FILL" %}; font-weight: 700;
+    box-shadow: inset 0 0 0 1px {% brand_color "SURFACE" %};
+  }
+  .schedule-matrix.has-pin tbody tr.is-pin-row > td { opacity: 1; }
+  .schedule-matrix.has-pin tbody tr.is-pin-row > td.m-name,
+  .schedule-matrix.has-pin tbody tr.is-pin-row > td.m-total { background: {% brand_color "MAROON" %}; color: {% brand_color "ON_FILL" %}; }
+  /* والتاجُ عنّابيٌّ على الأبيض — فإذا ثُبِّت السطرُ صارت الخلفيّةُ عنّابيّةً
+     واختفى التاجُ في لونها. فيُقلَب فاتحاً ما دام السطرُ مثبَّتاً. */
+  .schedule-matrix.has-pin tbody tr.is-pin-row > td.m-name .m-specialty { color: {% brand_color "MAROON_BORDER" %}; }
+
+  /* ── البحث: غيرُ المطابق يخفت ولا يختفي — فالسطرُ يبقى في موضعه ── */
+  .schedule-matrix tbody tr.is-dim > td { opacity: .18; }
+
+  /* ── الخانةُ المركَّزةُ بلوحة المفاتيح ── */
+  .schedule-matrix td.is-focus { outline: 2px solid {% brand_color "MAROON" %}; outline-offset: -2px; }
+
+  /* ── البطاقة ── */
+  .mx-tip {
+    position: fixed; z-index: 60; max-width: 320px; pointer-events: none;
+    background: {% brand_color "SURFACE" %}; color: {% brand_color "TEXT_PRIMARY" %}; border: 1px solid {% brand_color "MAROON" %};
+    border-radius: 8px; padding: 8px 11px; font-size: 12px; line-height: 1.7;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18); opacity: 0;
+    transition: opacity .1s linear;
+  }
+  .mx-tip.is-on { opacity: 1; }
+  .mx-tip .t-head { font-weight: 700; color: {% brand_color "MAROON" %}; border-bottom: 1px solid {% brand_color "BORDER" %}; padding-bottom: 3px; margin-bottom: 4px; }
+  .mx-tip .t-line { display: block; }
+  .mx-tip .t-muted { color: {% brand_color "TEXT_MUTED" %}; font-size: 11px; }
+  .mx-tip .t-spec { color: {% brand_color "MAROON" %}; font-weight: 500; }
+  .mx-tip .t-free { color: {% brand_color "STATUS_SUCCESS_DARK" %}; font-weight: 600; }
+  .mx-tip .t-none { color: {% brand_color "STATUS_DANGER_FG" %}; font-weight: 600; }
+
+  .mx-sr {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
+
+  /* ── الهاتف: الورقةُ تُمرَّر ولا تُحشر (قرار 2026-09-13، الخيارُ أ) ──
+     الجدولُ `width: 100%` بتخطيطٍ ثابت: ستٌّ وثلاثون خانةً في عرض الإطار،
+     فكانت الخانةُ على 390px ثمانيةَ بكسلاتٍ وخطُّها 8px — «10.» و«9.4» مقطوعة،
+     والأسماءُ مقطوعةٌ بـ«…». و`.matrix-wrap` تُمرِّر أصلاً، لكنّ الجدولَ لم
+     يتجاوزها قطّ فلم يكن ما يُمرَّر.
+     فيأخذ الجدولُ عرضَه الطبيعيَّ بخطٍّ مقروء، ويُمرَّر أفقيّاً، ويثبت عمودا
+     القسم والمعلّم فلا يضيع السطرُ عن صاحبه. والطباعةُ وملفُّ PDF لا يريان
+     هذا: الكتلةُ داخل `embed` و`@media screen`. */
+  @media (max-width: 900px) {
+    .schedule-matrix {
+      table-layout: auto;
+      width: max-content;
+      min-width: 100%;
+      font-size: 12px;
+    }
+    .schedule-matrix th, .schedule-matrix td { padding: 2px 3px; line-height: 1.6; }
+    .schedule-matrix .m-cell { min-width: 30px; }
+    .schedule-matrix .m-day { font-size: 13px; }
+    .schedule-matrix .m-period { font-size: 11px; }
+
+    /* العمودان المثبَّتان — والعرضُ صريحٌ لأنّ إزاحةَ الثاني تُحسب منه. */
+    .schedule-matrix .m-dept {
+      position: sticky; inset-inline-start: 0; z-index: 3;
+      width: 60px; min-width: 60px; max-width: 60px;
+      font-size: 10px;
+    }
+    /* والاسمُ ينكسر سطرين ولا يُقصّ: «ومن قُصَّ اسمه بنقاطٍ ثلاثٍ لم يجد سطره»
+       (أعلاه). والسطرُ يطول قليلاً — وذاك أهونُ من اسمٍ لا يُقرأ. */
+    .schedule-matrix .m-name {
+      position: sticky; inset-inline-start: 60px; z-index: 3;
+      width: 150px; min-width: 150px; max-width: 150px;
+      font-size: 12.5px;
+      white-space: normal; overflow: visible; text-overflow: clip;
+      line-height: 1.35;
+    }
+    .schedule-matrix .m-name.m-name-tagged { font-size: 11px; }
+    /* الخلايا المثبَّتة معتمةٌ وإلّا مرّت الخاناتُ من تحتها مرئيّة. وخلايا
+       الجسم تحمل لونَ قسمها من `tbody tr.dept-x td`، والرأسُ والذيلُ أبيضان. */
+    .schedule-matrix thead .m-dept,
+    .schedule-matrix thead .m-name,
+    .schedule-matrix tfoot .m-name { background: {% brand_color "SURFACE" %}; }
+    /* مجموعُ الحصص يمتدّ على العمودين، فيثبت عند الحافّة كأنّهما واحد. */
+    .schedule-matrix tfoot .m-name[colspan] { inset-inline-start: 0; width: 210px; min-width: 210px; max-width: 210px; }
+  }
+}
+</style>
+{% endif %}
+</head>
+{% comment %}
+`data-pdf-own-page`: الورقةُ تحمل ترويستها وذيلها و@page بنفسها، فلا يحقن
+مولّدُ PDF ترويسةً ثانيةً ولا حجمَ ورقٍ يخالف المختار. و`{# #}` لا تمتدّ
+سطرين في Django — فما امتدّ منها ظهر نصّاً في رأس الورقة.
+{% endcomment %}
+<body data-pdf-own-page class="sheet-{{ orient }}{% if embed %} is-embed{% endif %}">
+{% include "components/app_back_bar.html" %}
+
+{# ── Print Controls (hidden in print) ── #}
+{# داخل صفحة العرض في المنصّة تُخفى الأدوات: أدواتُ الصفحة الحاضنة تكفي. #}
+{% if not embed %}
+<div class="print-controls">
+  <span class="print-label">طباعة الجدول</span>
+
+  {# قائمة الاختيار لمن يتصفّح غيره وحده — وعرضُها على المعلّم أداةٌ لا تعمل له #}
+  {% if may_browse %}
+  <form id="schedule-view-form" method="get" class="controls-form">
+    <input type="hidden" name="view" value="{{ view_type }}">
+    <input type="hidden" name="teacher" value="{% if target_teacher %}{{ target_teacher.id }}{% endif %}">
+    <input type="hidden" name="class" value="{% if target_class %}{{ target_class.id }}{% endif %}">
+    <input type="hidden" name="paper" value="{{ paper }}">
+    <input type="hidden" name="year" value="{{ year }}">
+    {% include "schedule/partials/carry_fields.html" %}
+
+    <select id="schedule-view-select" data-call-change="submitScheduleView" title="نوع العرض">
+      <option data-view="all_teachers"
+        {% if view_type == 'all_teachers' %}selected{% endif %}>الجدول العام للمعلمين</option>
+      <option disabled>── معلم ──</option>
+      {% for t in teachers %}
+      <option data-view="teacher" data-teacher="{{ t.id }}"
+        {% if target_teacher and target_teacher.id == t.id %}selected{% endif %}>{{ t.full_name }}</option>
+      {% endfor %}
+      <option disabled>── فصل ──</option>
+      {% for c in classes %}
+      <option data-view="class" data-class="{{ c.id }}"
+        {% if target_class and target_class.id == c.id %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  <script nonce="{{ request.csp_nonce }}">
+    window.submitScheduleView = function (select) {
+      var form = document.getElementById('schedule-view-form');
+      var option = select.options[select.selectedIndex];
+
+      form.elements.view.value = option.dataset.view || 'all_teachers';
+      form.elements.teacher.value = option.dataset.teacher || '';
+      form.elements['class'].value = option.dataset.class || '';
+      form.submit();
+    };
+  </script>
+  {% endif %}
+
+  <form method="get" class="controls-form">
+    <input type="hidden" name="view" value="{{ view_type }}">
+    {% if target_teacher %}<input type="hidden" name="teacher" value="{{ target_teacher.id }}">{% endif %}
+    {% if target_class %}<input type="hidden" name="class" value="{{ target_class.id }}">{% endif %}
+    <input type="hidden" name="year" value="{{ year }}">
+    {% include "schedule/partials/carry_fields.html" %}
+    <select name="paper" data-autosubmit title="حجم الورق">
+      <option value="a4" {% if paper == 'a4' %}selected{% endif %}>{% if view_type == 'all_teachers' %}A4 أفقي{% else %}A4 عمودي{% endif %}</option>
+      <option value="a3" {% if paper == 'a3' %}selected{% endif %}>A3 أفقي</option>
+    </select>
+  </form>
+
+
+  <button data-action="print">طباعة</button>
+  {% comment %}التصديرُ من صفحة الجدول في المنصّة بالاختيار نفسِه: الورقةُ بلا ترويسةٍ ولا إشعارٍ عائم،
+  فتُفتح الصفحةُ ويبدأ التصديرُ فيها (`export=`، schedule-export.js) — لا صفحةَ متابعة.{% endcomment %}
+  <a class="btn-export" href="{% url 'weekly_schedule' %}?{{ selection_query }}&amp;export=pdf">تصدير PDF</a>
+  <a class="btn-export" href="{% url 'weekly_schedule' %}?{{ selection_query }}&amp;export=excel">تصدير Excel</a>
+  {# صفحةٌ لكلّ معلّم مرتّبةً بالأقسام — ورقةُ المنسّق. زرّان باسم المطلوب لا رابطٌ عامّ. #}
+  {% if may_browse %}
+  <a class="btn-export" href="{% url 'schedule_pages' %}?kind=teachers&amp;year={{ year }}">جداول المعلّمين</a>
+  <a class="btn-export" href="{% url 'schedule_pages' %}?kind=classes&amp;year={{ year }}">جداول الشُّعب</a>
+  {% endif %}
+  <a href="{% url 'weekly_schedule' %}">رجوع للجدول</a>
+</div>
+{% endif %}
+
+{# ── Printable Content ── #}
+<div class="schedule-print">
+
+{% if view_type == 'all_teachers' %}
+{# ── الجدول العام للمعلمين: صفٌّ لكل معلّم، والأسبوعُ خمسةٌ وثلاثون عموداً ── #}
+  <div class="matrix-head">
+    <img class="print-emblem" src="{% if for_pdf %}static/brand/logoMaroon.png{% else %}{% static 'brand/logoMaroon.png' %}{% endif %}" alt="شعار {{ school.name }}" width="295" height="295">
+    <div class="ministry">{{ school.name }}</div>
+    <h1 class="title">الجدول العام للمعلمين</h1>
+  </div>
+
+  {% if matrix %}
+  <div class="matrix-wrap">
+  <table class="schedule-matrix">
+    <thead>
+      <tr>
+        <th class="m-dept" rowspan="2">القسم</th>
+        <th class="m-name" rowspan="2">المعلّم</th>
+        {% for day_num, day_name in days %}
+        <th class="m-day m-day-start" colspan="7">{{ day_name }}</th>
+        {% endfor %}
+        <th class="m-total" rowspan="2">النصاب</th>
+      </tr>
+      <tr>
+        {% for day_num, day_name in days %}
+          {% for n in period_numbers %}
+          <th class="m-period{% if forloop.first %} m-day-start{% endif %}">{{ n }}</th>
+          {% endfor %}
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in matrix %}
+      {# لونُ السطر هو قسمُ المعلّم — والسطورُ آتيةٌ مرتّبةً بالقسم من الخدمة. #}
+      {# و`data-*` غذاءُ طبقةِ التفاعل على الشاشة — تُقرأ ولا تُطبع. #}
+      <tr class="dept-{{ row.department.code }}" data-teacher="{{ row.teacher.full_name }}"
+          data-dept="{{ row.department.name }}" data-total="{{ row.total }}"
+          data-specialty="{{ row.specialty }}">
+        {% if row.dept_span %}<td class="m-dept" rowspan="{{ row.dept_span }}">{{ row.department.name }}</td>{% endif %}
+        {# ومن أُلحق إدارياً بقسمٍ غيرِ تخصّصه يحمل تخصّصَه لاحقةً — انظر `attached_specialty`. #}
+        <td class="m-name{% if row.specialty %} m-name-tagged{% endif %}" title="{{ row.teacher.full_name }} — قسم {{ row.department.name }}{% if row.specialty %} — تخصّصه {{ row.specialty }}{% endif %}">{{ row.teacher.full_name }}{% if row.specialty %} <span class="m-specialty">({{ row.specialty }})</span>{% endif %}</td>
+        {% for day in row.days %}
+          {% for cell in day %}
+          {# رقمُ العمود في الأسبوع كلِّه (0–34) — اليومُ سبعُ حصص. #}
+          {% widthratio forloop.parentloop.counter0 1 7 as day_offset %}
+          {% with kind=cell|cell_kind %}
+          <td class="m-cell{% if forloop.first %} m-day-start{% endif %}{% if kind %} mk-{{ kind }}{% endif %}" data-col="{{ day_offset|add:forloop.counter0 }}"{% if cell %} data-c="{% for slot in cell %}{{ slot.class_group.short_code }}{% if not forloop.last %} {% endif %}{% endfor %}" data-s="{% for slot in cell %}{{ slot.cell_subject|default:slot.subject.name_ar|default:"—" }} — {{ slot.class_group.short_label }}{% if slot.note %} — {{ slot.note }}{% endif %}{% if not forloop.last %} · {% endif %}{% endfor %}"{% endif %}>
+            {% if cell %}{% for slot in cell %}{{ slot.class_group.short_code }}{% if not forloop.last %} {% endif %}{% endfor %}{% else %}{% exempt_dot row.exempt_map forloop.parentloop.counter0 forloop.counter0|add:1 %}{% endif %}
+          </td>
+          {% endwith %}
+          {% endfor %}
+        {% endfor %}
+        <td class="m-total">{{ row.total }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    {% if matrix_totals %}
+    <tfoot>
+      {% comment %}
+        العددُ حصصٌ منعقدة، والتعليمُ على تغطية الشُّعب لا على العدد: عمودٌ فيه
+        ازدواجٌ اختياريٌّ يبلغ خمسةً وعشرين وفيه شعبةٌ بلا درس — فيُعلَّم وإن
+        بلغ العدد. و`{# #}` لا تمتدّ سطرين في Django، فما امتدّ منها تسرّب
+        نصّاً داخل الجدول ورفعه المحلّلُ فوقه.
+      {% endcomment %}
+      <tr>
+        <td class="m-name" colspan="2" title="عدد الشعب المجدولة: {{ matrix_totals.sections }}">مجموع الحصص</td>
+        {% for day in matrix_totals.days %}
+          {# خارجَ حلقةِ الحصص: `forloop` هنا حلقةُ الأيّام نفسُها. #}
+          {% widthratio forloop.counter0 1 7 as day_offset %}
+          {% for column in day %}
+          <td class="m-cell{% if forloop.first %} m-day-start{% endif %}{% if column.short %} m-short{% endif %}"
+              data-col="{{ day_offset|add:forloop.counter0 }}"
+              title="حصص: {{ column.count }} — شُعب في درس: {{ column.sections }} من {{ column.expected }}">{{ column.count }}</td>
+          {% endfor %}
+        {% endfor %}
+        <td class="m-total">{{ matrix_totals.total }}</td>
+      </tr>
+    </tfoot>
+    {% endif %}
+  </table>
+  </div>
+
+  {% if has_colored_exemptions or nav.kinds %}
+  {# نقاطُ التفريغ الملوَّنة وخاناتُ الحصص المحوَّلة أعلاه — تفسيرُها هنا، أسفل الجدول لا فوقه. #}
+  <div class="matrix-legend">
+    {% if has_colored_exemptions %}
+    <span class="matrix-legend__item"><span class="matrix-legend__swatch exempt-ministry">و</span> قرارُ الوزارة</span>
+    <span class="matrix-legend__item"><span class="matrix-legend__swatch exempt-school">إ</span> قرارُ إدارة المدرسة</span>
+    <span class="matrix-legend__item"><span class="matrix-legend__swatch exempt-department">ق</span> قرارُ القسم الأكاديميّ</span>
+    {% endif %}
+    {% for kind, label in nav.kinds %}<span class="matrix-legend__item"><span class="matrix-legend__swatch mk-{{ kind }}"></span> {{ label }}</span>{% empty %}{% endfor %}
+  </div>
+  {% endif %}
+  {% for note in nav.notes %}<div class="matrix-note">{{ note }}</div>{% empty %}{% endfor %}
+  {% include "schedule/pdf/matrix_sub.html" %}
+  <div class="matrix-foot">
+    <span>
+      المعلّمون: {{ matrix|length }} &nbsp;·&nbsp; الشُّعب: {{ matrix_totals.sections }}
+      {% if matrix_totals %}&nbsp;·&nbsp;
+      الحصص: {{ matrix_totals.total }} من {{ matrix_totals.planned }} مخطَّطة
+      (منها {{ matrix_totals.parallel }} متوازية){% if matrix_totals.missing %}<span class="foot-short">
+      — ناقص {{ matrix_totals.missing }}</span>{% endif %}{% endif %}
+    </span>
+    {# الرؤيةُ في سطر «الوزارة | الرؤية | العام» تحت الجدول (`pdf/matrix_sub.html`) — لا هنا (قرارُ المالك 2026-09-25). #}
+    <span>تاريخ الطباعة: {% now "Y/m/d" %}</span>
+  </div>
+  {% else %}
+  <div class="matrix-empty">{% if source == "actual" %}لا حصصَ في هذا الأسبوع.{% else %}لا توجد حصص مسجّلة في جدول العام الدراسي {{ year }}.{% endif %}</div>
+  {% for note in nav.notes %}<div class="matrix-note">{{ note }}</div>{% empty %}{% endfor %}
+  {% include "schedule/pdf/matrix_sub.html" %}
+  {% endif %}
+
+{% else %}
+  <div class="schedule-header">
+    <img class="print-emblem" src="{% if for_pdf %}static/brand/logoMaroon.png{% else %}{% static 'brand/logoMaroon.png' %}{% endif %}" alt="شعار {{ school.name }}" width="295" height="295">
+    <div class="ministry">وزارة التربية والتعليم والتعليم العالي — دولة قطر</div>
+    <div class="school-name">{{ school.name }}</div>
+    <h1 class="title">{{ title }}</h1>
+    <div class="year">العام الدراسي &#8294;{{ year }}&#8297;{% if source == "actual" %} — الأسبوع {{ nav.range }}{% endif %}</div>
+  </div>
+
+  {% comment %}
+  السطرُ يومٌ والعمودُ حصّة (قرار 2026-09-08، وكان العكس). والسببُ ليس العادةَ
+  بل التوقيت: `period_times` يختلف بالنطاق (الطابق) وبنوع اليوم — والخميسُ جرسٌ
+  آخر. فحين كانت الأيّامُ أعمدةً وقع في سطر «الحصة ٣» توقيتُ الأحد وتوقيتُ
+  الخميس جنباً إلى جنب. والآن ينتظم لكلّ يومٍ توقيتُه على امتداد سطره.
+  ولهذا يبقى التوقيتُ داخل الخانة ولا يصعد إلى ترويسة العمود: ترويسةٌ واحدةٌ
+  لعمود «الحصة ٣» تكذب على أحد الطابقين أو على الخميس.
+  {% endcomment %}
+  {% if view_type == "class" %}{% include "schedule/pdf/week_grid.html" with who="teacher" %}{% else %}{% include "schedule/pdf/week_grid.html" with who="class" %}{% endif %}
+  {% if nav.kinds or nav.notes %}{% include "schedule/pdf/week_notes.html" %}{% endif %}
+
+  <div class="schedule-footer">
+    وزارة التربية والتعليم والتعليم العالي — دولة قطر &nbsp;|&nbsp;
+    {{ school.name }} &nbsp;|&nbsp;
+    تاريخ الطباعة: {% now "Y/m/d" %}<br>
+    {% include "components/ministry_vision.html" %}
+  </div>
+{% endif %}
+</div>
+
+{% comment %}
+صفحةٌ قائمة بذاتها لا تمتدّ من `base`، فلا تصلها `actions.js` منها. ومفردات
+`data-*` هنا كانت ستصمت بلا أثر — لا خطأ في وحدة التحكّم ولا سلوك.
+{% endcomment %}
+{% comment %}
+**لا سكربتَ في مسار PDF (`for_pdf`)**: يُعرض القالبُ فيه في عامل Celery، ومخزنُ الملفّات الساكنة صارمٌ بـ`manifest`
+لا يملكه العاملُ (`collectstatic` يجري في إقلاع الويب وحده) — فكلُّ `{% static %}` لم يُحرس رمى
+`Missing staticfiles manifest entry` وبقي التصديرُ «جارٍ التحضير» (Sentry SCHOOLOS-PRODUCTION-2X). والـPDF
+لا يحتاج JS أصلاً. يحرسه `tests/test_schedule_pdf_static.py`.
+{% endcomment %}
+{% if not for_pdf %}
+<script src="{% static 'js/actions.js' %}" defer></script>
+{% comment %}
+طبقةُ التفاعل — داخل إطار المنصّة وحدَه، وللجدول العامّ وحدَه. الطباعةُ
+وتصديرُ PDF/Excel لا يحمّلونها أصلاً، فلا وزنَ لها على المطبوع.
+{% endcomment %}
+{% if embed and view_type == 'all_teachers' %}
+<script src="{% static 'js/schedule-matrix.js' %}" defer></script>
+{% endif %}
+{% endif %}
+</body>
+</html>

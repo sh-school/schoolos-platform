@@ -1,0 +1,56 @@
+{% extends "academic_management/reports/_base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block filters %}
+{% url 'academic_management:quiz_reports' as reset_url %}
+{% filter_bar "تصفية التقرير" %}
+  {% field "subject_id" "المادة" type="select" choices=data.subjects value=data.filters.subject_id blank="كل المواد" %}
+  {% field "class_group_id" "الشعبة" type="select" choices=data.classes value=data.filters.class_group_id blank="كل الشعب" %}
+  {% field "date_from" "من تاريخ" type="date" value=data.filters.date_from %}
+  {% field "date_to" "إلى تاريخ" type="date" value=data.filters.date_to %}
+  <div class="filter-actions">
+    <button type="submit" class="btn-primary btn-sm">{% icon "search" %} عرض التقرير</button>
+    <a href="{{ reset_url }}" class="btn-secondary btn-sm">مسح</a>
+  </div>
+{% endfilter_bar %}
+{% endblock %}
+
+{% block report_body %}
+  {% kpi_strip label="ملخّص النتائج" %}
+    {% kpi "النتائج" data.total_rows %}
+    {% kpi "المتوسط %" data.avg_pct|default_if_none:"—" tone="blue" %}
+    {% kpi "الأدنى–الأعلى %" data.range_label tone="teal" %}
+  {% endkpi_strip %}
+
+  {% section_card "نتائج الاختبارات القصيرة" icon="assessments" empty="لا توجد نتائج اختبارات قصيرة للفلاتر المحددة" empty_sub="جرّب توسيع نطاق التاريخ أو اختيار مادة أخرى" flush=True %}{% if data.rows %}
+    <div class="table-wrap">
+      <table aria-label="جدول نتائج الاختبارات القصيرة">
+        <thead>
+          <tr>
+            <th scope="col">اسم الطالب</th>
+            <th scope="col">المادة</th>
+            <th scope="col">الشعبة</th>
+            <th scope="col">عنوان التقييم</th>
+            <th scope="col" class="num">التاريخ</th>
+            <th scope="col" class="num">الدرجة</th>
+            <th scope="col" class="num">النسبة %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in data.rows %}
+          <tr>
+            <td>{{ r.student_name }}</td>
+            <td>{{ r.subject }}</td>
+            <td>{{ r.class_group }}</td>
+            <td>{{ r.title }}</td>
+            <td class="num">{% if r.date %}{{ r.date|date:"Y/m/d" }}{% else %}—{% endif %}</td>
+            <td class="num">{{ r.grade_label }}</td>
+            <td class="num"><b>{{ r.pct|default_if_none:"—" }}</b></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+{% endblock %}

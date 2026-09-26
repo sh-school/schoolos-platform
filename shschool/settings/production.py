@@ -1,0 +1,477 @@
+from typing import Any
+
+from decouple import config
+from django.core.exceptions import ImproperlyConfigured
+
+from .base import *
+
+DEBUG = False
+
+# ── البريد: بلا مزوّدٍ مُهيَّأ لا يُدَّعى التسليم ─────────────────────────
+# الافتراضيُّ في base.py هو `console` الذي يطبع نصَّ الرسالة (PII) في السجلّ
+# ويردّ «أُرسلت». في الإنتاج يبقى هذا الـbackend إلى أن تُضبط `EMAIL_BACKEND`
+# ومعها `EMAIL_HOST*` على الخدمات الثلاث (web/worker/beat).
+EMAIL_BACKEND = config("EMAIL_BACKEND", default="core.mail_backends.UndeliveredEmailBackend")
+
+# ── قاعدة البيانات: بلا اتّصالاتٍ مستمرّة تحت ASGI (P4-9) ──────────────
+# base.py يقرأ `DB_CONN_MAX_AGE` من البيئة (افتراضُه 600) لخدمةٍ محلّيّةٍ WSGI
+# ولا مشكلةَ فيها. لكنّ daphne هنا يخدم الطلباتِ كلَّها — المتزامنةَ والمُدارةَ
+# بـ`sync_to_async` — على مسبح خيوطٍ واحد: اتّصالٌ «مستمرّ» يعيده Django على
+# طلبٍ لاحقٍ قد يعود إلى خيطٍ غير الذي فتحه، فتظهر أخطاءُ اتّصالٍ متقطّعة لا
+# تُعزى بسهولةٍ إلى هذا. `CONN_HEALTH_CHECKS` يبقى (يفحص قبل الاستعمال لا
+# بعده)، والتكلفةُ فتحُ اتّصالٍ جديدٍ لكلّ طلب — مقبولةٌ أمام صمتِ عطلٍ عشوائيّ.
+DATABASES["default"]["CONN_MAX_AGE"] = 0
+
+# ── statement_timeout: علمٌ صريح من البيئة، لا استنتاجٌ من العملية ─────
+# استعلامٌ معلّقٌ واحد — بلا مهلة — كان يستطيع الاستحواذ على اتّصالٍ إلى
+# الأبد تحت CONN_MAX_AGE=0 (اتصالٌ جديدٌ لكلّ طلبٍ، فلا سقفَ زمنيّاً طبيعيّاً
+# يطويه). لكنّ `settings.py` يُحمَّل بالإعدادات نفسها لثلاث عمليّاتٍ مختلفة
+# (daphne، `manage.py migrate`/`backfill_*`، عامل Celery) — ومهلةٌ عامّةٌ
+# تُخاطر بقطع هجرةٍ تُعبّئ بياناتٍ لجدولٍ ضخم، أو مهمّةَ Celery طويلة (توليد
+# الجدول موثَّقٌ بحدّه الخاصّ 900 ثانية). فالافتراضُ معطَّلٌ (0)، ويُفعَّل
+# فقط بضبط `DB_STATEMENT_TIMEOUT_MS` صراحةً على خدمة الويب في Railway —
+# لا بفحص `sys.argv`/اسم العملية (اكتشافٌ ضمنيّ يكسر بصمت، ممنوعٌ هنا
+# ومُختبَرٌ صراحةً في test_sentry_error_only_mode.py).
+_statement_timeout_ms = config("DB_STATEMENT_TIMEOUT_MS", default=0, cast=int)
+if _statement_timeout_ms > 0:
+    _db_options = DATABASES["default"].setdefault("OPTIONS", {})
+    _existing_options = _db_options.get("options", "")
+    _db_options["options"] = (
+        f"{_existing_options} -c statement_timeout={_statement_timeout_ms}"
+    ).strip()
+
+# ✅ v5.1.1: IPs المسموحة للوصول إلى /metrics (Prometheus)
+METRICS_ALLOWED_IPS = config("METRICS_ALLOWED_IPS", default="127.0.0.1,::1,10.0.0.1").split(",")
+# Railway يكتب X-Forwarded-For «العميل، قفزةُ الحافّة» — قفزةٌ واحدةٌ موثوقة.
+TRUSTED_PROXY_HOPS = int(config("TRUSTED_PROXY_HOPS", default="1"))
+
+# ══════════════════════════════════════════════════════════════
+# ✅ v5.5: Sentry — مراقبة أذكياء (PDPPL + smart sampling + context)
+# ══════════════════════════════════════════════════════════════
+SENTRY_DSN = config("SENTRY_DSN", default="")
+# رابطُ صفحة مشكلات المشروع في Sentry — يفتحه المطوّرُ من بطاقة «أخطاء الخادم» في الإدارة (https فقط، وإلّا يُهمَل).
+SENTRY_ISSUES_URL = config("SENTRY_ISSUES_URL", default="")
+
+# [B4-7Q.1] فصلُ رصد الأخطاء عن قياس الأداء — بإعدادٍ صريح لا باستنتاج.
+#
+# العامل يحتاج **الأخطاء**: مهمّة تسقط، ووسيط ينقطع، ومزوّد يرفض. أمّا قياس
+# الأداء فيُرسل أثراً لثلاثين بالمئة من كل مهمّة (`traces_sampler` يُعيد 0.3
+# لـ`op == "celery.task"`) ومعه تحليلٌ لعُشرها — حجمٌ وكلفةٌ لم يُقرّرا، ولا
+# يخدمان ما نريده اليوم.
+#
+# **ولا اكتشاف ضمنيّ للعملية.** استنتاجُ «هذا عامل» من `sys.argv` أو من اسم
+# الخدمة يبدو ذكياً ويكسر بصمت: أمرُ إدارةٍ يُشغَّل من العامل يصير ويباً، وإعادةُ
+# تسمية خدمةٍ تُغيّر سلوك الرصد بلا أن يلمس أحدٌ الشيفرة. فالراية تُقرأ من
+# البيئة، وكلُّ خدمةٍ تُصرّح بما تريد.
+#
+# والافتراض `True` كي لا يتغيّر سلوك الويب بمجرّد وجود هذا الإعداد.
+SENTRY_PERFORMANCE_ENABLED = config("SENTRY_PERFORMANCE_ENABLED", default=True, cast=bool)
+
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+    from sentry_sdk.integrations.redis import RedisIntegration
+
+    from core.sentry_config import SENTRY_EXCLUDE_BEAT_TASKS, before_send, traces_sampler
+
+    # [B4-7Q.1] خياراتُ الأداء كتلةٌ واحدة تُبدَّل، لا ثلاثة أسطر تُنسى واحدةً.
+    #
+    # `enable_tracing` وحدها لا تكفي: `traces_sampler` مضبوطاً يُفعّل التتبّع
+    # ضمناً في بعض إصدارات المكتبة. فالوضعان صريحان ومتقابلان.
+    _sentry_performance: dict[str, Any]
+    _sentry_performance = (
+        {
+            "traces_sampler": traces_sampler,  # يتخطى health/static/media
+            "profiles_sample_rate": 0.1,  # 10% profiling
+            "enable_tracing": True,
+        }
+        if SENTRY_PERFORMANCE_ENABLED
+        else {
+            "traces_sample_rate": 0.0,
+            "profiles_sample_rate": 0.0,
+            "enable_tracing": False,
+        }
+    )
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(
+                transaction_style="url",  # أسماء transactions واضحة
+                middleware_spans=True,  # قياس أداء كل middleware
+                signals_spans=True,  # قياس أداء signals
+                cache_spans=True,  # قياس أداء cache
+            ),
+            CeleryIntegration(
+                monitor_beat_tasks=True,  # مراقبة Celery Beat — للنبضة وحدها (حصّة الخطّة)
+                exclude_beat_tasks=SENTRY_EXCLUDE_BEAT_TASKS,
+            ),
+            RedisIntegration(),
+            LoggingIntegration(
+                level=None,  # لا تُسجّل logs كـ events
+                event_level="ERROR",  # سجّل ERROR+ كـ Sentry events
+            ),
+        ],
+        # ── Performance: مضبوطة بالراية أعلاه ──
+        **_sentry_performance,
+        # ── Privacy: PDPPL م.13 ──
+        send_default_pii=False,  # ← لا بيانات شخصية
+        before_send=before_send,  # ← scrubbing + noise filter
+        # ── Release tracking ──
+        environment=config("RAILWAY_ENVIRONMENT", default="production"),
+        release=config("APP_VERSION", default=f"v{PLATFORM_VERSION}"),
+        # ── Error grouping ──
+        max_breadcrumbs=50,  # 50 فتات بدل 100 (توفير حصة)
+        attach_stacktrace=True,  # stack trace حتى للـ messages
+    )
+
+# ── التحقق من المفاتيح الحرجة قبل تشغيل الإنتاج ──────────────
+if not SECRET_KEY or SECRET_KEY == "dev-secret-key-change-in-production":
+    raise ImproperlyConfigured(
+        "🔴 SECRET_KEY مطلوب في الإنتاج! أضفه إلى ملف .env:\n"
+        'python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"'
+    )
+
+if not FERNET_KEY:
+    raise ImproperlyConfigured(
+        "🔴 FERNET_KEY مطلوب في الإنتاج لتشفير البيانات الصحية (PDPPL)!\n"
+        'python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+    )
+
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="").split(",")
+
+# ── HTTPS وSSL ────────────────────────────────────────────────
+# Trust the X-Forwarded-Proto header from Railway/Heroku/Render reverse proxy
+# so Django knows the original request was HTTPS (container receives HTTP internally)
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = True
+# Exempt healthcheck endpoints from SSL redirect — Railway's internal probe
+# connects directly over HTTP without X-Forwarded-Proto header
+SECURE_REDIRECT_EXEMPT = [r"^health/$", r"^ready/$", r"^status/$"]
+SECURE_HSTS_SECONDS = 31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_HSTS_PRELOAD = True
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_AGE = 3600
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+SESSION_SAVE_EVERY_REQUEST = False  # MTG-2026-005: saves 1 DB write per request
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_BROWSER_XSS_FILTER = True
+X_FRAME_OPTIONS = "DENY"
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
+
+# ── Permissions-Policy (set via reverse proxy or django-permissions-policy) ──
+# Recommended header for Nginx/Caddy/Cloudflare:
+#   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+# To enforce in Django: pip install django-permissions-policy, add to MIDDLEWARE,
+# then set PERMISSIONS_POLICY dict here.
+
+# ── Redis / Cache ─────────────────────────────────────────────
+REDIS_URL = config("REDIS_URL", default="")
+
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "OPTIONS": {"socket_timeout": 5},
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "schoolos-local",
+        }
+    }
+
+# الجلسات تبقى في PostgreSQL افتراضياً.
+# نقل الجلسات إلى Redis قرار مستقل حتى لا يؤدي مجرد ربط Redis
+# إلى تسجيل خروج المستخدمين الحاليين.
+USE_REDIS_SESSIONS = config("USE_REDIS_SESSIONS", default=False, cast=bool)
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
+
+if USE_REDIS_SESSIONS:
+    if not REDIS_URL:
+        raise ImproperlyConfigured("USE_REDIS_SESSIONS=true requires REDIS_URL")
+    SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+
+
+# ── Celery + Redis ────────────────────────────────────────────
+# وجود Redis لا يعني تلقائياً وجود Celery worker.
+# async mode يجب تفعيله صراحةً فقط بعد إنشاء worker مستقل.
+CELERY_ASYNC_ENABLED = config(
+    "CELERY_ASYNC_ENABLED",
+    default=False,
+    cast=bool,
+)
+
+if CELERY_ASYNC_ENABLED and not REDIS_URL:
+    raise ImproperlyConfigured("CELERY_ASYNC_ENABLED=true requires REDIS_URL")
+
+if REDIS_URL:
+    CELERY_BROKER_URL = REDIS_URL
+    CELERY_RESULT_BACKEND = REDIS_URL
+
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "Asia/Qatar"
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 300
+CELERY_TASK_SOFT_TIME_LIMIT = 240
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# Safe default for the current Railway topology:
+# execute tasks synchronously until a dedicated worker is deployed.
+CELERY_TASK_ALWAYS_EAGER = not CELERY_ASYNC_ENABLED
+# Eager mode is a topology fallback, not an exception-propagation policy.
+# Keep task failures inside the EagerResult instead of bubbling through
+# synchronous .delay() call sites.
+CELERY_TASK_EAGER_PROPAGATES = False
+
+# ── Logging ───────────────────────────────────────────────────
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {process:d} {thread:d} {message}",
+            "style": "{",
+        },
+        "security": {
+            "format": "SECURITY {levelname} {asctime} {module} {message}",
+            "style": "{",
+        },
+    },
+    # ✅ v5.3: فلتر إخفاء البيانات الشخصية — PDPPL م.13
+    "filters": {
+        "pii_masking": {
+            "()": "core.logging_filters.PIIMaskingFilter",
+        },
+    },
+    "handlers": {
+        "file": {
+            "level": "WARNING",
+            # ✅ v5.1: RotatingFileHandler بدلاً من FileHandler
+            # يدير حجم الملف تلقائياً: 10MB × 5 نسخ = 50MB حد أقصى
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": BASE_DIR / "logs/django.log",
+            "maxBytes": 10 * 1024 * 1024,  # 10 MB
+            "backupCount": 5,
+            "encoding": "utf-8",
+            "formatter": "verbose",
+            "filters": ["pii_masking"],  # ✅ v5.3: إخفاء PII
+        },
+        "security_file": {
+            "level": "WARNING",
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": BASE_DIR / "logs/security.log",
+            "maxBytes": 5 * 1024 * 1024,  # 5 MB
+            "backupCount": 10,  # نحتفظ بـ 10 نسخ للأمان
+            "encoding": "utf-8",
+            "formatter": "security",
+            "filters": ["pii_masking"],  # ✅ v5.3: إخفاء PII
+        },
+        # stdout صراحةً: افتراضُ `StreamHandler` هو stderr، وRailway يعدّ كلَّ سطرٍ
+        # على stderr خطأً في عارضه فتصير سطورُ `Task … succeeded` حمراء. ولا مستوى
+        # على المعالِج عمداً: المستوى قرارُ كلّ مسجِّلٍ أدناه.
+        #
+        # وسجلّاتُ Celery (العامل وBeat) تصل هذا المعالِجَ لأنّ `shschool/celery.py`
+        # يستقبل إشارةَ `setup_logging` فيمنع Celery من إفراغ معالِجات `celery`
+        # عند البدء — وهو ما كان يُسكت العاملَ بعد لافتته.
+        "console": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+            "filters": ["pii_masking"],  # ✅ v5.3: إخفاء PII
+        },
+    },
+    "root": {"handlers": ["file", "console"], "level": "WARNING"},
+    "loggers": {
+        "django": {"handlers": ["file"], "level": "WARNING", "propagate": False},
+        "django.security": {
+            "handlers": ["security_file", "console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "django.request": {"handlers": ["file", "console"], "level": "WARNING", "propagate": False},
+        "notifications": {"handlers": ["file"], "level": "INFO", "propagate": False},
+        "notifications.hub": {"handlers": ["file"], "level": "INFO", "propagate": False},
+        # [B4-7P] المُصالِح وحده على stdout — لا `notifications` كلّها.
+        #
+        # مُعالِج `file` يكتب في حاويةٍ زائلة لا تُقرأ بأي أداة عندنا، فسجلٌّ
+        # يذهب إليه سجلٌّ لا يوجد عملياً. وstdout هو ما يلتقطه Railway.
+        #
+        # والنطاق ضيّق عمداً: فتحُ `notifications` كلّها كان يُظهر سجلّات مهامّ
+        # التسليم، وهي — رغم B4-7O — تحمل تتبّعات استثناءات المزوّدين. أمّا
+        # المُصالِح فلا يُسجّل إلا مُعرِّفاً وأعداداً.
+        #
+        # و`propagate: False` يمنع الازدواج: بدونه يصعد السجلّ إلى `notifications`
+        # فيُكتب في الملفّ أيضاً — نسخةٌ ثانية لا يقرؤها أحد.
+        "notifications.reconciler": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "celery": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        # مهامُّ الجدولة على stdout بمستوى INFO — بالحجّة نفسِها التي فتحت
+        # `notifications.reconciler`: العاملُ في حاويةٍ لا نرى منها إلّا stdout.
+        #
+        # وبلا هذا كان توليدُ الجدول يبدأ وينتهي ويسقط بلا سطرٍ واحد، فاضطُررنا
+        # (2026-09-03) إلى قياس أحجام ردود الويب بالبايت لنعرف متى تغيّرت حالتُه.
+        #
+        # والنطاقُ الوحدتان اللتان تحملان دورةَ حياة التوليد لا `operations` كلُّها:
+        # ففي `operations.services` سطورُ INFO تحمل أسماءَ أشخاص، وفلترُ إخفاء
+        # البيانات يُخفي الهويّةَ والهاتفَ والبريدَ لا الأسماء. وما تُسجّله
+        # الوحدتان أعدادٌ ومعرِّفاتٌ وأزمنة.
+        "operations.tasks": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "operations.scheduler": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "core": {"handlers": ["security_file", "console"], "level": "WARNING", "propagate": False},
+        # المحو والاحتفاظ وتدوير المفاتيح انتقلت من `core` إلى `governance` (ADR-0004):
+        # المعالجةُ نفسُها كي لا تفقد سجلَّ الأمان.
+        "governance": {
+            "handlers": ["security_file", "console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        # ✅ v5.1: Channels & WebSocket logging
+        "channels": {"handlers": ["file"], "level": "WARNING", "propagate": False},
+        "daphne": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+        # ✅ v5.4: django-axes — تسجيل محاولات تسجيل الدخول الفاشلة
+        "axes": {"handlers": ["security_file", "console"], "level": "WARNING", "propagate": False},
+    },
+}
+
+# ── CSP في الإنتاج ────────────────────────────────────────────
+# Tailwind مصرَّف محلّياً، فلا حاجة إلى CDN للأنماط.
+#
+# **report-only حتى تُنقل معالِجات الأحداث.** السياسة تحمل `nonce` في
+# `script-src`، ووجودُه يجعل المتصفّح يتجاهل `'unsafe-inline'` تماماً — فتُحجب
+# سمات `onclick`/`onchange` وأمثالها. وفي القوالب ٨٦ منها في ٤٣ صفحة، ففرضُ
+# السياسة قبل نقلها يُطفئ تفاعل تلك الصفحات لا يحميها.
+#
+# وقد وقع ذلك فعلاً: فُرضت في أوّل نشرةٍ بعد الترحيل فحُجبت كلّها.
+#
+# و`'unsafe-inline'` باقٍ في `style-src` للسبب نفسه: ٧٣٢ سمة `style="…"`
+# لا يُغنّي عنها nonce.
+#
+# الترتيب: نقل المعالِجات إلى `addEventListener` → حارسٌ يمنع عودتها → الفرض.
+_CSP_PRODUCTION = {
+    "DIRECTIVES": {
+        **CSP_BASE_DIRECTIVES,
+        "script-src": [SELF, NONCE, "https://cdn.jsdelivr.net", "https://unpkg.com"],
+        "style-src": [SELF, "'unsafe-inline'", "https://fonts.googleapis.com"],
+    }
+}
+
+_csp_report_uri = config("CSP_REPORT_URI", default="")
+if _csp_report_uri:
+    _CSP_PRODUCTION["DIRECTIVES"]["report-uri"] = [_csp_report_uri]
+
+# ترويسةٌ واحدة لا اثنتان: `CSP_ENFORCE` هي الراية الوحيدة التي تقلبها.
+#
+# الافتراض `True` الآن: المعالِجات الداخلية الستّة والثمانون نُقلت إلى مفردات
+# `data-*` معلنة، وكل `<script>` داخليّ يحمل nonce — والحارسان يمنعان عودة
+# أيٍّ منهما. فبقاء السياسة report-only بعد ذلك يعني حمايةً تُبلّغ ولا تمنع.
+#
+# والتراجع لا يحتاج نشراً: `CSP_ENFORCE=False` في بيئة Railway يُعيدها
+# report-only فوراً.
+CSP_ENFORCE = config("CSP_ENFORCE", default=True, cast=bool)
+
+if CSP_ENFORCE:
+    CONTENT_SECURITY_POLICY = _CSP_PRODUCTION
+    CONTENT_SECURITY_POLICY_REPORT_ONLY = None
+else:
+    CONTENT_SECURITY_POLICY_REPORT_ONLY = _CSP_PRODUCTION
+    CONTENT_SECURITY_POLICY = None
+
+
+# ── S3 Object Storage للملفات (media) — إلزاميٌّ لا اختياريّ (البند 11) ──
+# حاويةُ الويب على Railway بلا قرصٍ دائم؛ كان التراجعُ الصامتُ إلى
+# DatabaseStorage عند نقص المفاتيح يعني تضخّم القاعدة صامتاً أو فقدان ملفٍّ
+# بلا تنبيه. الآن: `USE_S3` لم يعد يُقرأ هنا أصلاً — الإنتاجُ يتطلّب S3 دائماً،
+# ويفشل عند الإقلاع (`ImproperlyConfigured`) إن نقصت مفاتيحه، لا يتراجع بصمت.
+from core.storage_config import s3_default_storage  # noqa: E402
+
+INSTALLED_APPS = [a for a in INSTALLED_APPS if a != "storages"] + ["storages"]
+_s3_storage, MEDIA_URL = s3_default_storage(
+    access_key_id=AWS_ACCESS_KEY_ID,
+    secret_access_key=AWS_SECRET_ACCESS_KEY,
+    bucket_name=AWS_STORAGE_BUCKET_NAME,
+    region_name=AWS_S3_REGION_NAME,
+    endpoint_url=AWS_S3_ENDPOINT_URL,
+    querystring_expire=AWS_QUERYSTRING_EXPIRE,
+    custom_domain=config("AWS_S3_CUSTOM_DOMAIN", default=""),
+)
+STORAGES = {
+    "default": _s3_storage,
+    # الملفات الثابتة → WhiteNoise (Brotli + GZip + hash → cache ∞)
+    "staticfiles": {
+        "BACKEND": "core.static_storage.MinifiedManifestStaticFilesStorage",
+    },
+}
+
+# ── CDN Configuration (Cloudflare / CloudFront) ─────────────────
+CDN_DOMAIN = config("CDN_DOMAIN", default="")
+if CDN_DOMAIN:
+    STATIC_URL = f"https://{CDN_DOMAIN}/static/"
+    # الملفّاتُ المرفوعة تبقى بروابط S3 الموقَّعة — لا تتأثّر بهذا النطاق
+
+# ── التحقق من ALLOWED_HOSTS ──────────────────────────────────
+if not ALLOWED_HOSTS or ALLOWED_HOSTS == [""]:
+    raise ImproperlyConfigured(
+        "🔴 ALLOWED_HOSTS فارغ! أضف النطاقات المسموحة في .env:\n"
+        "ALLOWED_HOSTS=schoolos.qa,www.schoolos.qa"
+    )
+
+# ── CORS في الإنتاج — إعادة قراءةٍ بفرضيةٍ آمنة ────────────────
+#
+# `base.py` يقرأ `CORS_ALLOWED_ORIGINS` بافتراضٍ صالحٍ للتطوير:
+# `http://localhost:3000,http://localhost:8000`. و`production.py` كان يرث
+# القائمة كما هي ويكتفي بتحذيرٍ عند رؤية أصلٍ محلّيّ — **والتحذير لا يُغلق
+# باباً**. فمنصّةٌ حكومية بلا `CORS_ALLOWED_ORIGINS` في بيئتها كانت تسمح
+# لصفحةٍ على `localhost` بقراءة استجابات الـAPI مع الاعتماد (`CORS_ALLOW_
+# CREDENTIALS = True`) — أي جلسةُ مستخدمٍ مسجَّل تُقرأ من صفحةٍ يفتحها هو على
+# جهازه بلا علمه.
+#
+# فيُعاد القراءة هنا بافتراض **فارغ**: غيابُ الإعداد يعني «لا أصل مسموح» لا
+# «أصولُ التطوير». والفشل مغلق: API بلا CORS يمنع متصفّحاً، وCORS مفتوحٌ خطأً
+# يمنح ما لا يُسترجَع.
+_production_cors = [
+    origin.strip()
+    for origin in config("CORS_ALLOWED_ORIGINS", default="").split(",")
+    if origin.strip()
+]
+
+_unsafe_cors = [o for o in _production_cors if "localhost" in o or "127.0.0.1" in o]
+
+# ولا `raise` هنا رغم أنه الأصحّ نظرياً: `staging.py` يستورد هذه الوحدة **قبل**
+# أن يُعيد تعريف قائمته الخاصة، وهو يُدرج `localhost:3000` عمداً لأغراض الفحص.
+# فرفعُ استثناء يكسر staging على إعدادٍ مقصودٍ فيه. والإقصاء يُحقّق الغاية —
+# الأصل المحلّيّ لا يصل الإنتاج — بلا كسرٍ جانبيّ.
+CORS_ALLOWED_ORIGINS = [o for o in _production_cors if o not in _unsafe_cors]
+
+if _unsafe_cors:
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "⚠️ CORS_ALLOWED_ORIGINS يحتوي على origins محلية — أُقصيت من إعداد "
+        "الإنتاج: %s. عيّنها بالنطاقات الصحيحة (https://...)",
+        _unsafe_cors,
+    )
+
+# ── فحوصُ النظام: ما يُسكَت وسببُه ─────────────────────────────────────
+#
+# `manage.py check --deploy --fail-level WARNING` بوّابةُ دمجٍ (وظيفةُ django-check في
+# security-scan.yml). وتحذيراتُ drf-spectacular W001/W002 تخصّ **توثيقَ** واجهة API — أنواعٌ
+# ومُسلسِلاتٌ ناقصةٌ في api/ (26 تحذيراً يومَ 2026-09-25) — لا أمانَ النشر. هي دَينٌ معلَنٌ لا
+# يُصفَّر في طلبٍ واحد، وقد كانت تُخفيها بوّابةٌ لا تفشل؛ فلمّا صدقت البوّابةُ لم يجزْ أن
+# تُغلق الدمجَ على ما ليس من اختصاصها.
+#
+# تُسكَتُ بالمعرِّف لا بالفحص كلِّه: أخطاؤه وأيُّ فحصٍ آخر يبقى حاكماً. ولا تتّسع القائمةُ إلا بسببٍ
+# مكتوبٍ هنا، ويحرسها tests/test_security_gate.py (فمن زاد معرِّفاً عدّل الحارسَ وسُئل عنه في المراجعة).
+SILENCED_SYSTEM_CHECKS = ["drf_spectacular.W001", "drf_spectacular.W002"]

@@ -1,0 +1,330 @@
+"""
+quality/views_committee.py — لجنة المراجعة الذاتية + لجنة المنفذين
+"""
+
+from urllib.parse import urlencode
+
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.db.models import Count
+from django.http import HttpResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.http import require_POST
+
+from core.academic_calendar import academic_year_for, default_academic_year
+from core.capabilities import capability_required
+from core.models import CustomUser, Membership
+
+from .models import (
+    OperationalDomain,
+    OperationalProcedure,
+    QualityCommitteeMember,
+)
+from .presentation import (
+    bar_tone,
+    kpi_progress_tone,
+    procedure_status_tone,
+    responsibility_tone,
+)
+from .services import QualityService
+
+
+#: يُقرأ وقت الطلب لا وقت الاستيراد — ثابتُ الوحدة يتجمّد عند إقلاع العملية.
+def _default_year(request=None):
+    return academic_year_for(request) if request is not None else default_academic_year()
+
+
+def _committee_redirect(request, committee_type, year):
+    """Return only a same-host committee redirect."""
+    url_name = (
+        "executor_committee"
+        if committee_type == QualityCommitteeMember.EXECUTOR
+        else "quality_committee"
+    )
+    query = urlencode({"year": year})
+    target = f"{reverse(url_name)}?{query}"
+
+    if url_has_allowed_host_and_scheme(
+        target,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return redirect(target)
+
+    return redirect(url_name)
+
+
+@login_required
+@capability_required("quality.manage")
+def quality_committee(request):
+    school = request.user.get_school()
+    year = request.GET.get("year") or _default_year(request)
+
+    # فحص الصلاحيات — المدير أو أعضاء لجنة المراجعة فقط
+    is_admin = request.user.is_admin()
+    # بوّابةُ وصولٍ تُعيد 403 — فعضو العام الماضي كان يحتفظ بها إلى الأبد.
+    is_reviewer = QualityCommitteeMember.objects.filter(
+        school=school,
+        user=request.user,
+        committee_type=QualityCommitteeMember.REVIEW,
+        academic_year=year,
+        is_active=True,
+    ).exists()
+    if not (is_admin or is_reviewer):
+        return HttpResponse("غير مسموح — للمدير وأعضاء لجنة المراجعة فقط", status=403)
+
+    staff_ids = Membership.objects.filter(school=school, is_active=True).values_list(
+        "user_id", flat=True
+    )
+
+    members = QualityCommitteeMember.objects.review_committee(school, year)
+
+    # ── Bulk counts بدلاً من N+1 ────────────────────────────
+    from django.db.models import Count
+
+    # عدد المراجعات لكل مستخدم (reviewed_by أو status مكتمل+معتمد)
+    reviewed_map = dict(
+        OperationalProcedure.objects.filter(
+            school=school, academic_year=year, reviewed_by__isnull=False
+        )
+        .values_list("reviewed_by")
+        .annotate(c=Count("id"))
+        .values_list("reviewed_by", "c")
+    )
+
+    # عدد الإجراءات بحاجة مراجعة لكل مجال:
+    # أي إجراء لم يُراجع بعد (reviewed_by=NULL) وليس ملغى
+    needs_review_map = dict(
+        OperationalProcedure.objects.filter(
+            school=school,
+            academic_year=year,
+            reviewed_by__isnull=True,
+        )
+        .exclude(status__in=["Not Started", "Cancelled"])
+        .values("indicator__target__domain")
+        .annotate(c=Count("id"))
+        .values_list("indicator__target__domain", "c")
+    )
+
+    # الإجراءات المعتمدة (مكتملة ومُراجعة) لكل مجال
+    reviewed_domain_map = dict(
+        OperationalProcedure.objects.filter(
+            school=school,
+            academic_year=year,
+            reviewed_by__isnull=False,
+        )
+        .values("indicator__target__domain")
+        .annotate(c=Count("id"))
+        .values_list("indicator__target__domain", "c")
+    )
+
+    member_review_stats = []
+    for member in members:
+        member_review_stats.append(
+            {
+                "member": member,
+                "responsibility_tone": responsibility_tone(member.responsibility),
+                "reviewed_count": (
+                    reviewed_domain_map.get(member.domain_id, 0)
+                    if member.domain_id
+                    else reviewed_map.get(member.user_id, 0)
+                    if member.user_id
+                    else 0
+                ),
+                "pending_in_domain": (
+                    needs_review_map.get(member.domain_id, 0) if member.domain_id else 0
+                ),
+            }
+        )
+
+    # تغطيةُ المجالات: كان المسؤولُ ولونُ النسبة يُحسبان في القالب (عتبةُ 80/50).
+    domains = list(
+        OperationalDomain.objects.filter(school=school, academic_year=year).order_by("order")
+    )
+    for domain in domains:
+        responsible = domain.committee_members.first()
+        domain.responsible_name = (
+            (getattr(responsible.user, "full_name", "") or responsible.job_title)
+            if responsible
+            else ""
+        )
+        domain.responsible_tone = "neutral" if domain.responsible_name else "danger"
+        pct = domain.completion_pct
+        domain.pct_label = f"{pct}%"
+        domain.coverage_tone = bar_tone(pct, green_at=80, amber_at=50)
+
+    return render(
+        request,
+        "quality/committee.html",
+        {
+            "members": members,
+            "member_review_stats": member_review_stats,
+            "year": year,
+            "committee_type": QualityCommitteeMember.REVIEW,
+            "committee_label": "لجنة المراجعة الذاتية",
+            "staff": CustomUser.objects.filter(id__in=staff_ids).order_by("full_name"),
+            "domains": domains,
+            "RESP_CHOICES": QualityCommitteeMember.RESPONSIBILITY,
+        },
+    )
+
+
+@login_required
+@capability_required("quality.manage")
+@require_POST
+def add_committee_member(request):
+    if not request.user.is_admin():
+        return HttpResponse("غير مسموح", status=403)
+
+    school = request.user.get_school()
+    year = request.POST.get("year") or _default_year(request)
+    user_id = request.POST.get("user_id", "").strip()
+    job_title = request.POST.get("job_title", "").strip()
+    responsibility = request.POST.get("responsibility", "عضو")
+    committee_type = request.POST.get("committee_type", QualityCommitteeMember.REVIEW)
+    domain_id = request.POST.get("domain_id", "").strip() or None
+
+    user = CustomUser.objects.filter(id=user_id).first() if user_id else None
+    domain = (
+        OperationalDomain.objects.filter(id=domain_id, school=school).first() if domain_id else None
+    )
+
+    if not job_title and not user:
+        messages.error(request, "يجب تحديد المستخدم أو المسمى الوظيفي")
+        return _committee_redirect(request, committee_type, year)
+
+    if not job_title and user:
+        job_title = getattr(user, "job_title", "") or str(user)
+
+    QualityCommitteeMember.objects.get_or_create(
+        school=school,
+        academic_year=year,
+        user=user,
+        committee_type=committee_type,
+        defaults={
+            "job_title": job_title,
+            "responsibility": responsibility,
+            "domain": domain,
+            "is_active": True,
+        },
+    )
+
+    messages.success(request, f"✅ تم إضافة {job_title} للجنة")
+    return _committee_redirect(request, committee_type, year)
+
+
+@login_required
+@capability_required("quality.manage")
+@require_POST
+def remove_committee_member(request, member_id):
+    if not request.user.is_admin():
+        return HttpResponse("غير مسموح", status=403)
+
+    school = request.user.get_school()
+    member = get_object_or_404(QualityCommitteeMember, id=member_id, school=school)
+    committee_type, year = member.committee_type, member.academic_year
+    member.delete()
+
+    messages.success(request, "تم إزالة العضو من اللجنة")
+    return _committee_redirect(request, committee_type, year)
+
+
+@login_required
+@capability_required("quality.manage")
+def executor_committee(request):
+    if not request.user.is_admin():
+        return HttpResponse("غير مسموح", status=403)
+
+    school = request.user.get_school()
+    year = request.GET.get("year") or _default_year(request)
+
+    data = QualityService.get_executor_committee_data(school, year)
+    staff_ids = Membership.objects.filter(school=school, is_active=True).values_list(
+        "user_id", flat=True
+    )
+    for stat in data["member_stats"]:
+        stat["responsibility_tone"] = responsibility_tone(stat["member"].responsibility)
+        # العتبةُ كما كانت في القالب: 70 فأكثر أخضر، و40 فأكثر كهرمانيّ.
+        stat["bar_tone"] = bar_tone(stat["pct"])
+    overall = data["overall"]
+
+    return render(
+        request,
+        "quality/executor_committee.html",
+        {
+            "member_stats": data["member_stats"],
+            "unmapped_norms": data["unmapped_norms"],
+            "year": year,
+            "total_all": overall["total"],
+            "completed_all": overall["completed"],
+            "pct_all": overall["pct"],
+            # كان «قيد التنفيذ» = الإجماليّ − المكتمل، فيعدّ ما لم يبدأ والملغى
+            # وما ينتظر المراجعة. والعددُ الحقيقيُّ محسوبٌ في الخدمة أصلاً.
+            "in_progress_all": overall["in_progress"],
+            "pending_review_all": overall["pending_review"],
+            "pct_label": f"{overall['pct']}%",
+            "pct_tone": kpi_progress_tone(overall["pct"], overall["total"]),
+            "committee_type": QualityCommitteeMember.EXECUTOR,
+            "committee_label": "لجنة منفذي الخطة التشغيلية",
+            "all_users": CustomUser.objects.filter(id__in=staff_ids).order_by("full_name"),
+            "domains": OperationalDomain.objects.filter(school=school, academic_year=year).order_by(
+                "order"
+            ),
+        },
+    )
+
+
+@login_required
+@capability_required("quality.manage")
+def executor_member_detail(request, member_id):
+    if not request.user.is_admin():
+        return HttpResponse("غير مسموح", status=403)
+
+    school = request.user.get_school()
+    member = get_object_or_404(
+        QualityCommitteeMember,
+        id=member_id,
+        school=school,
+        committee_type=QualityCommitteeMember.EXECUTOR,
+    )
+
+    year = request.GET.get("year") or _default_year(request)
+    status_filter = request.GET.get("status", "")
+    domain_filter = request.GET.get("domain", "")
+
+    data = QualityService.get_executor_detail(member, school, year)
+    qs = data["procedures"]
+
+    if status_filter:
+        qs = qs.filter(status=status_filter)
+    if domain_filter:
+        qs = qs.filter(indicator__target__domain__id=domain_filter)
+
+    stats = QualityService._calc_stats(qs)
+
+    # عددُ الأدلّة يُعدّ في الاستعلام — كان `proc.evidences.count` استعلاماً لكلّ صفّ.
+    procedures = list(qs.annotate(evidence_count=Count("evidences")))
+    for proc in procedures:
+        proc.status_tone = procedure_status_tone(proc.status)
+    subtitle = " · ".join(p for p in (member.job_title, member.responsibility) if p)
+
+    return render(
+        request,
+        "quality/executor_member_detail.html",
+        {
+            "member": member,
+            "member_subtitle": subtitle,
+            "pct_label": f"{stats['pct']}%",
+            # كانت العتبةُ في شريط التقدّم 70/40 — صارت عتبةَ الوحدة الواحدة.
+            "pct_tone": kpi_progress_tone(stats["pct"], stats["total"]),
+            "procedures": procedures,
+            "year": year,
+            "status_filter": status_filter,
+            "domain_filter": domain_filter,
+            "domains": OperationalDomain.objects.filter(school=school, academic_year=year),
+            "STATUS_CHOICES": OperationalProcedure.STATUS,
+            **stats,
+        },
+    )

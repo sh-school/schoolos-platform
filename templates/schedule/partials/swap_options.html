@@ -1,0 +1,19 @@
+{# تُبدَّل في `#swap-options-container` بصفحة طلب التبديل — على بنية الحقل نفسِها هناك. #}
+{# تسميةُ الخيار مركّبةٌ من معلّمٍ ويومٍ ومادّةٍ وشعبةٍ وشرط — فالقائمةُ يدويّةٌ مسمّاة. #}
+<div class="ui-field">
+  <label for="slot_b" class="ui-field__label">اختر حصة المعلم الآخر للتبديل</label>
+  <select name="slot_b" id="slot_b" class="form-control" required>
+    <option value="">— اختر —</option>
+    {% for opt in options %}
+    <option value="{{ opt.slot.pk }}">
+      {{ opt.teacher.full_name }} — {{ opt.slot.get_day_of_week_display }} ح{{ opt.slot.period_number }} — {{ opt.slot.subject|default:"مادة" }} ({{ opt.slot.class_group.short_label }})
+      {% if opt.same_subject %}[نفس المادة]{% endif %}
+    </option>
+    {% endfor %}
+  </select>
+  {% if not options %}
+  <p class="hint icon-danger">لا يوجد معلمون متاحون للتبديل مع هذه الحصة</p>
+  {% else %}
+  <p class="hint">{{ options|length }} خيار متاح — التبديل مع معلمي نفس الفصل فقط</p>
+  {% endif %}
+</div>

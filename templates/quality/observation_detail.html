@@ -1,0 +1,124 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}زيارة صفّية — {{ obs.teacher.full_name }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent2_url="/quality/" parent2_label="ضمان الجودة" parent_url="/quality/observations/" parent_label="الزيارات الصفية" current=obs.teacher.full_name %}
+{% endblock %}
+
+{% block content %}
+<div class="qobs">
+
+  {# الإجراءاتُ بحسب الحالة والصلاحيّة في رأس الصفحة — كانت شريطاً تحت الجداول. #}
+  {% page_header page_title icon="observation" %}
+    {% if can_submit %}
+    <form method="post" action="{% url 'observation_submit' obs.id %}" class="form-inline" data-confirm="إرسال الملاحظة للمعلّم وإشعاره؟">
+      {% csrf_token %}<button type="submit" class="btn-primary btn-sm">إرسال للمعلّم</button>
+    </form>
+    {% endif %}
+    {% if can_withdraw %}
+    <form method="post" action="{% url 'observation_withdraw' obs.id %}" class="form-inline" data-confirm="سحب الملاحظة وإعادتها إلى مسودة؟ سيُخطَر المعلّم.">
+      {% csrf_token %}<button type="submit" class="btn-secondary btn-sm">سحب (إعادة لمسودة)</button>
+    </form>
+    {% endif %}
+    {% if can_edit %}<a href="{% url 'observation_edit' obs.id %}" class="btn-secondary btn-sm">تعديل</a>{% endif %}
+    <a href="{% url 'observation_pdf_view' obs.id %}" class="btn-secondary btn-sm">PDF</a>
+    {% if can_delete and obs.status == "draft" %}
+    <form method="post" action="{% url 'observation_delete' obs.id %}" class="form-inline" data-confirm="حذف هذه المسودة؟">
+      {% csrf_token %}<button type="submit" class="btn-danger btn-sm">حذف</button>
+    </form>
+    {% endif %}
+    <a href="{% url 'observation_list' %}" class="btn-secondary btn-sm">← القائمة</a>
+  {% endpage_header %}
+
+  {% section_card "بيانات الزيارة" icon="status_info" %}
+    <dl class="qobs-facts">
+      <div><dt>الحالة</dt><dd><span class="badge badge--{{ obs.status_tone }}">{{ obs.get_status_display }}</span></dd></div>
+      <div><dt>النسبة الإجماليّة</dt><dd>{% if obs.score_percent != None %}<b class="grade-total is-{{ obs.score_tone }}">{{ score_label }}</b>{% else %}—{% endif %}</dd></div>
+      <div><dt>الزائر</dt><dd>{{ obs.observer.full_name }}</dd></div>
+      <div><dt>المادّة</dt><dd>{{ obs.subject.name_ar|default:"—" }}</dd></div>
+      <div><dt>الصّف</dt><dd>{{ obs.class_group.short_label|default:"—" }}</dd></div>
+      <div><dt>التاريخ</dt><dd>{{ obs.observation_date }}</dd></div>
+      <div><dt>الحصة</dt><dd>{{ obs.period|default:"—" }}</dd></div>
+      <div><dt>الموضوع</dt><dd>{{ obs.topic|default:"—" }}</dd></div>
+      <div><dt>المتابعة</dt><dd>{{ obs.get_follow_up_mode_display }} {{ obs.get_follow_up_scope_display }}</dd></div>
+    </dl>
+  {% endsection_card %}
+
+  {% for domain_label, rows in grouped %}
+  {% section_card domain_label meta=rows|length icon="checklist" flush=True %}
+    {# ترتيبُ المعايير كما في الاستمارة المعتمَدة — لا يُفرَز. #}
+    <div class="table-wrap">
+    <table class="table" data-no-sort>
+      <thead><tr><th class="qobs-col-criterion">المعيار</th><th>التقييم</th><th>التوصية</th></tr></thead>
+      <tbody>
+        {% for c, sc in rows %}
+        <tr>
+          <td>{{ c.text }}</td>
+          <td>{% if sc and sc.rating %}{{ sc.get_rating_display }}{% else %}—{% endif %}</td>
+          <td>{{ sc.recommendation|default:"—"|linebreaksbr }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% endsection_card %}
+  {% endfor %}
+
+  {% if obs.general_notes %}
+  {% section_card "ملاحظات وتوصيات عامّة" icon="document" %}
+    <p class="qobs-notes">{{ obs.general_notes|linebreaksbr }}</p>
+  {% endsection_card %}
+  {% endif %}
+
+  {% if can_ack %}
+  {% section_card "الإقرار بالاطّلاع" icon="status_success" %}
+    <form method="post" action="{% url 'observation_acknowledge' obs.id %}" class="qobs-form-stack">
+      {% csrf_token %}
+      <textarea name="teacher_comment" rows="2" class="form-control" placeholder="تعليق (اختياري)" aria-label="تعليق المعلّم"></textarea>
+      <div class="form-actions"><button type="submit" class="btn-primary">أقرّ بالاطّلاع</button></div>
+    </form>
+  {% endsection_card %}
+  {% endif %}
+
+  {% if obs.status == "acknowledged" %}
+  {% section_card "إقرار المعلّم" meta=obs.teacher_acknowledged_at|date:"Y-m-d H:i" icon="status_success" %}
+    <p class="qobs-notes">{% if obs.teacher_comment %}<b>تعليقه:</b> {{ obs.teacher_comment }}{% else %}أقرّ المعلّم بالاطّلاع دون تعليق.{% endif %}</p>
+
+    {# إعادة الفتح + الحذف المُعلَّل (قيادة) #}
+    {% if can_reopen or can_delete %}
+    <div class="qobs-lead">
+      {% if can_reopen %}
+      <form method="post" action="{% url 'observation_reopen' obs.id %}" class="qobs-lead__form"
+            data-confirm="إعادة فتح الملاحظة؟ سيُلغى إقرار المعلّم الحالي ويُعاد إشعاره.">
+        {% csrf_token %}
+        <input type="text" name="reason" class="form-control" placeholder="سبب إعادة الفتح (اختياري)" aria-label="سبب إعادة الفتح">
+        <button type="submit" class="btn-secondary btn-sm">إعادة فتح للتعديل</button>
+      </form>
+      {% endif %}
+      {% if can_delete %}
+      <form method="post" action="{% url 'observation_delete' obs.id %}" class="qobs-lead__form"
+            data-confirm="حذف ملاحظة مُقَرّة؟ ستُحفظ في الأرشيف.">
+        {% csrf_token %}
+        <input type="text" name="reason" required class="form-control" placeholder="سبب الحذف (إلزامي)" aria-label="سبب الحذف">
+        <button type="submit" class="btn-danger btn-sm">حذف (أرشفة)</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+  {% endsection_card %}
+  {% endif %}
+
+  {% if obs.status == "submitted" and can_delete %}
+  {% section_card "حذف ملاحظة مُرسَلة" icon="delete" %}
+    <form method="post" action="{% url 'observation_delete' obs.id %}" class="qobs-lead__form"
+          data-confirm="حذف ملاحظة مُرسَلة؟ ستُحفظ في الأرشيف.">
+      {% csrf_token %}
+      <input type="text" name="reason" required class="form-control" placeholder="سبب الحذف (إلزامي)" aria-label="سبب الحذف">
+      <button type="submit" class="btn-danger btn-sm">حذف (أرشفة)</button>
+    </form>
+  {% endsection_card %}
+  {% endif %}
+
+</div>
+{% endblock %}

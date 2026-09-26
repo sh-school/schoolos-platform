@@ -1,0 +1,172 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block title %}لجنة الضبط السلوكي{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}page-noscroll{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/behavior/dashboard/" parent_label="الضبط السلوكي" current="لجنة الضبط" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "لجنة الضبط السلوكي" subtitle="المخالفات من الدرجة الثالثة والرابعة — اتخاذ القرار الجماعي" icon="behavior_committee" %}{% endpage_header %}
+
+  {% kpi_strip label="أرقام اللجنة" %}
+    {% kpi "قضايا مفتوحة" stats.open_count tone=open_tone %}
+    {% kpi "محلولة" stats.resolved_count tone="green" %}
+    {% kpi "درجة ثالثة" stats.level3 sub="جسيمة · مفتوحة" tone="orange" %}
+    {% kpi "درجة رابعة" stats.level4 sub="شديدة · مفتوحة" tone="red" %}
+  {% endkpi_strip %}
+
+  {% filter_bar "ترشيحُ قضايا اللجنة" id="committee-filters" live=True %}
+    {% field "q" "بحث باسم الطالب" type="search" id="filter-student" hide_label=True grow=True placeholder="بحث باسم الطالب..." %}
+    {% field "status" "الحالة" type="select" id="filter-status" choices="open=مفتوحة|resolved=محلولة" blank="الكل" hide_label=True %}
+    {% field "level" "الدرجة" type="select" id="filter-level" choices="3=درجة 3|4=درجة 4" blank="كل الدرجات" hide_label=True %}
+    {% field "date_from" "من تاريخ" type="date" id="filter-date-from" hide_label=True title="من تاريخ" %}
+    {% field "date_to" "إلى تاريخ" type="date" id="filter-date-to" hide_label=True title="إلى تاريخ" %}
+    <button type="button" id="btn-reset-filters" class="btn-ghost btn-sm" title="إعادة تعيين">مسح</button>
+  {% endfilter_bar %}
+
+  <div class="fill-grid">
+  <div id="open-cases-card" data-section="open">
+    {% section_card "القضايا المفتوحة — تحتاج قرار اللجنة" icon="behavior_committee" empty="لا توجد قضايا مفتوحة" empty_sub="جميع المخالفات الجسيمة تمت معالجتها" %}{% if open_cases %}
+      {% callout "warning" %}الإيقاف المؤقت والتصعيد يستدعيان وليَّ الأمر تلقائياً، والتصعيد إلى الدرجة 4 لا يُعكس.{% endcallout %}
+      <ul class="plain-list">
+        {% for inf in open_cases %}
+          <li class="plain-list__row beh-case" data-filter-row data-status="open" data-student="{{ inf.student.full_name }}" data-date="{{ inf.date|date:'Y-m-d' }}" data-level="{{ inf.level }}">
+            <div class="plain-list__main beh-case__main">
+              <span class="beh-case__head">
+                <a href="{% url 'behavior:student_profile' inf.student.id %}" class="plain-list__title link-maroon">{{ inf.student.full_name }}</a>
+                <span class="status-badge {% if inf.level == 4 %}status-danger{% else %}status-warning{% endif %}">الدرجة {{ inf.level }} — {{ inf.get_level_display }}</span>
+              </span>
+              <span class="beh-case__text">{{ inf.description }}</span>
+              {% if inf.action_taken %}<span class="plain-list__sub" title="{{ inf.action_taken }}">الإجراء الأوّلي: {{ inf.action_taken }}</span>{% endif %}
+              <span class="plain-list__sub">{{ inf.date }} · رصدها {{ inf.reported_by.full_name|default:"—" }}</span>
+            </div>
+
+            <form method="post" action="{% url 'behavior:committee_decision' inf.id %}" class="beh-decision" aria-label="قرار اللجنة في مخالفة {{ inf.student.full_name }}">
+              {% csrf_token %}
+              <textarea name="action_taken" rows="2" placeholder="ملاحظات اللجنة (اختياري)" aria-label="ملاحظات اللجنة" class="form-control form-control-sm"></textarea>
+              <div class="beh-decision__actions">
+                <button name="decision" value="resolve" class="btn-success btn-sm">{% icon "status_success" %} حل وإغلاق</button>
+                <button name="decision" value="suspend" class="btn-warning btn-sm" data-confirm="يُسجَّل الإيقاف المؤقت ويُستدعى وليُّ الأمر تلقائياً. أتابع؟">{% icon "time" %} إيقاف مؤقت</button>
+                {% if inf.level == 3 %}
+                <button name="decision" value="escalate" class="btn-danger btn-sm" data-confirm="يُرفع التصعيد إلى الدرجة 4 ويُستدعى وليُّ الأمر تلقائياً، ولا يُعكس. أتابع؟">{% icon "stats" %} تصعيد</button>
+                {% endif %}
+              </div>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+
+  {% if resolved_cases %}
+  <div id="resolved-cases-card" data-section="resolved">
+    {% section_card "القضايا المحلولة" meta="آخر 20" icon="behavior_violation" flush=True %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">الطالب</th>
+              <th scope="col">الدرجة</th>
+              <th scope="col">التاريخ</th>
+              <th scope="col">اعتمدها</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for inf in resolved_cases %}
+            <tr data-filter-row data-status="resolved" data-student="{{ inf.student.full_name }}" data-date="{{ inf.date|date:'Y-m-d' }}" data-level="{{ inf.level }}">
+              <td><a href="{% url 'behavior:student_profile' inf.student.id %}" class="link-maroon">{{ inf.student.full_name }}</a></td>
+              <td><span class="status-badge status-gray">الدرجة {{ inf.level }}</span></td>
+              <td class="num">{{ inf.date }}</td>
+              <td>{% if inf.recovery %}{{ inf.recovery.approved_by.full_name|default:"—" }}{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endsection_card %}
+  </div>
+  {% endif %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  var studentInput = document.getElementById('filter-student');
+  var statusSel    = document.getElementById('filter-status');
+  var levelSel     = document.getElementById('filter-level');
+  var dateFrom     = document.getElementById('filter-date-from');
+  var dateTo       = document.getElementById('filter-date-to');
+  var resetBtn     = document.getElementById('btn-reset-filters');
+  if (!studentInput) return;
+
+  var rows     = document.querySelectorAll('[data-filter-row]');
+  var openCard = document.getElementById('open-cases-card');
+  var resCard  = document.getElementById('resolved-cases-card');
+
+  function applyFilters(){
+    var q      = (studentInput.value || '').trim();
+    var status = statusSel.value || '';
+    var level  = levelSel.value  || '';
+    var from   = dateFrom.value  || '';
+    var to     = dateTo.value    || '';
+
+    var openVisible = 0, resVisible = 0;
+
+    rows.forEach(function(row){
+      var name = row.getAttribute('data-student') || '';
+      var st   = row.getAttribute('data-status') || '';
+      var dt   = row.getAttribute('data-date')   || '';
+      var lvl  = row.getAttribute('data-level')  || '';
+      var show = true;
+
+      if (q) {
+        show = typeof window.smartMatch === 'function'
+          ? window.smartMatch(q, name)
+          : name.toLowerCase().indexOf(q.toLowerCase()) !== -1;
+      }
+      if (show && status && st !== status) show = false;
+      if (show && level && lvl !== level) show = false;
+      if (show && from && dt < from) show = false;
+      if (show && to   && dt > to)   show = false;
+
+      row.hidden = !show;
+      if (show) {
+        if (st === 'open') openVisible++;
+        else resVisible++;
+      }
+    });
+
+    /* Hide entire section cards when all their rows are hidden */
+    if (openCard) openCard.hidden = Boolean((status === 'resolved' || openVisible === 0) && status);
+    if (resCard)  resCard.hidden  = Boolean((status === 'open' || resVisible === 0) && status);
+  }
+
+  studentInput.addEventListener('input', applyFilters);
+  statusSel.addEventListener('change', applyFilters);
+  levelSel.addEventListener('change', applyFilters);
+  dateFrom.addEventListener('change', applyFilters);
+  dateTo.addEventListener('change', applyFilters);
+  resetBtn.addEventListener('click', function(){
+    studentInput.value = '';
+    statusSel.value    = '';
+    levelSel.value     = '';
+    dateFrom.value     = '';
+    dateTo.value       = '';
+    applyFilters();
+    if (openCard) openCard.hidden = false;
+    if (resCard)  resCard.hidden  = false;
+  });
+});
+</script>
+{% endblock %}

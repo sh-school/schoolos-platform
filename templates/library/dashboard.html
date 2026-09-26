@@ -1,0 +1,149 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+{% block title %}لوحة المكتبة — {{ current_school.name|default:"المدرسة" }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/library/" parent_label="المكتبة" current="لوحة المكتبة" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "لوحة المكتبة" subtitle="إدارة الكتب والإعارة" icon="library" %}
+    <a href="{% url 'library:borrow_book' %}" class="btn-primary btn-sm">{% icon "add" %} إعارة جديدة</a>
+    <a href="{% url 'library:book_list' %}" class="btn-secondary btn-sm">{% icon "library" %} قائمة الكتب</a>
+  {% endpage_header %}
+
+  {% kpi_strip label="أرقام المكتبة" %}
+    {% kpi "الكتب" total_books tone="maroon" %}
+    {% kpi "إعارات نشطة" active_borrowings tone="blue" %}
+    {% kpi "متأخّرة عن الإعادة" overdue_borrowings tone=overdue_tone %}
+    {% kpi "نسخٌ متاحة" stats.available_copies|default:0 tone="green" %}
+  {% endkpi_strip %}
+
+  <div class="ui-grid-2">
+    {% section_card "توزيع الكتب حسب التصنيف" icon="stats" %}
+      <div class="dash-chart-wrap">
+        <div class="chart-loading" id="loading-chartCategories">جاري التحميل...</div>
+        <canvas id="chartCategories" role="img" aria-label="رسم بياني: توزيع الكتب حسب التصنيف"></canvas>
+      </div>
+    {% endsection_card %}
+    {% section_card "حركة الإعارة" meta="آخر 6 أشهر" icon="trend" %}
+      <div class="dash-chart-wrap">
+        <div class="chart-loading" id="loading-chartMonthly">جاري التحميل...</div>
+        <canvas id="chartMonthly" role="img" aria-label="رسم بياني: حركة الإعارة آخر 6 أشهر"></canvas>
+      </div>
+    {% endsection_card %}
+  </div>
+
+  <div class="ui-grid-2">
+    {% section_card "تستحقّ الإعادة قريباً" meta=due_soon|length icon="time" empty="لا إعاراتٍ تستحقّ الإعادة قريباً" %}{% if due_soon %}
+      <ul class="plain-list is-scroll">
+        {% for b in due_soon %}
+          <li class="plain-list__row">
+            <span class="plain-list__main"><b class="plain-list__title">{{ b.book.title|truncatechars:40 }}</b><span class="plain-list__sub">{{ b.user.full_name }}</span></span>
+            <span class="status-badge status-warning">{{ b.due_date|date:"d/m" }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "الأكثر إعارة" meta=stats.popular_books|length icon="library" empty="لا إعاراتٍ بعد" %}{% if stats.popular_books %}
+      <ul class="plain-list is-scroll">
+        {% for pb in stats.popular_books %}
+          <li class="plain-list__row">
+            <span class="plain-list__title">{{ pb.book__title|truncatechars:50 }}</span>
+            <span class="status-badge status-info">{{ pb.count }} إعارة</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+
+  <div class="ui-grid-2">
+    {% section_card "آخر الكتب المضافة" meta=recent_books|length icon="library" empty="لا كتبَ مضافة" %}{% if recent_books %}
+      <ul class="plain-list is-scroll">
+        {% for book in recent_books %}
+          <li class="plain-list__row">
+            <span class="plain-list__main"><b class="plain-list__title">{{ book.title }}</b><span class="plain-list__sub">{{ book.author }} · {{ book.category }}</span></span>
+            <span class="status-badge {% if book.available_qty > 0 %}status-success{% else %}status-danger{% endif %}">{{ book.available_qty }} متاحة</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "آخر الإعارات" meta=recent_borrowings|length icon="library" empty="لا إعاراتٍ مسجّلة" %}{% if recent_borrowings %}
+      <ul class="plain-list is-scroll">
+        {% for b in recent_borrowings %}
+          <li class="plain-list__row">
+            <span class="plain-list__main"><b class="plain-list__title">{{ b.user.full_name }}</b><span class="plain-list__sub">{{ b.book.title|truncatechars:30 }}</span></span>
+            <span class="status-badge {% if b.status == 'OVERDUE' %}status-danger{% elif b.status == 'BORROWED' %}status-info{% else %}status-success{% endif %}">{{ b.get_status_display }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/vendor/chart.umd.min.js' %}"></script>
+<script nonce="{{ request.csp_nonce }}">
+/* `defer` لا أثر له على سكربتٍ مضمَّن: يجري فور التحليل قبل chart.umd المؤجَّل → «Chart is not defined».
+   فيُنتظر DOMContentLoaded (تسبقه المؤجَّلاتُ)؛ ومع page-nav يُنفَّذ المستمعُ فوراً بالمُهيِّئ. */
+document.addEventListener('DOMContentLoaded', function(){
+Chart.defaults.font.family="'Tajawal','Segoe UI',Tahoma,sans-serif";
+Chart.defaults.font.size=10;
+Chart.defaults.plugins.legend.position='bottom';
+Chart.defaults.plugins.legend.labels.boxWidth=8;
+Chart.defaults.plugins.legend.labels.padding=6;
+Chart.defaults.plugins.legend.labels.font={size:9};
+
+const OPTS={responsive:true,maintainAspectRatio:false};
+const COLORS=chartPalette();
+
+async function fc(url,chartId){
+  var loadEl=document.getElementById('loading-'+chartId);
+  try{
+    var data=await(await fetch(url)).json();
+    document.querySelectorAll('.chart-loading').forEach(function(e){e.classList.add('hidden');});   // الرسمان يشتركان في طلبٍ واحد
+    return data;
+  }catch(e){
+    console.error("Chart:",url,e);
+    if(loadEl){loadEl.className='chart-error';loadEl.textContent='فشل تحميل البيانات';}
+    return null;
+  }
+}
+
+(async()=>{
+  const d=await fc('{% url "library:api_library_charts" %}','chartCategories');
+  if(!d)return;
+
+  /* Category Doughnut */
+  const elCat=document.getElementById('chartCategories');
+  if(elCat && d.categories && d.categories.labels.length){
+    new Chart(elCat,{
+      type:'doughnut',
+      data:{labels:d.categories.labels,datasets:[{data:d.categories.data,backgroundColor:COLORS.slice(0,d.categories.labels.length)}]},
+      options:{...OPTS,cutout:'55%',
+        plugins:{legend:{position:'right',labels:{font:{size:9}}}}}
+    });
+  }
+
+  /* Monthly Borrowing Trend */
+  const elMon=document.getElementById('chartMonthly');
+  if(elMon && d.monthly && d.monthly.labels.length){
+    new Chart(elMon,{
+      type:'bar',
+      data:{labels:d.monthly.labels,datasets:[{label:'عدد الإعارات',data:d.monthly.data,backgroundColor:chartColor('chart-1'),borderRadius:4}]},
+      options:{...OPTS,
+        plugins:{legend:{display:false}},
+        scales:{y:{beginAtZero:true,ticks:{precision:0,font:{size:9}}}}}
+    });
+  }
+})();
+});
+</script>
+{% endblock %}

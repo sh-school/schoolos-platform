@@ -1,0 +1,1233 @@
+{% load privacy brand_tags icons %}
+{% load navigation assets %}
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  {# الرسمُ الأوّلُ ينتظر قرارَ «بلا تمرير» بعد </main> (LAY-03) — وإلّا رُسمت الصفحةُ الطويلةُ ثمّ قفزت. #}
+  <link rel="expect" href="#noscroll-fitted" blocking="render">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="{% brand_color 'MAROON' %}" id="meta-theme-color">
+  <meta name="color-scheme" content="light" id="meta-color-scheme">
+  {% comment %}لونُ أرضيّة الصفحة يُرسم قبل أيّ ملفٍّ خارجيّ (من `core.brand` مرآةِ `--page-bg`): كانت الصفحةُ الجديدةُ بيضاءَ لحظةً بين النقرة وتحميل الأنماط فتُرى الشاشةُ «تُفرَّغ» ثمّ تعود. الآن لا أبيضَ يظهر: تبقى الأرضيّةُ بلونها نهاراً وليلاً.{% endcomment %}
+  <style>html{background:{% brand_color "PAGE_BG" %}}html.dark{background:{% brand_color "PAGE_BG" "dark" %}}</style>
+  {# ── Dark Mode: تطبيق مبكر لمنع وميض الأبيض (FOUC) ── #}
+  <script nonce="{{ request.csp_nonce }}">
+    (function(){var t=localStorage.getItem('theme'),isDark=t==='dark';if(isDark){document.documentElement.classList.add('dark');var mc=document.getElementById('meta-theme-color');if(mc)mc.content='{% brand_color "MAROON_BG" "dark" %}';var cs=document.getElementById('meta-color-scheme');if(cs)cs.content='dark'}})();
+  </script>
+  {% comment %}
+  لوحةُ الرسوم تُقرأ من `:root`. ألوانُ Chart.js كانت تُكتب أرقاماً في
+  القوالب وفي الخادم، والخادمُ لا يعرف الوضعَ لأنّه في `localStorage` عند
+  المتصفّح. فكانت لوحةٌ مضبوطةٌ على الأبيض تُرسم على 0f172a#: العنّابيُّ
+  نسبتُه 1.91 والكحليُّ 1.53 — شكلان لا يُريان.
+  وهي هنا في الرأس لا في base.js: ذاك مؤجَّلٌ (defer) فيعمل بعد سكربتات
+  الصفحة، والصفحةُ تبني رسومَها قبله.
+  {% endcomment %}
+  <script nonce="{{ request.csp_nonce }}">
+    (function(){
+      function token(n){return getComputedStyle(document.documentElement).getPropertyValue('--'+n).trim()}
+      window.chartColor = token;
+      window.chartPalette = function(count){
+        var all=['chart-1','chart-2','chart-3','chart-4','chart-5','chart-6'].map(token);
+        if(!count) return all;
+        var out=[];for(var i=0;i<count;i++)out.push(all[i%all.length]);return out;
+      };
+      window.chartAlpha = function(n,a){
+        return 'color-mix(in srgb, '+token(n)+' '+Math.round(a*100)+'%, transparent)';
+      };
+    })();
+  </script>
+  {% block extra_head %}{% endblock %}
+  <title>{% block title %}{{ current_school.name|default:"المدرسة" }}{% endblock %}</title>
+  {% load static %}
+
+  {# ── Favicon & PWA ── #}
+  <link rel="icon" type="image/png" sizes="256x256" href="{% static 'icons/favicon.png' %}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{% static 'icons/apple-touch-icon.png' %}">
+  {% if user.is_authenticated %}
+  <link rel="manifest" href="{% url 'global_manifest' %}">
+  {% comment %}
+  المعياريُّ أوّلاً، ثمّ نظيرُه الخاصُّ بآبل. وذاك مهجورٌ في الكروميّات
+  لكنّه ما زال الوحيدَ الذي يفهمه Safari على iOS — فيبقى معه لا بدلاً منه.
+  {% endcomment %}
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="{{ current_school.city|default:'المدرسة' }}">
+  {% endif %}
+
+  {# ── الخط العربي: Tajawal محلي (WOFF2) — أسرع من Google Fonts ── #}
+  <link rel="preload" href="{% static 'fonts/Tajawal-Regular.woff2' %}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{% static 'fonts/Tajawal-Bold.woff2' %}" as="font" type="font/woff2" crossorigin>
+
+  {# ── CSS — Tailwind in lowest layer, then the platform sheets (core/css_files.py, ADR-0003) ── #}
+  <style>@import url("{% static 'css/tailwind.min.css' %}") layer(tailwind);</style>
+  {% custom_css %}
+  {% block extra_css %}{% endblock %}
+
+  {# ── HTMX 1.9.12 (محلي — بدون CDN لتجنب مشاكل integrity) ── #}
+  <script src="{% static 'js/htmx.min.js' %}" defer></script>
+</head>
+
+<body class="app-body min-h-screen flex flex-col" data-icon-sprite="{% static 'icons/sprite.svg' %}" data-page-nav>
+
+{# ✅ Skip Navigation — WCAG 2.1 AA #}
+<a href="#main-content" class="skip-nav">تخطي للمحتوى الرئيسي</a>
+
+{# ✅ HTMX Loading Bar — شريط تحميل أعلى الصفحة #}
+<div id="htmx-loading-bar" aria-hidden="true"></div>
+
+{# ✅ Screen Reader Live Region — يُنبِّه بتحديثات HTMX #}
+<div id="sr-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+{# ✅ Toast Container #}
+<div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+{% if user.is_authenticated %}
+{% with role=request.user.get_role %}
+
+{# ═══════════════════════ NAVIGATION — السطر العلوي (الهوية + المستخدم) ═══ #}
+<header class="site-header" role="banner">
+  <div class="nav-inner">
+
+    {# ── Logo + اسم المدرسة ── #}
+    {% if request.user|can_open:"dashboard" %}
+    <a href="{% url 'dashboard' %}" class="nb nav-logo">
+      <img src="{% static 'brand/emblem-white.svg' %}" width="27" height="27"
+           alt="{{ current_school.name|default:'شعار المدرسة' }}" class="nav-logo-img">
+      <span class="nav-logo-text">{{ current_school.name|default:"المدرسة" }}</span>
+    </a>
+    {% endif %}
+
+    <div class="nav-spacer"></div>
+
+    {% comment %}بحثٌ سريع: مدخلُ لمسٍ للوحة الأوامر (Ctrl+K لا يوجد على الجوال) — شرطُه شرطُ وجودها. يشارك `.theme-toggle` مظهرَه ومنطقةَ لمسه (44px على المؤشّر الخشن، ويُخفى في الطباعة) — ميزانيّةُ CSS لا تحتمل قاعدةً مكرَّرة، والصنفُ بلا تعريفٍ يُسقط حارسَ الهويّة؛ فالمقبضُ معرِّفُه `#nav-search-btn`.{% endcomment %}
+    {% if user.is_authenticated %}
+    <button type="button" class="theme-toggle" id="nav-search-btn" data-call="openPalette"
+            aria-haspopup="dialog" aria-controls="cmd-palette" aria-label="بحث سريع" title="بحث سريع (Ctrl+K)">{% icon "search" %}</button>
+    {% endif %}
+
+    {# ── Dark Mode Toggle ── #}
+    <button class="theme-toggle" id="theme-toggle" title="تبديل الثيم" aria-label="تبديل الثيم الليلي">
+      <span id="theme-icon"><span data-theme-icon="dark">{% icon "theme_dark" %}</span><span data-theme-icon="light" hidden>{% icon "theme_light" %}</span></span>
+    </button>
+
+    {# ── Notification Bell ── #}
+    {% if request.user|can_open:"notification_inbox" %}
+    <a href="{% url 'notification_inbox' %}" class="nb nav-bell" title="الإشعارات" id="notif-bell">
+      <span class="nav-bell-icon">{% icon "notifications" %}</span>
+      <span id="notif-badge" class="notif-badge" aria-label="عدد الإشعارات غير المقروءة"></span>
+    </a>
+    {% endif %}
+
+    {# ── User Menu ── #}
+    <button class="nb nav-user-btn" id="btn-user" data-sd="m-user" aria-expanded="false" aria-controls="m-user" aria-label="قائمة المستخدم">
+      <span class="nav-user-avatar" aria-hidden="true">{{ request.user.full_name|slice:":1" }}</span>
+      <span class="nav-user-name">{{ request.user.full_name }}</span>
+      <span class="chv">▼</span>
+    </button>
+
+  </div>
+</header>
+
+{# ═══════════════════════ NAVIGATION — السطر السفلي (القوائم) ═══════════ #}
+<nav class="site-nav" role="navigation" aria-label="التنقل الرئيسي">
+  <div class="nav-inner">
+
+    {# ── Hamburger (mobile) ── #}
+    <button id="mob-menu-btn" class="nav-hamburger"
+            aria-label="القائمة" aria-expanded="false"><span class="nav-hamburger-open">{% icon "menu" %}</span><span class="nav-hamburger-close">{% icon "close" %}</span></button>
+
+    {# ── Role-based nav ── #}
+    <div class="nb-bar">
+    {% if is_admin_role %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      <button class="nb" id="btn-academic" data-sd="m-academic" aria-expanded="false" aria-controls="m-academic">{% icon "academic" %} إدارة الشؤون الأكاديمية <span class="chv">▼</span></button>
+      <button class="nb" id="btn-staff-affairs" data-sd="m-staff-affairs" aria-expanded="false" aria-controls="m-staff-affairs">{% icon "staff" %} شؤون الموظفين <span class="chv">▼</span></button>
+      <button class="nb" id="btn-student-affairs" data-sd="m-student-affairs" aria-expanded="false" aria-controls="m-student-affairs">{% icon "students" %} إدارة شؤون الطلاب <span class="chv">▼</span></button>
+      <button class="nb" id="btn-student-info" data-sd="m-student-info" aria-expanded="false" aria-controls="m-student-info">{% icon "student_info" %} مركز معلومات الطلبة <span class="chv">▼</span></button>
+      <button class="nb" id="btn-quality"  data-sd="m-quality"  aria-expanded="false" aria-controls="m-quality">{% icon "quality" %} الجودة <span class="chv">▼</span></button>
+      <button class="nb" id="btn-services" data-sd="m-services" aria-expanded="false" aria-controls="m-services">{% icon "services" %} الخدمات <span class="chv">▼</span></button>
+      <button class="nb" id="btn-admin"    data-sd="m-admin"    aria-expanded="false" aria-controls="m-admin">{% icon "maintenance" %} الإدارة <span class="chv">▼</span></button>
+
+    {% elif role == "nurse" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"student_info:sections" %}
+      <a href="{% url 'student_info:sections' %}" class="nb">{% icon "student_info" %} مركز معلومات الطلبة</a>
+      {% endif %}
+      {% if request.user|can_open:"clinic:dashboard" %}
+      <a href="{% url 'clinic:dashboard' %}" class="nb">{% icon "clinic" %} العيادة</a>
+      {% endif %}
+      {% if request.user|can_open:"clinic:visits_list" %}
+      <a href="{% url 'clinic:visits_list' %}" class="nb">سجل الزيارات</a>
+      {% endif %}
+      {% if request.user|can_open:"clinic:record_visit" %}
+      <a href="{% url 'clinic:record_visit' %}" class="nb">تسجيل زيارة</a>
+      {% endif %}
+      {% if request.user|can_open:"clinic:statistics" %}
+      <a href="{% url 'clinic:statistics' %}" class="nb">الإحصائيات</a>
+      {% endif %}
+
+    {% elif role == "bus_supervisor" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"transport:dashboard" %}
+      <a href="{% url 'transport:dashboard' %}" class="nb">{% icon "transport" %} النقل</a>
+      {% endif %}
+      {% if request.user|can_open:"transport:buses_list" %}
+      <a href="{% url 'transport:buses_list' %}" class="nb">الحافلات</a>
+      {% endif %}
+      {% if request.user|can_open:"transport:student_assignments" %}
+      <a href="{% url 'transport:student_assignments' %}" class="nb">إسناد الطلاب</a>
+      {% endif %}
+      {% if request.user|can_open:"transport:statistics" %}
+      <a href="{% url 'transport:statistics' %}" class="nb">الإحصائيات</a>
+      {% endif %}
+
+    {% elif role == "librarian" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"library:dashboard" %}
+      <a href="{% url 'library:dashboard' %}" class="nb">{% icon "library" %} المكتبة</a>
+      {% endif %}
+      {% if request.user|can_open:"library:book_list" %}
+      <a href="{% url 'library:book_list' %}" class="nb">الكتب</a>
+      {% endif %}
+      {% if request.user|can_open:"library:borrow_book" %}
+      <a href="{% url 'library:borrow_book' %}" class="nb">إعارة جديدة</a>
+      {% endif %}
+
+    {% elif role == "coordinator" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"student_info:sections" %}
+      <a href="{% url 'student_info:sections' %}" class="nb">{% icon "student_info" %} مركز معلومات الطلبة</a>
+      {% endif %}
+      <button class="nb" id="btn-coord-schedule" data-sd="m-coord-schedule" aria-expanded="false" aria-controls="m-coord-schedule">{% icon "schedule" %} الجداول <span class="chv">▼</span></button>
+      {% if request.user|can_open:"student_affairs:student_list" %}
+      <a href="{% url 'student_affairs:student_list' %}" class="nb">{% icon "students" %} طلاب قسمي</a>
+      {% endif %}
+      {% if request.user|can_open:"observation_list" %}
+      <a href="{% url 'observation_list' %}" class="nb">{% icon "observation" %} الزيارات الصفية</a>
+      {% endif %}
+      {% if request.user|can_open:"assessments_dashboard" %}
+      <a href="{% url 'assessments_dashboard' %}" class="nb">التقييمات</a>
+      {% endif %}
+      {% if request.user|can_open:"reports_index" %}
+      <a href="{% url 'reports_index' %}" class="nb">التقارير</a>
+      {% endif %}
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">إجراءاتي</a>
+      {% endif %}
+      {% if is_quality_reviewer %}
+      {% if request.user|can_open:"review_list" %}
+      <a href="{% url 'review_list' %}" class="nb">{% icon "self_review" %} المراجعة الذاتية</a>
+      {% endif %}
+      {% endif %}
+      {% if request.user|can_open:"behavior:dashboard" or request.user|can_open:"behavior:report_infraction" %}
+      <button class="nb" id="btn-behavior" data-sd="m-behavior" aria-expanded="false" aria-controls="m-behavior">{% icon "behavior" %} السلوك <span class="chv">▼</span></button>
+      {% endif %}
+      <button class="nb" id="btn-admin" data-sd="m-admin" aria-expanded="false" aria-controls="m-admin">{% icon "maintenance" %} الإدارة <span class="chv">▼</span></button>
+
+    {% elif role == "teacher" or role == "specialist" or role == "ese_teacher" or role == "teacher_assistant" or role == "ese_assistant" or role == "e_projects_coordinator" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"student_info:sections" %}
+      <a href="{% url 'student_info:sections' %}" class="nb">{% icon "student_info" %} مركز معلومات الطلبة</a>
+      {% endif %}
+      <button class="nb" id="btn-teacher-schedule" data-sd="m-teacher-schedule" aria-expanded="false" aria-controls="m-teacher-schedule">{% icon "schedule" %} جدولي <span class="chv">▼</span></button>
+      {% if request.user|can_open:"observation_list" %}
+      <a href="{% url 'observation_list' %}" class="nb">{% icon "observation" %} الزيارات الصفية</a>
+      {% endif %}
+      {% if request.user|can_open:"assessments_dashboard" %}
+      <a href="{% url 'assessments_dashboard' %}" class="nb">التقييمات</a>
+      {% endif %}
+      {% if request.user|can_open:"reports_index" %}
+      <a href="{% url 'reports_index' %}" class="nb">التقارير</a>
+      {% endif %}
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">إجراءاتي</a>
+      {% endif %}
+      {% if is_quality_reviewer %}
+      {% if request.user|can_open:"review_list" %}
+      <a href="{% url 'review_list' %}" class="nb">{% icon "self_review" %} المراجعة الذاتية</a>
+      {% endif %}
+      {% endif %}
+      {% if request.user|can_open:"behavior:dashboard" or request.user|can_open:"behavior:report_infraction" %}
+      <button class="nb" id="btn-behavior" data-sd="m-behavior" aria-expanded="false" aria-controls="m-behavior">{% icon "behavior" %} السلوك <span class="chv">▼</span></button>
+      {% endif %}
+      <button class="nb" id="btn-admin" data-sd="m-admin" aria-expanded="false" aria-controls="m-admin">{% icon "maintenance" %} الإدارة <span class="chv">▼</span></button>
+
+    {% elif role == "social_worker" or role == "psychologist" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"student_info:sections" %}
+      <a href="{% url 'student_info:sections' %}" class="nb">{% icon "student_info" %} مركز معلومات الطلبة</a>
+      {% endif %}
+      <button class="nb" id="btn-sw-behavior" data-sd="m-sw-behavior" aria-expanded="false" aria-controls="m-sw-behavior">{% icon "behavior" %} السلوك <span class="chv">▼</span></button>
+      <button class="nb" id="btn-sw-students" data-sd="m-sw-students" aria-expanded="false" aria-controls="m-sw-students">{% icon "students" %} متابعة الطلاب <span class="chv">▼</span></button>
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">إجراءاتي</a>
+      {% endif %}
+
+    {% elif role == "academic_advisor" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"student_info:sections" %}
+      <a href="{% url 'student_info:sections' %}" class="nb">{% icon "student_info" %} مركز معلومات الطلبة</a>
+      {% endif %}
+      {% if request.user|can_open:"observation_list" %}
+      <a href="{% url 'observation_list' %}" class="nb">{% icon "observation" %} الزيارات الصفية</a>
+      {% endif %}
+      {% if request.user|can_open:"assessments_dashboard" %}
+      <a href="{% url 'assessments_dashboard' %}" class="nb">التقييمات</a>
+      {% endif %}
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">إجراءاتي</a>
+      {% endif %}
+
+    {% elif role == "admin" %}
+      {# الإداري (T4) — قوائم مقيّدة: لا يحصل على قوائم المدير الكاملة #}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"notification_inbox" %}
+      <a href="{% url 'notification_inbox' %}" class="nb">{% icon "notifications" %} الإشعارات</a>
+      {% endif %}
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">{% icon "my_actions" %} إجراءاتي</a>
+      {% endif %}
+
+    {% elif role == "secretary" or role == "admin_supervisor" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if role == "secretary" %}<a href="{% url 'staff_affairs:attendance_board' %}" class="nb">{% icon "attendance_register" %} حضور الموظفين</a>
+      <a href="{% url 'staff_affairs:permit_queue' %}" class="nb">{% icon "tardiness" %} طلبات الأذونات</a>{% endif %}
+      {% if role == "admin_supervisor" %}<a href="{% url 'wings:record_index' %}" class="nb">{% icon "attendance_register" %} رصد الغياب</a>
+      {# طلبةُ جناحه في قائمةٍ منسدلةٍ واحدة (m-wing-students أدناه): خمسةُ روابطَ مستقلّةٍ كانت تلفّ الشريطَ سطرين على الحاسوب #}
+      <button class="nb" id="btn-wing-students" data-sd="m-wing-students" aria-expanded="false" aria-controls="m-wing-students">{% icon "students" %} طلبة جناحي <span class="chv">▼</span></button>
+      {% if request.user|can_open:"student_info:sections" %}
+      <a href="{% url 'student_info:sections' %}" class="nb">{% icon "student_info" %} مركز معلومات الطلبة</a>
+      {% endif %}
+      {% if request.user|can_open:"wings:floors" %}
+      <a href="{% url 'wings:floors' %}" class="nb">{% icon "wings" %} أجنحة المدرسة</a>
+      {% endif %}
+      {% endif %}
+      {% if request.user|can_open:"notification_inbox" %}
+      <a href="{% url 'notification_inbox' %}" class="nb">{% icon "notifications" %} الإشعارات</a>
+      {% endif %}
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">إجراءاتي</a>
+      {% endif %}
+
+    {% elif role == "it_technician" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      <a href="{% url 'it_admin_password_reset_list' %}" class="nb">{% icon "password" %} إعادة تعيين كلمات المرور</a>
+
+    {# ── الأدوار الجديدة v7 ── #}
+
+    {% elif role == "speech_therapist" or role == "occupational_therapist" %}
+      {# أخصائي النطق + أخصائي العلاج الوظائفي — يعملون مع طلاب محددين #}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">{% icon "my_actions" %} إجراءاتي</a>
+      {% endif %}
+
+    {% elif role == "activities_coordinator" %}
+      {# منسق الأنشطة المدرسية — يُدير الأنشطة اللاصفية ومشاركة الطلاب #}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"student_info:sections" %}
+      <a href="{% url 'student_info:sections' %}" class="nb">{% icon "student_info" %} مركز معلومات الطلبة</a>
+      {% endif %}
+      {% if request.user|can_open:"student_affairs:activity_list" %}
+      <a href="{% url 'student_affairs:activity_list' %}" class="nb">{% icon "activities" %} الأنشطة</a>
+      {% endif %}
+      {% if request.user|can_open:"behavior:dashboard" or request.user|can_open:"behavior:report_infraction" %}
+      <button class="nb" id="btn-behavior" data-sd="m-behavior" aria-expanded="false" aria-controls="m-behavior">{% icon "behavior" %} السلوك <span class="chv">▼</span></button>
+      {% endif %}
+      {% if request.user|can_open:"reports_index" %}
+      <a href="{% url 'reports_index' %}" class="nb">{% icon "reports" %} التقارير</a>
+      {% endif %}
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">{% icon "my_actions" %} إجراءاتي</a>
+      {% endif %}
+
+    {% elif role == "receptionist" %}
+      {# موظف الاستقبال — استقبال الزوار والتواصل الإداري #}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"notification_inbox" %}
+      <a href="{% url 'notification_inbox' %}" class="nb">{% icon "notifications" %} الإشعارات</a>
+      {% endif %}
+      {% if request.user|can_open:"my_procedures" %}
+      <a href="{% url 'my_procedures' %}" class="nb">{% icon "my_actions" %} إجراءاتي</a>
+      {% endif %}
+
+    {% elif role == "transport_officer" %}
+      {# مسؤول النقل — إدارة منظومة النقل المدرسي بالكامل #}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"transport:dashboard" %}
+      <a href="{% url 'transport:dashboard' %}" class="nb">{% icon "transport" %} إدارة النقل</a>
+      {% endif %}
+      {% if request.user|can_open:"transport:buses_list" %}
+      <a href="{% url 'transport:buses_list' %}" class="nb">الحافلات</a>
+      {% endif %}
+      {% if request.user|can_open:"transport:student_assignments" %}
+      <a href="{% url 'transport:student_assignments' %}" class="nb">إسناد الطلاب</a>
+      {% endif %}
+      {% if request.user|can_open:"transport:statistics" %}
+      <a href="{% url 'transport:statistics' %}" class="nb">الإحصائيات</a>
+      {% endif %}
+
+    {% elif role == "student" %}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {% if request.user|can_open:"library:dashboard" %}
+      <a href="{% url 'library:dashboard' %}" class="nb">{% icon "library" %} المكتبة</a>
+      {% endif %}
+
+    {% elif role == "parent" %}
+      {% if request.user|can_open:"parent_dashboard" %}
+      <a href="{% url 'parent_dashboard' %}" class="nb">{% icon "dashboard" %} بوابتي</a>
+      {% endif %}
+      {% if request.user|can_open:"parent_all_grades" %}
+      <a href="{% url 'parent_all_grades' %}" class="nb">{% icon "grades" %} الدرجات</a>
+      {% endif %}
+      {% if request.user|can_open:"parent_all_attendance" %}
+      <a href="{% url 'parent_all_attendance' %}" class="nb">{% icon "attendance_register" %} الحضور</a>
+      {% endif %}
+      {% if request.user|can_open:"parent_behavior" %}
+      <a href="{% url 'parent_behavior' %}" class="nb">{% icon "behavior" %} السلوك</a>
+      {% endif %}
+
+    {% else %}
+      {# platform_developer أو أي دور آخر — نفس المدير #}
+      {% if request.user|can_open:"dashboard" %}
+      <a href="{% url 'dashboard' %}" class="nb">{% icon "dashboard" %} الرئيسية</a>
+      {% endif %}
+      {# بديلُ الجناح من ملاحظي الطلبة وعمّال الخدمات يفتحه بتكليفه — والقيادةُ تجده في قوائمها. #}
+      {% if not is_admin_role and request.user|can_open:"wings:record_index" %}
+      <a href="{% url 'wings:record_index' %}" class="nb">{% icon "attendance_register" %} رصد الغياب</a>
+      {% endif %}
+      <button class="nb" id="btn-academic" data-sd="m-academic" aria-expanded="false" aria-controls="m-academic">{% icon "academic" %} إدارة الشؤون الأكاديمية <span class="chv">▼</span></button>
+      <button class="nb" id="btn-staff-affairs" data-sd="m-staff-affairs" aria-expanded="false" aria-controls="m-staff-affairs">{% icon "staff" %} شؤون الموظفين <span class="chv">▼</span></button>
+      <button class="nb" id="btn-student-affairs" data-sd="m-student-affairs" aria-expanded="false" aria-controls="m-student-affairs">{% icon "students" %} إدارة شؤون الطلاب <span class="chv">▼</span></button>
+      <button class="nb" id="btn-student-info" data-sd="m-student-info" aria-expanded="false" aria-controls="m-student-info">{% icon "student_info" %} مركز معلومات الطلبة <span class="chv">▼</span></button>
+      <button class="nb" id="btn-quality"  data-sd="m-quality"  aria-expanded="false" aria-controls="m-quality">{% icon "quality" %} الجودة <span class="chv">▼</span></button>
+      <button class="nb" id="btn-services" data-sd="m-services" aria-expanded="false" aria-controls="m-services">{% icon "services" %} الخدمات <span class="chv">▼</span></button>
+      <button class="nb" id="btn-admin"    data-sd="m-admin"    aria-expanded="false" aria-controls="m-admin">{% icon "maintenance" %} الإدارة <span class="chv">▼</span></button>
+
+    {% endif %}
+    {% comment %}
+    الكادرُ الذي هو وليُّ أمرٍ أيضاً (قرارُ 2026-09-16): بابُه إلى أبنائه — والموافقةُ
+    تُطلب منه هناك لا في عمله. والعضويّةُ من المحفوظ على الكائن، فلا استعلامَ لكلّ صفحة.
+    {% endcomment %}
+    {# خروقاتُ البيانات: القيادةُ في قائمة «الإدارة»، والإداريّ ومطوّرُ المنصّة رابطٌ مباشر هنا. #}
+    {% if not is_admin_role and request.user|can_open:"breach:dashboard" %}
+    <a href="{% url 'breach:dashboard' %}" class="nb">{% icon "breach" %} خروقات البيانات</a>
+    {% endif %}
+    {% if role != "parent" and request.user.has_parent_membership and request.user|can_open:"parent_dashboard" %}
+      <a href="{% url 'parent_dashboard' %}" class="nb" id="nav-my-portal">{% icon "children" %} بوابتي</a>
+    {% endif %}
+    </div>
+
+  </div>
+</nav>
+
+{# ════════════════ DROPDOWN MENUS ═══════════════════════════════════════ #}
+{% if is_admin_role %}
+
+{# ✅ REQ-SH-002 — Client 001 menu restructure (11 items، كلُّها باقيةٌ بلا حذف). #}
+{% comment %}
+عمودٌ لكلّ قسمٍ فوق 1025px (sd-menu--cols-4) — كلُّ قسمٍ فيه عنصرٌ واحدٌ على
+الأقلّ متاحٌ لكلّ من يفتح هذه القائمة (can_open وحدَه بلا قيد دورٍ)، فلا يفرغ
+عمودٌ كاملاً لمن لا يملك القيدَ الأضيق (الجدولة الذكية/الإسناد).
+{% endcomment %}
+<div class="sd-menu sd-menu--cols-4" id="m-academic" role="menu" aria-label="إدارة الشؤون الأكاديمية">
+  <div class="sd-section">
+  <div class="sd-label">الجدول والجدولة</div>
+  {% comment %}
+  الجدولةُ الذكيّةُ كانت بلا بابٍ في الواجهة: الصفحةُ تعمل والدورُ يصل إليها،
+  ولا رابطَ إليها في أيّ قائمة — فلا يبلغها إلّا من يعرف مسارَها. وهي أخطرُ
+  صفحةٍ في المنصّة (تستبدل الجدولَ كلَّه)، فبابُها مقصورٌ على من يملك اعتمادَه.
+  {% endcomment %}
+  {% if role == "principal" or role == "vice_academic" or role == "admin" or user.is_superuser %}
+  {% if request.user|can_open:"smart_schedule" %}
+  <a href="{% url 'smart_schedule' %}" role="menuitem">{% icon "generate" %} الجدولة الذكية (توليد الجدول)</a>
+  {% endif %}
+  {% endif %}
+  {# الجدولُ العامّ (كلُّ المعلّمين) بنقرةٍ لكلّ من يفتح القائمة ويملك فتحَه — بلا قيد الدور: طلبُ المالك 2026-09-25. #}
+  {% if request.user|can_open:"weekly_schedule" %}
+  <a href="{% url 'weekly_schedule' %}" role="menuitem">{% icon "schedule" %} الجدول العام</a>
+  {% endif %}
+  {% if role == "principal" or role == "vice_academic" or role == "admin" or user.is_superuser %}
+  {% if request.user|can_open:"schedule_settings" %}
+  <a href="{% url 'schedule_settings' %}" role="menuitem">{% icon "settings" %} إعدادات الجدول والتفريغات</a>
+  {% endif %}
+  {% endif %}
+  {% comment %}
+  شاشةُ الإسناد الواحدة (2026-09-06): حلّت محلّ «إسناد الأنصبة» و«توزيعات المواد
+  على الشُّعب» و«التكاليف» — بابٌ واحدٌ على قدر صلاحيّته للمنسّق والنائب والمدير.
+  ومكانُها هنا لا مع الأقسام: هي مدخلات مولّد الجدول (تكليفُ معلّمٍ بمادّةٍ وشُعبةٍ)
+  لا شاشةُ إدارة الأقسام نفسِها (طلبُ المالك 2026-09-22).
+  {% endcomment %}
+  {% if role == "principal" or role == "vice_academic" or role == "coordinator" or user.is_superuser %}
+  {% if request.user|can_open:"academic_management:assignments" %}
+  <a href="{% url 'academic_management:assignments' %}" role="menuitem">{% icon "workload" %} الإسناد</a>
+  {% endif %}
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">تقييم الطلاب وتعليمهم</div>
+  {% if request.user|can_open:"academic_management:evaluations" %}
+  <a href="{% url 'academic_management:evaluations' %}" role="menuitem">{% icon "assessments" %} التقييمات والدرجات</a>
+  {% endif %}
+  {% if request.user|can_open:"academic_management:test_analytics" %}
+  <a href="{% url 'academic_management:test_analytics' %}" role="menuitem">{% icon "exam_analytics" %} تحليلات الاختبارات</a>
+  {% endif %}
+  {% if request.user|can_open:"academic_management:elearning" %}
+  <a href="{% url 'academic_management:elearning' %}" role="menuitem">{% icon "elearning" %} التعليم الإلكتروني</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">الزيارات ومتابعة الأداء</div>
+  {% if request.user|can_open:"observation_list" %}
+  <a href="{% url 'observation_list' %}" role="menuitem">{% icon "observation" %} الزيارات الصفية</a>
+  {% endif %}
+  {% if request.user|can_open:"academic_management:class_performance" %}
+  <a href="{% url 'academic_management:class_performance' %}" role="menuitem">{% icon "observation_reports" %} تقارير الأداء الصفي</a>
+  {% endif %}
+  {% if request.user|can_open:"academic_management:underperformance" %}
+  <a href="{% url 'academic_management:underperformance' %}" role="menuitem">{% icon "failing_students" %} إدارة الأداء دون المستوى</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">الأقسام والتقارير</div>
+  {% if request.user|can_open:"academic_management:departments" %}
+  <a href="{% url 'academic_management:departments' %}" role="menuitem">{% icon "departments" %} إدارة الأقسام التعليمية</a>
+  {% endif %}
+  {% if request.user|can_open:"academic_management:department_reports" %}
+  <a href="{% url 'academic_management:department_reports' %}" role="menuitem">{% icon "reports" %} التقارير الخاصة بالقسم</a>
+  {% endif %}
+  </div>
+</div>
+
+{% comment %}
+عمودٌ لكلّ قسمٍ فوق 1024px (`sd-menu--cols-3` في 20-components.css) — نظيرُ
+القائمة الأفقيّة في لوحة الإدارة (`adm-nav__menu--cols-N`، admin_theme.css)؛
+وتحت هذا العرض تبقى عموداً واحداً كسابق عهدها (قرارُ المالك 2026-09-22).
+{% endcomment %}
+{% comment %}
+فحصُ الشيفرة لا الاسم وحدَه: «التكليفات» في `views_attendance.py` نفسِه
+(ندبُ موظّفٍ لأعباء وظيفته، م-43) لا تقييمَ أداء، و«تقرير أعباء المعلمين»
+في `operations/views_schedule.py` (تقريرُ جدولٍ) لا تقييم — فكلاهما انتقل من
+«التقييم والتطوير» إلى مكانه الحقيقيّ (2026-09-22).
+{% endcomment %}
+<div class="sd-menu sd-menu--cols-4" id="m-staff-affairs" role="menu" aria-label="شؤون الموظفين">
+  <div class="sd-section">
+  <div class="sd-label">نظرة عامة</div>
+  {% if request.user|can_open:"staff_affairs:dashboard" %}
+  <a href="{% url 'staff_affairs:dashboard' %}">{% icon "staff" %} لوحة شؤون الموظفين</a>
+  {% endif %}
+  {% if request.user|can_open:"staff_affairs:staff_list" %}
+  <a href="{% url 'staff_affairs:staff_list' %}">{% icon "staff_register" %} سجل الموظفين</a>
+  {% endif %}
+  {% comment %}
+  شاشةُ العمل في هذه القائمة: التعيين. وكانت غائبةً عنها فلا يبلغها إلّا من
+  فتح السجلَّ أوّلاً ورأى الزرَّ في ترويسته — وأختُها «شؤون الطلاب» تعرض
+  «إضافة طالب جديد» و«إضافة وليّ أمر» في قائمتها مباشرةً. فاختلفت القائمتان
+  في ما يُفعَل لا في ما يُقرأ.
+  {% endcomment %}
+  {% if request.user|can_open:"staff_affairs:staff_appoint" %}
+  <a href="{% url 'staff_affairs:staff_appoint' %}">{% icon "user_add" %} تعيين منتسب</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">الحضور اليوميّ</div>
+  {% if request.user|can_open:"absence_list" %}
+  <a href="{% url 'absence_list' %}">{% icon "attendance_teacher_absence" %} غياب المعلمين والبدلاء</a>
+  {% endif %}
+  {% if request.user|can_open:"staff_affairs:attendance_board" %}
+  <a href="{% url 'staff_affairs:attendance_board' %}">{% icon "attendance_register" %} رصد حضور الموظفين</a>
+  {% endif %}
+  {% if request.user|can_open:"staff_affairs:attendance_report" %}
+  <a href="{% url 'staff_affairs:attendance_report' %}">{% icon "reports" %} تقرير الحضور الشهري</a>
+  {% endif %}
+  {% if request.user|can_open:"staff_affairs:exemptions" %}
+  <a href="{% url 'staff_affairs:exemptions' %}">{% icon "staff" %} الإعفاء من الرصد</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">الإجازات والتبديل</div>
+  {% if request.user|can_open:"staff_affairs:leave_list" %}
+  <a href="{% url 'staff_affairs:leave_list' %}">{% icon "leave" %} طلبات الإجازات</a>
+  {% endif %}
+  {% if request.user|can_open:"staff_affairs:permit_queue" %}
+  <a href="{% url 'staff_affairs:permit_queue' %}">{% icon "tardiness" %} طلبات الأذونات</a>
+  {% endif %}
+  {% if request.user|can_open:"swap_list" %}
+  <a href="{% url 'swap_list' %}">{% icon "swap_requests" %} طلبات التبديل</a>
+  {% endif %}
+  {% if request.user|can_open:"compensatory_list" %}
+  <a href="{% url 'compensatory_list' %}">{% icon "compensation" %} الحصص التعويضية</a>
+  {% endif %}
+  {% if request.user|can_open:"staff_affairs:assignments" %}
+  <a href="{% url 'staff_affairs:assignments' %}">{% icon "staff" %} التكليفات</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">التقييم والتطوير المهنيّ</div>
+  {% if is_leadership %}
+  {% if request.user|can_open:"evaluation_dashboard" %}
+  <a href="{% url 'evaluation_dashboard' %}">{% icon "staff_evaluation" %} تقييم أداء الموظفين</a>
+  {% endif %}
+  {% endif %}
+  {% if request.user|can_open:"staff_affairs:licensing" %}
+  <a href="{% url 'staff_affairs:licensing' %}">{% icon "licences" %} الرخص المهنية</a>
+  {% endif %}
+  {% if request.user|can_open:"teacher_load_report" %}
+  <a href="{% url 'teacher_load_report' %}">{% icon "workload" %} تقرير أعباء المعلمين</a>
+  {% endif %}
+  </div>
+</div>
+
+<div class="sd-menu sd-menu--cols-2" id="m-quality" role="menu" aria-label="الجودة">
+  <div class="sd-section">
+  <div class="sd-label">الخطة التشغيلية</div>
+  {% if request.user|can_open:"quality_dashboard" %}
+  <a href="{% url 'quality_dashboard' %}">{% icon "quality" %} لوحة الخطة</a>
+  {% endif %}
+  {% if request.user|can_open:"execution_list" %}
+  <a href="{% url 'execution_list' %}">{% icon "plan_execution" %} تنفيذ الخطة</a>
+  {% endif %}
+  {% if request.user|can_open:"review_list" %}
+  <a href="{% url 'review_list' %}">{% icon "self_review" %} المراجعة الذاتية</a>
+  {% endif %}
+  {% if request.user|can_open:"quality_report" %}
+  <a href="{% url 'quality_report' %}">{% icon "trend" %} تقرير التقدم</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">اللجان والإجراءات</div>
+  {% if request.user|can_open:"executor_committee" %}
+  <a href="{% url 'executor_committee' %}">{% icon "plan_committee" %} لجنة منفذي الخطة</a>
+  {% endif %}
+  {% if request.user|can_open:"quality_committee" %}
+  <a href="{% url 'quality_committee' %}">{% icon "review_committee" %} لجنة المراجعة الذاتية</a>
+  {% endif %}
+  {% if request.user|can_open:"my_procedures" %}
+  <a href="{% url 'my_procedures' %}">{% icon "my_actions" %} إجراءاتي</a>
+  {% endif %}
+  </div>
+</div>
+
+<div class="sd-menu" id="m-services" role="menu" aria-label="الخدمات">
+  <div class="sd-label">الخدمات المساندة</div>
+  {% if request.user|can_open:"clinic:dashboard" %}
+  <a href="{% url 'clinic:dashboard' %}">{% icon "clinic" %} العيادة المدرسية</a>
+  {% endif %}
+  {% if request.user|can_open:"transport:dashboard" %}
+  <a href="{% url 'transport:dashboard' %}">{% icon "transport" %} النقل المدرسي</a>
+  {% endif %}
+  {% if request.user|can_open:"library:dashboard" %}
+  <a href="{% url 'library:dashboard' %}">{% icon "library" %} المكتبة</a>
+  {% endif %}
+</div>
+
+{% comment %}
+`wings:floors`/`wings:coverage` إدارةُ بنية الأجنحة وتغطيتها الإشرافيّة —
+لا رصدَ حضورٍ فعليّاً (توثّقه الشيفرة: «من يحمل كلَّ جناحٍ اليوم»)، فعمودٌ
+مستقلٌّ عن «الحضور والغياب» الذي يقرأ سجلّاتِ الحضور نفسها (2026-09-22).
+{% endcomment %}
+<div class="sd-menu sd-menu--cols-4" id="m-student-affairs" role="menu" aria-label="شؤون الطلاب">
+  <div class="sd-section">
+  <div class="sd-label">السجلّ والالتحاق</div>
+  {% if request.user|can_open:"student_affairs:dashboard" %}
+  <a href="{% url 'student_affairs:dashboard' %}">{% icon "students" %} لوحة شؤون الطلاب</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:student_list" %}
+  <a href="{% url 'student_affairs:student_list' %}">{% icon "student_info" %} سجلات الطلاب</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:student_add" %}
+  <a href="{% url 'student_affairs:student_add' %}">{% icon "student_add" %} إضافة طالب جديد</a>
+  {% endif %}
+  {% if request.user|can_open:"manage_parent_links" %}
+  <a href="{% url 'manage_parent_links' %}">{% icon "parents" %} ربط أولياء الأمور بالطلاب</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:transfer_list" %}
+  <a href="{% url 'student_affairs:transfer_list' %}">{% icon "swap_requests" %} التنقلات</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">الحضور والغياب</div>
+  {% if request.user|can_open:"wings:record_index" %}
+  <a href="{% url 'wings:record_index' %}">{% icon "attendance_register" %} رصد الغياب — شُعب الأجنحة</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:attendance_overview" %}
+  <a href="{% url 'student_affairs:attendance_overview' %}">{% icon "stats" %} إحصائيات الغياب</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:student_movements" %}
+  <a href="{% url 'student_affairs:student_movements' %}">{% icon "sent_home" %} تحركات الطلبة</a>
+  {% endif %}
+  {% comment %} «تسجيل الحضور» القديمة للمعلّم وحدَه («حصصي اليوم» في قائمته) — القيادةُ والمشرفون يرصدون من كشف الأجنحة (قرارُ 2026-09-13). {% endcomment %}
+  {% if request.user|can_open:"daily_report" %}
+  <a href="{% url 'daily_report' %}">{% icon "absence" %} غياب اليوم</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">الأجنحة والتغطية</div>
+  {% if request.user|can_open:"wings:floors" %}
+  <a href="{% url 'wings:floors' %}">{% icon "wings" %} أجنحة المدرسة والتوقيت</a>
+  {% endif %}
+  {% if role == "principal" or role == "vice_admin" or role == "vice_academic" or role == "platform_developer" %}
+  {% if request.user|can_open:"wings:coverage" %}
+  <a href="{% url 'wings:coverage' %}">{% icon "wing_coverage" %} تغطية الأجنحة والإنابة</a>
+  {% endif %}
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">إدارة سلوك الطلبة</div>
+  {% if request.user|can_open:"student_affairs:behavior_overview" %}
+  <a href="{% url 'student_affairs:behavior_overview' %}">{% icon "behavior" %} ملخص سلوك الطلاب</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:tardiness_list" %}
+  <a href="{% url 'student_affairs:tardiness_list' %}">{% icon "tardiness" %} التأخر الصباحي</a>
+  {% endif %}
+  {% if request.user|can_open:"behavior:report_infraction" %}
+  <a href="{% url 'behavior:report_infraction' %}">{% icon "behavior_violation" %} تسجيل سلوك</a>
+  {% endif %}
+  {% if request.user|can_open:"behavior:committee" %}
+  <a href="{% url 'behavior:committee' %}">{% icon "behavior_team" %} فريق سلوك الطلبة</a>
+  {% endif %}
+  </div>
+</div>
+
+{% comment %}
+`student_info:sections` مدخلُ المركز نفسُه لا تقريرَ تحصيلٍ (توثّقه الشيفرة:
+"الشُّعبُ ثمّ الطالب... مدخلُ المركز») — عمودٌ أوّلُ مستقلٌّ لا مع «الأنشطة».
+{% endcomment %}
+<div class="sd-menu sd-menu--cols-3" id="m-student-info" role="menu" aria-label="مركز معلومات الطلبة">
+  <div class="sd-section">
+  <div class="sd-label">نظرة عامة</div>
+  {% if request.user|can_open:"student_info:sections" %}
+  <a href="{% url 'student_info:sections' %}" class="font-semibold">{% icon "students" %} تصفّح الشُّعب والطلاب</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">ملاحظات الجهات</div>
+  <a href="{% url 'student_info:notes' 'teacher' %}">{% icon "teacher" %} ملاحظات المعلمين</a>
+  <a href="{% url 'student_info:notes' 'social_worker' %}">{% icon "counseling" %} ملاحظات الأخصائي الاجتماعي</a>
+  <a href="{% url 'student_info:notes' 'psychologist' %}">{% icon "psychology" %} ملاحظات الأخصائي النفسي</a>
+  <a href="{% url 'student_info:notes' 'nurse' %}">{% icon "clinic" %} ملاحظات الممرض</a>
+  <a href="{% url 'student_info:notes' 'student_affairs' %}">{% icon "edit_record" %} ملاحظات منسق شؤون الطلاب</a>
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">التحصيل والأنشطة</div>
+  {% if request.user|can_open:"student_info:levels" %}
+  <a href="{% url 'student_info:levels' %}">{% icon "grades" %} المستويات التعليمية وتحصيل الطلبة</a>
+  {% endif %}
+  {% if request.user|can_open:"student_info:activities" %}
+  <a href="{% url 'student_info:activities' %}">{% icon "activities" %} الأنشطة</a>
+  {% endif %}
+  </div>
+</div>
+
+{% endif %}
+
+{% comment %}
+«الإدارة» — القائمةُ نفسُها التي يراها المدير والنائبان (لا نسخةٌ موازية)،
+موسَّعةٌ لتراها كذلك المنسّقُ والمعلّمون: كلُّ عنصرٍ فيها محروسٌ بحقّه (can_open/
+is_staff/is_developer/is_leadership) فتُظهر لكلٍّ ما يملكه هو وحدَه — طلبُ
+المالك 2026-09-23: «أرسل إلى المطوّر» مفتاحٌ كاملٌ للإدارة لا رابطٌ منفرد.
+عددُ الأعمدة يتبع الدورَ لا رقماً ثابتاً — القاعدةُ نفسُها في build_menu بلوحة
+الإدارة (core/admin_menu.py).
+{% endcomment %}
+{% if is_admin_role or role == "coordinator" or role == "teacher" or role == "specialist" or role == "ese_teacher" or role == "teacher_assistant" or role == "ese_assistant" or role == "e_projects_coordinator" %}
+<div class="sd-menu{% if is_developer and is_leadership %} sd-menu--cols-3{% elif is_developer or is_leadership %} sd-menu--cols-2{% endif %}" id="m-admin" role="menu" aria-label="الإدارة">
+  <div class="sd-section">
+  <div class="sd-label">إدارة المدرسة</div>
+  {% if request.user|can_open:"notifications_dashboard" %}
+  <a href="{% url 'notifications_dashboard' %}">{% icon "notifications" %} مركز الإشعارات</a>
+  {% endif %}
+  <hr>
+  {% if request.user.is_staff %}
+  <a href="/admin/">{% icon "maintenance" %} لوحة الإدارة التقنية</a>
+  {% endif %}
+  {% if request.user|can_open:"developer_feedback:message_create" %}
+  <a href="{% url 'developer_feedback:message_create' %}">{% icon "developer" %} أرسل إلى المطوّر</a>
+  {% endif %}
+  </div>
+  {% if is_developer %}
+  <div class="sd-section">
+  <div class="sd-label">أدوات المطوّر</div>
+  <a href="{% url 'ui_components' %}" role="menuitem" aria-label="دليل الهوية البصرية ومعاييرها">
+    {% icon "developer" %} دليل الهويّة البصريّة
+  </a>
+  <a href="{% url 'ui_layouts' %}" role="menuitem" aria-label="أنماط تخطيط صفحات المنصة">
+    {% icon "dashboard" %} أنماط التخطيط
+  </a>
+  <a href="{% url 'improvement_roadmap' %}" role="menuitem" aria-label="خارطة تجويد المنصة الزمنية">
+    {% icon "roadmap" %} خارطة التجويد
+  </a>
+  {% if request.user|can_open:"developer_feedback:inbox_list" %}
+  <a href="{% url 'developer_feedback:inbox_list' %}" role="menuitem"
+     aria-label="صندوق الوارد للمطوّر">
+    {% icon "messages" %} صندوق الوارد
+  </a>
+  {% endif %}
+  {% if request.user|can_open:"developer_feedback:inbox_list" %}
+  <a href="{% url 'developer_feedback:inbox_list' %}?status=new" role="menuitem"
+     aria-label="الرسائل الجديدة غير المقروءة">
+    {% icon "mail_unread" %} الرسائل الجديدة
+  </a>
+  {% endif %}
+  {% if request.user|can_open:"developer_feedback:my_messages" %}
+  <a href="{% url 'developer_feedback:my_messages' %}" role="menuitem"
+     aria-label="الرسائل التي أرسلتها">
+    {% icon "mail_sent" %} رسائلي المرسلة
+  </a>
+  {% endif %}
+  </div>
+  {% endif %}
+  {% if is_leadership %}
+  <div class="sd-section">
+  <div class="sd-label">الأمان والصلاحيات</div>
+  {% if request.user|can_open:"permission_audit_log" %}
+  <a href="{% url 'permission_audit_log' %}">{% icon "security" %} سجل تغييرات الصلاحيات</a>
+  {% endif %}
+  {% if request.user|can_open:"breach:dashboard" %}
+  <a href="{% url 'breach:dashboard' %}">{% icon "breach" %} خروقات البيانات</a>
+  {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── Coordinator Schedule Dropdown ── #}
+{% if role == "admin_supervisor" %}
+{# المشرفُ الإداريّ: طلبةُ جناحه وحدَهم (قرارا 2026-09-14/15) — متابعةٌ ورصدٌ، لا إضافةَ ولا انتقالاتٍ ولا أنشطة #}
+<div class="sd-menu sd-menu--cols-3" id="m-wing-students" role="menu" aria-label="طلبة جناحي">
+  <div class="sd-section">
+  <div class="sd-label">طلبة جناحي</div>
+  {% if request.user|can_open:"wings:student_search" %}
+  <a href="{% url 'wings:student_search' %}">{% icon "search" %} بحثٌ عن طالب وملفُّ غيابه</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:dashboard" %}
+  <a href="{% url 'student_affairs:dashboard' %}">{% icon "students" %} لوحة شؤون طلبة الجناح</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:student_list" %}
+  <a href="{% url 'student_affairs:student_list' %}">{% icon "student_info" %} سجلّ طلبة الجناح</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">الغياب والتأخّر</div>
+  {% if request.user|can_open:"daily_report" %}
+  <a href="{% url 'daily_report' %}">{% icon "absence" %} غياب اليوم</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:attendance_overview" %}
+  <a href="{% url 'student_affairs:attendance_overview' %}">{% icon "stats" %} إحصائيات غياب الجناح</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:student_movements" %}
+  <a href="{% url 'student_affairs:student_movements' %}">{% icon "sent_home" %} تحركات الطلبة</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:tardiness_list" %}
+  <a href="{% url 'student_affairs:tardiness_list' %}">{% icon "tardiness" %} التأخر الصباحي</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">السلوك</div>
+  {% if request.user|can_open:"behavior:report_infraction" %}
+  <a href="{% url 'behavior:report_infraction' %}">{% icon "behavior_violation" %} تسجيل مخالفة</a>
+  {% endif %}
+  {% if request.user|can_open:"behavior:dashboard" %}
+  <a href="{% url 'behavior:dashboard' %}">{% icon "behavior" %} لوحة سلوك الجناح</a>
+  {% endif %}
+  {% if request.user|can_open:"student_affairs:behavior_overview" %}
+  <a href="{% url 'student_affairs:behavior_overview' %}">{% icon "reports" %} ملخص سلوك طلبة الجناح</a>
+  {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if role == "coordinator" %}
+<div class="sd-menu sd-menu--cols-2" id="m-coord-schedule" role="menu" aria-label="جدول المنسق">
+  <div class="sd-section">
+  <div class="sd-label">جدولي</div>
+  {% if request.user|can_open:"teacher_schedule" %}
+  <a href="{% url 'teacher_schedule' %}" class="font-semibold">{% icon "periods_today" %} حصصي اليوم</a>
+  {% endif %}
+  {% comment %}
+  `weekly_schedule`/`schedule_print` بلا وسائط تعرضان الجدولَ العامّ (كلُّ
+  المعلّمين) لمن يتصفّح غيرَه (`SCHEDULE_BROWSE`، والمنسّقُ منهم) لا جدولَه
+  هو — فروابطُ «جدولي» هنا مصرَّحةٌ بوسائط الذات صراحةً، و«الجدول العام»
+  رابطٌ منفصلٌ أدناه لمن يملك حقَّ التصفّح (قرارُ المالك 2026-09-23).
+  {% endcomment %}
+  {% if request.user|can_open:"weekly_schedule" %}
+  <a href="{% url 'weekly_schedule' %}?view=teacher&teacher={{ request.user.id }}">{% icon "schedule" %} الجدول الأسبوعي</a>
+  {% endif %}
+  {% if request.user|can_open:"schedule_print" %}
+  <a href="{% url 'schedule_print' %}?view=teacher&teacher={{ request.user.id }}">{% icon "print" %} طباعة الجدول</a>
+  {% endif %}
+  {% if request.user|can_open:"teacher_preferences" %}
+  <a href="{% url 'teacher_preferences' %}">{% icon "settings" %} تفضيلاتي للجدولة</a>
+  {% endif %}
+  </div>
+  <div class="sd-section">
+  <div class="sd-label">إدارة التخصص</div>
+  {# المنسّقُ له صلاحيّةُ مرصد الأنصبة (قراءةً، ومحرّرُ الخطّة إن مُنح قدرةَ التحرير) — وكان بلا رابطٍ إليه. #}
+  {% if request.user|can_open:"academic_management:assignments" %}
+  <a href="{% url 'academic_management:assignments' %}">{% icon "workload" %} الإسناد</a>
+  {% endif %}
+  {% if request.user|can_open:"weekly_schedule" %}
+  <a href="{% url 'weekly_schedule' %}">{% icon "schedule" %} الجدول العام</a>
+  {% endif %}
+  {% if request.user|can_open:"swap_list" %}
+  <a href="{% url 'swap_list' %}">{% icon "swap_requests" %} طلبات التبديل</a>
+  {% endif %}
+  {% if request.user|can_open:"compensatory_list" %}
+  <a href="{% url 'compensatory_list' %}">{% icon "compensation" %} الحصص التعويضية</a>
+  {% endif %}
+  {% if request.user|can_open:"absence_list" %}
+  <a href="{% url 'absence_list' %}">{% icon "attendance_teacher_absence" %} غياب المعلمين والبدلاء</a>
+  {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Teacher Schedule Dropdown — يشمل مساعدي المعلم v7 ── #}
+{% if role == "teacher" or role == "specialist" or role == "ese_teacher" or role == "teacher_assistant" or role == "ese_assistant" or role == "e_projects_coordinator" %}
+{% comment %}
+مساعدو المعلّم لا يرون قسمَ «طلبات» (خارج مهامهم)، فعمودان لهم و3 لغيرهم —
+لا عمودٌ فارغ لمساعدي المعلّم والتربية الخاصة.
+{% endcomment %}
+<div class="sd-menu{% if role != 'teacher_assistant' and role != 'ese_assistant' %} sd-menu--cols-2{% endif %}" id="m-teacher-schedule" role="menu" aria-label="جدول المعلم">
+  <div class="sd-section">
+  <div class="sd-label">جدولي</div>
+  {% if request.user|can_open:"teacher_schedule" %}
+  <a href="{% url 'teacher_schedule' %}" class="font-semibold">{% icon "periods_today" %} حصصي اليوم</a>
+  {% endif %}
+  {# مسؤولُ التعليم الإلكترونيّ وحدَه هنا يملك تصفّح غيره (SCHEDULE_BROWSE)، فوسائطُ الذات صريحةٌ — لا أثرَ لها على البقيّة أصلاً (الحارسُ يفرض جدولَهم هم دائماً). #}
+  {% if request.user|can_open:"weekly_schedule" %}
+  <a href="{% url 'weekly_schedule' %}?view=teacher&teacher={{ request.user.id }}">{% icon "schedule" %} الجدول الأسبوعي</a>
+  {% endif %}
+  {% if request.user|can_open:"schedule_print" %}
+  <a href="{% url 'schedule_print' %}?view=teacher&teacher={{ request.user.id }}">{% icon "print" %} طباعة الجدول</a>
+  {% endif %}
+  {% if role == "e_projects_coordinator" and request.user|can_open:"weekly_schedule" %}
+  <a href="{% url 'weekly_schedule' %}">{% icon "schedule" %} الجدول العام</a>
+  {% endif %}
+  {% if request.user|can_open:"teacher_preferences" %}
+  <a href="{% url 'teacher_preferences' %}">{% icon "settings" %} تفضيلاتي للجدولة</a>
+  {% endif %}
+  </div>
+  {% if role != "teacher_assistant" and role != "ese_assistant" %}
+  <div class="sd-section">
+  <div class="sd-label">طلبات</div>
+  {% if request.user|can_open:"swap_list" %}
+  <a href="{% url 'swap_list' %}">{% icon "swap_requests" %} طلبات التبديل</a>
+  {% endif %}
+  {% if request.user|can_open:"compensatory_list" %}
+  <a href="{% url 'compensatory_list' %}">{% icon "compensation" %} الحصص التعويضية</a>
+  {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── قائمة السلوك للمنسّق والمعلّم ومنسّق الأنشطة — تسجيلُ السلوك هنا لا في قوائم الجداول ── #}
+{% if role == "coordinator" or role == "teacher" or role == "specialist" or role == "ese_teacher" or role == "teacher_assistant" or role == "ese_assistant" or role == "e_projects_coordinator" or role == "activities_coordinator" %}
+<div class="sd-menu" id="m-behavior" role="menu" aria-label="السلوك">
+  <div class="sd-label">السلوك الطلابي</div>
+  {% if request.user|can_open:"behavior:dashboard" %}
+  <a href="{% url 'behavior:dashboard' %}">{% icon "behavior" %} لوحة السلوك</a>
+  {% endif %}
+  {% if request.user|can_open:"behavior:report_infraction" %}
+  <a href="{% url 'behavior:report_infraction' %}">{% icon "behavior_violation" %} تسجيل سلوك</a>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── Social Worker / Psychologist Dropdowns — v7 MTG-2026-008 ── #}
+{% if role == "social_worker" or role == "psychologist" %}
+<div class="sd-menu" id="m-sw-behavior" role="menu" aria-label="السلوك">
+  <div class="sd-label">السلوك الطلابي</div>
+  {% if request.user|can_open:"behavior:dashboard" %}
+  <a href="{% url 'behavior:dashboard' %}">{% icon "behavior" %} لوحة السلوك</a>
+  {% endif %}
+  {% if request.user|can_open:"behavior:report_infraction" %}
+  <a href="{% url 'behavior:report_infraction' %}">{% icon "behavior_violation" %} تسجيل مخالفة</a>
+  {% endif %}
+  {% if request.user|can_open:"behavior:statistics" %}
+  <a href="{% url 'behavior:statistics' %}">{% icon "stats" %} الإحصائيات</a>
+  {% endif %}
+  <hr>
+  {% if request.user|can_open:"behavior:summon_parent" %}
+  <a href="{% url 'behavior:summon_parent' %}">{% icon "call_parent" %} استدعاء ولي أمر</a>
+  {% endif %}
+</div>
+<div class="sd-menu" id="m-sw-students" role="menu" aria-label="متابعة الطلاب">
+  <div class="sd-label">متابعة الطلاب</div>
+  {% if request.user|can_open:"student_affairs:student_list" %}
+  <a href="{% url 'student_affairs:student_list' %}">{% icon "students" %} قائمة الطلاب</a>
+  {% endif %}
+  {% if request.user|can_open:"failing_students" %}
+  <a href="{% url 'failing_students' %}">{% icon "failing_students" %} الطلاب المتعثرون</a>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="sd-menu" id="m-user" role="menu" aria-label="قائمة المستخدم">
+  <div class="sd-user-header">
+    <p class="sd-user-fullname">{{ request.user.full_name }}</p>
+    <p class="sd-user-nid">{{ request.user.national_id|mask_id }}</p>
+    <p class="sd-user-role">{{ request.user.get_role_display }}</p>
+  </div>
+  {% if request.user.has_multiple_roles %}
+  <a href="/auth/choose-role/">{% icon "role_switch" %} تبديل الدور</a>
+  {% endif %}
+  {% if request.user|can_open:"notification_inbox" %}
+  <a href="{% url 'notification_inbox' %}">{% icon "notifications" %} الإشعارات</a>
+  {% endif %}
+  <a href="#" id="theme-toggle-menu" data-click="#theme-toggle">
+    <span id="theme-menu-icon"><span data-theme-icon="dark">{% icon "theme_dark" %}</span><span data-theme-icon="light" hidden>{% icon "theme_light" %}</span></span> <span id="theme-menu-text">الوضع الليلي</span>
+  </a>
+  {% if request.user|can_open:"staff_affairs:my_permits" %}
+  <a href="{% url 'staff_affairs:my_permits' %}">{% icon "leave" %} أذوناتي</a>
+  {% endif %}
+  {% if request.user|can_open:"change_password" %}
+  <a href="{% url 'change_password' %}">{% icon "password" %} تغيير كلمة المرور</a>
+  {% endif %}
+  {% if request.user.is_staff %}
+  <a href="/admin/">{% icon "maintenance" %} لوحة الإدارة</a>
+  {% endif %}
+  {% if is_admin_role %}
+  {% if request.user|can_open:"setup_2fa" %}
+  <a href="{% url 'setup_2fa' %}" class="{% if request.user.totp_enabled %}sd-2fa-enabled{% else %}sd-2fa-disabled{% endif %}">
+    {% icon "two_factor" %} المصادقة الثنائية{% if not request.user.totp_enabled %} (غير مفعّلة){% else %} (مفعّلة ✓){% endif %}
+  </a>
+  {% endif %}
+  {% endif %}
+  <hr>
+  <form method="post" action="{% url 'logout' %}" class="sd-logout-form">
+    {% csrf_token %}
+    <button type="submit" class="sd-logout-btn">{% icon "logout" %} تسجيل الخروج</button>
+  </form>
+</div>
+
+{% endwith %}
+{% endif %}
+
+
+{# ════════════════ FLASH MESSAGES ═══════════════════════════════════════ #}
+<div id="page-msgs" class="page-crumbs">
+{% if messages %}
+<div class="msgs-wrap space-y-2" id="msgs-wrap">
+  {% for msg in messages %}
+  <div class="msg-bar {% if msg.tags == 'success' %}msg-success{% elif msg.tags == 'error' %}msg-error{% elif msg.tags == 'warning' %}msg-warning{% else %}msg-info{% endif %}" role="{% if msg.tags == 'error' or msg.tags == 'warning' %}alert{% else %}status{% endif %}">
+    <span class="msg-icon">
+      {% if msg.tags == 'success' %}{% icon "status_success" %}{% elif msg.tags == 'error' %}{% icon "status_error" %}{% elif msg.tags == 'warning' %}{% icon "status_warning" %}{% else %}{% icon "status_info" %}{% endif %}
+    </span>
+    <span class="msg-text">{{ msg }}</span>
+    <button class="msg-x" type="button" data-dismiss="msg-bar" title="إغلاق" aria-label="إغلاق">{% icon "close" size="sm" %}</button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+</div>
+
+
+{# ════════════════ BREADCRUMBS ══════════════════════════════════════════ #}
+<div id="crumbs" class="page-crumbs">{% block breadcrumbs %}{% endblock %}</div>
+
+{# ════════════════ MAIN CONTENT ═════════════════════════════════════════ #}
+<main id="main-content" class="max-w-7xl mx-auto px-4 py-6 flex-1 w-full {% block main_class %}{% endblock %}">
+  {% block page_header %}{% endblock %}
+  {% block content %}{% endblock %}
+</main>
+{% comment %}
+  «بلا تمرير» مشروطٌ بسعة النافذة (LAY-03، قرارُ المالك 2026-09-24): يُقرَّر هنا قبل الرسم الأوّل لا في base.js
+  المؤجَّل — فالقرارُ بعد الرسم قفزةٌ في التخطيط (CLS نحو 1.0 مقيسٌ). الشرحُ والمستمعاتُ في base.js.
+{% endcomment %}
+<script nonce="{{ request.csp_nonce }}">
+window.fitNoscroll = function () {
+  var main = document.getElementById('main-content');
+  if (!main || !(main.classList.contains('page-noscroll') || main.dataset.noscroll === 'roomless')) return;
+  main.classList.add('page-noscroll');
+  var box = Array.prototype.filter.call(main.querySelectorAll('*'), function (el) {
+    var oy = getComputedStyle(el).overflowY;
+    return (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1;
+  });
+  var h = box.map(function (el) { return el.clientHeight; });
+  main.classList.remove('page-noscroll');
+  var floor = 15 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+  if (box.some(function (el, i) { return el.clientHeight > h[i] + 1 && h[i] < floor; })) {
+    main.dataset.noscroll = 'roomless';
+  } else {
+    delete main.dataset.noscroll;
+    main.classList.add('page-noscroll');
+  }
+};
+window.fitNoscroll();
+/* القرارُ أعلاه يقيس بخطّ الاحتياط (الخطوطُ 0 من 8). فإن بقيت الصفحةُ «بلا تمرير» يُحجب محتواها بـ opacity حتى
+   يُشدَّد القرارُ بعد تحميل الخطوط (base.js)، فإن انقلب لم يرَ المستخدمُ القفزة (CLS 0.3–0.9 مقيسٌ بلا الحجب
+   على ذاكرةٍ باردة، وبه ≤ 0.076). والحجبُ لا يتجاوز 500ms مهما حدث، ولا يمسّ التركيزَ ولا شجرةَ الوصول (بخلاف visibility). */
+(function () {
+  var m = document.getElementById('main-content');
+  if (!m || !m.classList.contains('page-noscroll') || !document.fonts || document.fonts.status === 'loaded') return;
+  m.style.opacity = '0';
+  window.noscrollReveal = function () { m.style.opacity = ''; window.noscrollReveal = null; };
+  setTimeout(function () { if (window.noscrollReveal) window.noscrollReveal(); }, 500);
+})();
+</script>
+<template id="noscroll-fitted"></template>
+
+{# ════════════════ COMMAND PALETTE (Ctrl+K) ═════════════════════════════ #}
+{% if user.is_authenticated %}
+<div id="cmd-palette" class="cmd-overlay cmd-hidden"
+     role="dialog" aria-modal="true" aria-label="البحث السريع"
+     data-dismiss-on-backdrop="true">
+  <div class="cmd-box">
+    <div class="cmd-input-wrap">
+      <span class="cmd-icon" aria-hidden="true">{% icon "search" %}</span>
+      <input id="cmd-input" class="cmd-input" type="text"
+             placeholder="ابحث عن طالب، معلم، صفحة..."
+             autocomplete="off" dir="rtl"
+             role="combobox" aria-expanded="false"
+             aria-owns="cmd-results" aria-haspopup="listbox"
+             aria-label="حقل البحث السريع">
+      <span class="cmd-kbd" aria-hidden="true">Esc</span>
+    </div>
+    <div id="cmd-results" class="cmd-results" role="listbox"></div>
+  </div>
+</div>
+{% endif %}
+
+
+{# ════════════════ FOOTER ════════════════════════════════════════════════ #}
+{% load tz %}
+<footer class="site-footer" role="contentinfo">
+  {% include "components/site_footer_line.html" %}
+  {% include "components/site_brand.html" %}
+</footer>
+
+
+{# ════════════════ SCRIPTS ═══════════════════════════════════════════════ #}
+{# APP_CONFIG: متغيرات Django المطلوبة في base.js ─ inline مقصود (CSP nonce) #}
+<script nonce="{{ request.csp_nonce }}">
+window.APP_CONFIG = { isAuthenticated: {{ user.is_authenticated|yesno:"true,false" }}, rum: {% if rum_endpoint %}{ endpoint: "{{ rum_endpoint|escapejs }}", sample: {{ rum_sample }} }{% else %}null{% endif %} };
+</script>
+{# مفردات data-* المعلنة — تحلّ محلّ معالِجات الأحداث الداخلية التي تحجبها CSP #}
+<script src="{% static 'js/actions.js' %}" defer></script>
+<script src="{% static 'js/base.js' %}" defer></script>
+<script src="{% static 'js/app.js' %}" defer></script>
+{# التطبيقُ المثبَّت بلا شريطِ متصفّح: الملفّاتُ إلى قائمة المشاركة، و«اللسانُ الجديد» في النافذة نفسها #}
+<script src="{% static 'js/app-mode.js' %}" defer></script>
+{% comment %}التنقّلُ بين الصفحات بتبديل المحتوى وحدَه: الترويسةُ والقائمةُ والفوتر ثابتةٌ لا تُعاد، والمحتوى يتلاشى ثمّ يظهر بسلاسةٍ (قرارُ المالك 2026-09-20). صفحةٌ لها سكربتُها أو أنماطُها الخاصّة تُحمَّل كاملةً كما كانت.{% endcomment %}
+<script src="{% static 'js/page-nav.js' %}" defer></script>
+{% if rum_endpoint %}{# قياسُ الأداء الميدانيّ (Q-04): لا يُحمَّل ما دام RUM_ENDPOINT فارغاً #}
+<script src="{% static 'js/rum.js' %}" defer></script>
+{% endif %}
+
+{% block extra_js %}{% endblock %}
+
+
+{# ── PWA Install Banner ── #}
+{% if user.is_authenticated %}
+<div id="pwa-banner" class="pwa-banner" hidden>
+  <span class="pwa-icon" aria-hidden="true">{% icon "install_app" size="lg" %}</span>
+  <div class="pwa-text">
+    <strong class="pwa-title">أضف المنصة لشاشتك الرئيسية</strong>
+    <span class="pwa-subtitle">وصول سريع بدون فتح المتصفح</span>
+  </div>
+  <button class="pwa-install-btn" data-action="install-pwa">تثبيت</button>
+  <button class="pwa-dismiss-btn" data-action="dismiss-pwa" aria-label="إغلاق">{% icon "close" size="sm" %}</button>
+</div>
+{% endif %}
+
+
+{# ✅ Mobile Bottom Navigation ── #}
+{% if user.is_authenticated %}
+{% with role=request.user.get_role %}
+<nav class="mobile-bottom-nav" aria-label="التنقل السريع">
+  <div class="mobile-bottom-nav-inner">
+    {% if request.user|can_open:"dashboard" %}
+    <a href="{% url 'dashboard' %}" class="mobile-nav-item {% if request.path == '/dashboard/' %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "dashboard" %}</span><span>الرئيسية</span>
+    </a>
+    {% endif %}
+    {% if role == 'teacher' or role == 'coordinator' or role == 'specialist' or role == 'ese_teacher' %}
+    {% if request.user|can_open:"teacher_schedule" %}
+    <a href="{% url 'teacher_schedule' %}" class="mobile-nav-item {% if request.path == '/teacher/schedule/' or 'attendance' in request.path %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "periods_today" %}</span><span>حصصي</span>
+    </a>
+    {% endif %}
+    {% if request.user|can_open:"weekly_schedule" %}
+    <a href="{% url 'weekly_schedule' %}" class="mobile-nav-item {% if 'weekly' in request.path %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "schedule" %}</span><span>جدولي</span>
+    </a>
+    {% endif %}
+    {% endif %}
+    {% if role == 'parent' %}
+    {% if request.user|can_open:"parent_dashboard" %}
+    <a href="{% url 'parent_dashboard' %}" class="mobile-nav-item {% if 'parents' in request.path %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "children" %}</span><span>أبنائي</span>
+    </a>
+    {% endif %}
+    {% elif request.user.has_parent_membership and request.user|can_open:"parent_dashboard" %}
+    {# لا تُضاء على `/parents/admin/`: تلك شاشةُ ربطٍ للإدارة، لا بوّابتُه هو. #}
+    <a href="{% url 'parent_dashboard' %}" id="mnav-my-portal" class="mobile-nav-item {% if request.path|slice:':9' == '/parents/' and '/parents/admin/' not in request.path %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "children" %}</span><span>بوابتي</span>
+    </a>
+    {% endif %}
+    {% if role == 'student' %}
+    {% if request.user|can_open:"reports_index" %}
+    <a href="{% url 'reports_index' %}" class="mobile-nav-item {% if 'reports' in request.path %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "grades" %}</span><span>درجاتي</span>
+    </a>
+    {% endif %}
+    {% endif %}
+    {% comment %} لمن يفتحه — ومنهم بديلُ الجناح بتكليفه أيّاً كان دورُه، فالشرطُ الحارسُ لا اسمُ الدور. {% endcomment %}
+    {% if request.user|can_open:"wings:record_index" %}
+    <a href="{% url 'wings:record_index' %}" class="mobile-nav-item {% if '/wings/record' in request.path %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "attendance_register" %}</span><span>رصد الغياب</span>
+    </a>
+    {% endif %}
+    {% if request.user|can_open:"notification_inbox" %}
+    <a href="{% url 'notification_inbox' %}" class="mobile-nav-item {% if 'notifications' in request.path %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "notifications" %}</span><span>الإشعارات</span>
+    </a>
+    {% endif %}
+    {% if is_admin_role %}
+    {% if request.user|can_open:"analytics_dashboard" %}
+    <a href="{% url 'analytics_dashboard' %}" class="mobile-nav-item {% if 'analytics' in request.path %}active{% endif %}">
+      <span class="mobile-nav-icon">{% icon "stats" %}</span><span>التحليلات</span>
+    </a>
+    {% endif %}
+    {% endif %}
+  </div>
+</nav>
+{% endwith %}
+{% endif %}
+</body>
+</html>

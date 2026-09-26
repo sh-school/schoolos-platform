@@ -1,0 +1,217 @@
+{% extends "behavior/pdf/base_form.html" %}
+{% load brand_tags %}
+{% block extra_styles %}
+  /* ── توزيعُ المخالفات: الدرجةُ بلونها، والسطورُ متناوبة تحت ترويسةٍ عنّابيّة ── */
+  .level-table, .infraction-log { width: 100%; border-collapse: collapse; }
+  .level-table { font-size: 12px; margin-top: 6px; }
+  .infraction-log { font-size: 11px; margin-top: 8px; }
+  .level-table thead tr, .level-table tfoot tr,
+  .infraction-log thead tr { background: {% brand_color "MAROON" %}; color: {% brand_color "ON_FILL" %}; }
+  .level-table tbody tr:nth-child(odd),
+  .infraction-log tbody tr:nth-child(odd) { background: {% brand_color "SURFACE" %}; }
+  .level-table tbody tr:nth-child(even),
+  .infraction-log tbody tr:nth-child(even) { background: {% brand_color "MAROON_BG" %}; }
+
+  .level-table th { padding: 6px 10px; text-align: center; }
+  .level-table th:first-child { text-align: right; }
+  .level-table tbody td { padding: 5px 10px; text-align: center; font-weight: bold; }
+  .level-table tbody td:first-child { text-align: right; }
+  .level-table tbody td:nth-child(2) { font-weight: normal; color: {% brand_color "TEXT_SECONDARY" %}; }
+  .level-table tfoot td { padding: 6px 10px; font-weight: bold; }
+  .level-table tfoot td:last-child { text-align: center; }
+
+  .infraction-log th { padding: 5px 6px; text-align: right; }
+  .infraction-log th:nth-child(1) { text-align: center; width: 5%; }
+  .infraction-log th:nth-child(2) { width: 12%; }
+  .infraction-log th:nth-child(3) { width: 22%; }
+  .infraction-log th:nth-child(4), .infraction-log th:nth-child(5) { text-align: center; width: 10%; }
+  .infraction-log tbody tr { vertical-align: top; }
+  .infraction-log td { padding: 5px 6px; }
+  .infraction-log td:nth-child(1), .infraction-log td:nth-child(4), .infraction-log td:nth-child(5) { text-align: center; }
+  .infraction-log td:nth-child(2) { white-space: nowrap; }
+  .infraction-log td:nth-child(4) { font-weight: bold; }
+  .infraction-log td:nth-child(6) { font-size: 10px; line-height: 1.5; }
+  .infraction-code { font-size: 10px; background: {% brand_color "PAGE_BG" %}; padding: 1px 5px; border-radius: 10px; }
+  .infraction-state { font-size: 10px; }
+  .infraction-state.is-resolved { color: {% brand_color "STATUS_SUCCESS_DARK" %}; }
+  .infraction-state.is-open { color: {% brand_color "STATUS_DANGER_FG" %}; }
+  .infraction-action { color: {% brand_color "TEXT_SECONDARY" %}; }
+
+  /* الدرجةُ من 1 (تنبيه) إلى 4 (خطيرة) — لونُها يشتدّ معها. */
+  .lvl-1 { color: {% brand_color "STATUS_WARNING" %}; }
+  .lvl-2 { color: {% brand_color "ACCENT_ORANGE" %}; }
+  .lvl-3 { color: {% brand_color "STATUS_DANGER" %}; }
+  .lvl-4 { color: {% brand_color "STATUS_DANGER_DARK" %}; }
+
+  .section.is-spaced { margin-top: 14px; }
+  .section.is-empty { text-align: center; padding: 20px; }
+  .section.is-empty p { color: {% brand_color "TEXT_SECONDARY" %}; }
+{% endblock %}
+
+{% block content %}
+
+<!-- الهيدر الرئيسي -->
+<div class="header">
+  <div class="report-header">
+    <h1>{{ school.name|default:"المدرسة" }}</h1>
+  </div>
+  <div class="form-title">التقرير السلوكي للطالب</div>
+  <div class="date-line">تاريخ الإصدار: {{ generated_at|date:"Y/m/d" }} &nbsp;|&nbsp; العام الدراسي: {{ academic_year }}</div>
+</div>
+
+<!-- بيانات الطالب -->
+<div class="section">
+  <div class="section-title">بيانات الطالب</div>
+  <table class="data-table">
+    <tr>
+      <td class="fl">الاسم الكامل:</td>
+      <td class="fv">{{ student.full_name }}</td>
+      <td class="fl">الرقم الشخصي:</td>
+      <td class="fv">{{ student.national_id }}</td>
+    </tr>
+    <tr>
+      <td class="fl">الصف:</td>
+      <td class="fv">{{ student_grade|default:"—" }}</td>
+      <td class="fl">الشعبة:</td>
+      <td class="fv">{{ student_section|default:"—" }}</td>
+    </tr>
+    <tr>
+      <td class="fl">الفترة الزمنية:</td>
+      <td class="fv" colspan="3">{{ period_label }} ({{ date_from|date:"Y/m/d" }} — {{ date_to|date:"Y/m/d" }})</td>
+    </tr>
+  </table>
+</div>
+
+<!-- التقييم السلوكي — نظام النقاط ملغى -->
+<div class="section">
+  <div class="section-title">التقييم السلوكي</div>
+  <div class="report-title">{{ rating }}</div>
+</div>
+
+<!-- توزيع المخالفات حسب الدرجة -->
+<div class="section">
+  <div class="section-title">توزيع المخالفات حسب الدرجة</div>
+  <table class="level-table">
+    <thead>
+      <tr>
+        <th>الدرجة</th>
+        <th>الوصف</th>
+        <th>عدد المخالفات</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="lvl-1">الدرجة الأولى</td>
+        <td>تنبيه شفهي</td>
+        <td>{{ by_level.1|length }}</td>
+      </tr>
+      <tr>
+        <td class="lvl-2">الدرجة الثانية</td>
+        <td>إنذار رسمي</td>
+        <td>{{ by_level.2|length }}</td>
+      </tr>
+      <tr>
+        <td class="lvl-3">الدرجة الثالثة</td>
+        <td>مخالفة جسيمة</td>
+        <td>{{ by_level.3|length }}</td>
+      </tr>
+      <tr>
+        <td class="lvl-4">الدرجة الرابعة</td>
+        <td>مخالفة خطيرة</td>
+        <td>{{ by_level.4|length }}</td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="2">المجموع الكلي</td>
+        <td>{{ infractions|length }}</td>
+      </tr>
+    </tfoot>
+  </table>
+</div>
+
+<!-- جدول المخالفات التفصيلي -->
+{% if infractions %}
+<div class="section is-spaced">
+  <div class="section-title">سجل المخالفات التفصيلي</div>
+  <table class="infraction-log">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>التاريخ</th>
+        <th>فئة المخالفة</th>
+        <th>الدرجة</th>
+        <th>الحالة</th>
+        <th>الوصف / الإجراء</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for inf in infractions %}
+      <tr>
+        <td>{{ forloop.counter }}</td>
+        <td>{{ inf.date|date:"Y/m/d" }}</td>
+        <td>
+          {% if inf.violation_category %}
+            <span class="infraction-code">{{ inf.violation_category.code }}</span>
+            {{ inf.violation_category.name_ar }}
+          {% else %}
+            {{ inf.get_level_display }}
+          {% endif %}
+        </td>
+        <td class="lvl-{{ inf.level }}">
+          {{ inf.level }}
+        </td>
+        <td>
+          {% if inf.is_resolved %}
+            <span class="infraction-state is-resolved">محلولة</span>
+          {% else %}
+            <span class="infraction-state is-open">قائمة</span>
+          {% endif %}
+        </td>
+        <td>
+          {{ inf.description|truncatechars:80 }}
+          {% if inf.action_taken %}
+            <br><span class="infraction-action">الإجراء: {{ inf.action_taken|truncatechars:60 }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="section is-empty">
+  <p>لا توجد مخالفات مسجّلة في هذه الفترة</p>
+</div>
+{% endif %}
+
+<!-- التوقيعات -->
+<div class="sig-section">
+  <div class="sig-section-title">التوقيعات والاعتماد</div>
+  <table class="sig-table">
+    <tr>
+      <td><div class="sig-line">مدير المدرسة</div></td>
+      <td><div class="sig-line">الأخصائي الاجتماعي</div></td>
+      <td><div class="sig-line">ولي الأمر</div></td>
+    </tr>
+    <tr>
+      <td><div class="sig-line">الاسم: ___________________</div></td>
+      <td><div class="sig-line">التاريخ: ___________________</div></td>
+      <td><div class="sig-line">تاريخ التسليم: ___/___/______</div></td>
+    </tr>
+  </table>
+</div>
+
+<div class="notice">
+  هذا التقرير سري ويخص الطالب المذكور أعلاه فقط — يُعتمد وفق أنظمة وزارة التربية والتعليم والتعليم العالي.
+</div>
+
+{% if exported_by %}
+<div class="export-stamp">
+  <p><strong>صدر بواسطة:</strong> {{ exported_by }} — {{ exporter_role }}</p>
+  <p>التاريخ: {{ export_datetime }}</p>
+  <p>{{ school_name }} — وثيقة رسمية — SchoolOS</p>
+</div>
+{% endif %}
+
+{% endblock %}

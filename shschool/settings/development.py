@@ -1,0 +1,153 @@
+import os as _os
+from typing import Any
+
+from .base import *
+
+DEBUG = True
+
+# ── مفتاح آمن للتطوير فقط — لا يُستخدم في الإنتاج أبداً ──────
+if not SECRET_KEY:
+    SECRET_KEY = "django-insecure-dev-only-do-not-use-in-production-12345"
+
+SESSION_COOKIE_SECURE = False
+
+# ── تطوير: لكلّ خادمِ جلسةٍ كوكيُّه ─────────────────────────────
+# خوادمُ الجلسات كلُّها على `localhost` (8000، 8011، 8012…)، والمتصفّحُ يُفرز
+# الكوكي بالمضيف لا بالمنفذ. فكانت تتقاسم `sessionid` و`csrftoken`، وكلُّ
+# خادمٍ يحذف جلسةً لا يعرفها — قِيس يومَ 2026-09-13:
+#
+#     طلبٌ إلى 8000 بجلسةٍ من 8011  →  Set-Cookie: sessionid=""; Max-Age=0
+#
+# فيكفي فتحُ صفحةٍ على منفذٍ ليُخرجك من آخر، وتُرفض نماذجُ بخطأ CSRF لأنّ
+# رمزَها صار من خادمٍ غيره. وسبعُ عمليّاتِ دخولٍ في أربعين دقيقةً على 8011
+# كانت هذا.
+#
+# والاسمُ يُشتقّ من قاعدة الجلسة كما يُشتقّ اسمُ قاعدة الاختبار (`testing.py`)،
+# وبالبادئة نفسِها: `ss_` تعني شجرةَ جلسة. والحزمةُ الأصليّةُ (`shschool_db`)
+# تبقى على الاسمين الافتراضيَّين. وJavaScript لا يقرأ الكوكي باسمه — يأخذ
+# رمزَ CSRF من الحقل المخفيّ (`tests/test_csrf_cookie_httponly.py`).
+_session_db = _os.environ.get("DB_NAME", "")
+if _session_db.startswith("ss_"):
+    SESSION_COOKIE_NAME = f"sessionid_{_session_db}"
+    CSRF_COOKIE_NAME = f"csrftoken_{_session_db}"
+
+# ✅ v5.1.1: Django Debug Toolbar للتطوير — يكشف N+1 queries
+try:
+    import debug_toolbar  # noqa: F401
+
+    INSTALLED_APPS += ["debug_toolbar"]
+    MIDDLEWARE.insert(0, "debug_toolbar.middleware.DebugToolbarMiddleware")
+    INTERNAL_IPS = ["127.0.0.1"]
+    DEBUG_TOOLBAR_CONFIG = {
+        "SHOW_TOOLBAR_CALLBACK": lambda request: DEBUG,
+        "SQL_WARNING_THRESHOLD": 100,  # ms
+    }
+except ImportError:
+    INSTALLED_APPS += []
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    }
+}
+
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
+# ── تطوير: استخدام StaticFilesStorage العادي بدل Manifest ─────
+STORAGES = {
+    "default": {"BACKEND": "core.db_storage.DatabaseStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
+
+# ── S3/R2 اختياريٌّ محلياً — راية Opt-in لكلّ شجرة عملٍ على حدة (البند 11) ──
+# الإنتاجُ يفرضه دائماً (production.py)؛ التطويرُ يبقى DatabaseStorage افتراضاً
+# كي لا يُكسَر أيّ شجرةِ عملٍ أخرى لا تحمل مفاتيح R2 في .env الخاصّ بها.
+if USE_S3:
+    from core.storage_config import s3_default_storage
+
+    _s3_storage, MEDIA_URL = s3_default_storage(
+        access_key_id=AWS_ACCESS_KEY_ID,
+        secret_access_key=AWS_SECRET_ACCESS_KEY,
+        bucket_name=AWS_STORAGE_BUCKET_NAME,
+        region_name=AWS_S3_REGION_NAME,
+        endpoint_url=AWS_S3_ENDPOINT_URL,
+        querystring_expire=AWS_QUERYSTRING_EXPIRE,
+    )
+    STORAGES["default"] = _s3_storage
+
+# ── تطوير: CSP معطّلة — Tailwind CDN يتعارض معها ──────────
+# نزعُ الوسيط يكفي؛ وأيّ توجيهات هنا لا تُقرأ بعد ذلك، فلا تُترك موهِمة.
+MIDDLEWARE = [m for m in MIDDLEWARE if m != "csp.middleware.CSPMiddleware"]
+
+# ── تطوير: الملفُّ الثابتُ يُعاد التحقّقُ منه دائماً ───────
+# `runserver` يخدم `/static/` عبر `StaticFilesHandler` **قبل** سلسلة الوسائط،
+# فلا يبلغها طلبُ الملفّ الثابت ولا تُضاف إليه ترويسة. و`runserver_nostatic`
+# يرفع ذلك المعترِض، فيمرّ الطلبُ بالسلسلة ويخدمه WhiteNoise من مجلّدات
+# المصدر مباشرةً (`USE_FINDERS`) — فلا `collectstatic` في التطوير أصلاً.
+INSTALLED_APPS.insert(0, "whitenoise.runserver_nostatic")
+WHITENOISE_USE_FINDERS = True
+WHITENOISE_AUTOREFRESH = True
+WHITENOISE_MAX_AGE = 0
+
+# ── Celery — وضع التطوير ─────────────────────────────────────
+# CELERY_TASK_ALWAYS_EAGER = True يُشغّل المهام مباشرة بدون broker
+# مناسب للتطوير المحلي — لا يحتاج Redis مثبتاً
+REDIS_URL = config("REDIS_URL", default="")
+
+if REDIS_URL:
+    # Redis متوفر — استخدمه
+    CELERY_BROKER_URL = REDIS_URL
+    CELERY_RESULT_BACKEND = REDIS_URL
+    CELERY_TASK_ALWAYS_EAGER = False
+else:
+    # لا Redis — شغّل المهام synchronously (مناسب للتطوير فقط)
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
+    CELERY_BROKER_URL = "memory://"
+    CELERY_RESULT_BACKEND = "cache+memory://"
+
+
+# ── Django Channels — وضع التطوير ────────────────────────────
+# إذا لم يكن Redis مشغّلاً، استخدم InMemoryChannelLayer بدلاً من Redis
+# WebSocket يعمل بشكل كامل داخل نفس العملية (كافٍ للتطوير)
+def _redis_running() -> bool:
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", 6379), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+if not REDIS_URL and not _redis_running():
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        }
+    }
+
+
+# ── فضاءُ الجلسة في redis المشترك ─────────────────────────────
+# خوادمُ الجلسات (docker-compose.session.yml) تشترك في redis الحزمة الأصليّة، ولكلٍّ
+# منها قاعدتُها. فكانت مهمّةُ الخلفيّة تُرسَل إلى الطابور المشترك `celery`، فيلتقطها
+# عاملُ الحزمة الأصليّة ويبحث عن صفّها في `shschool_db` فلا يجده — «صفّ التصدير
+# غير موجود» — ويبقى التصديرُ معلّقاً (2026-09-23). ومثلُه طبقةُ القنوات: مجموعاتُ
+# إشعارات المستخدم نفسِه تعبر من جلسةٍ إلى أخرى.
+#
+# فالجلسةُ تحمل اسمَ قاعدتها (`SESSION_NAMESPACE`)، وبه يُسمّى طابورُها وبادئةُ
+# قنواتها في redis نفسِه. لا رقمَ قاعدةٍ منطقيّةٍ يُوزَّع (ستّ عشرةَ لا تكفي الأشجار)،
+# ولا حالةَ تُحفظ: الاسمُ فريدٌ أصلاً لأنّه اسمُ القاعدة. وفراغُه = السلوكُ المشترك القديم.
+SESSION_NAMESPACE = config("SESSION_NAMESPACE", default="")
+if SESSION_NAMESPACE:
+    CELERY_TASK_DEFAULT_QUEUE = SESSION_NAMESPACE
+    _layer: dict[str, Any] = dict(CHANNEL_LAYERS["default"])
+    if str(_layer["BACKEND"]).startswith("channels_redis"):
+        # نسخةٌ لا تعديلٌ في المكان: القاموسُ نفسُه مستورَدٌ من base.
+        CHANNEL_LAYERS = {
+            **CHANNEL_LAYERS,
+            "default": {
+                **_layer,
+                "CONFIG": {**dict(_layer.get("CONFIG", {})), "prefix": f"asgi:{SESSION_NAMESPACE}"},
+            },
+        }

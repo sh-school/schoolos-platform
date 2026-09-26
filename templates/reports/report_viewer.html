@@ -1,0 +1,23 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}{{ report_title }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/reports/" parent_label="التقارير والشهادات" current=report_title %}
+{% endblock %}
+
+{% block content %}
+{% comment %}
+المعاينة كانت تفتح تبويباً جديداً وتُعيد وثيقة طباعة عارية — بلا قائمة ولا
+فتات خبز ولا رجوع. وهنا تُعرض داخل الصفحة ويبقى شريط الأدوات لنا.
+{% endcomment %}
+<div class="report-viewer">
+  {% page_header report_title icon="document" %}
+    <a data-app-file href="{{ report_url }}&download=1" class="btn-primary btn-sm">{% icon "download" %} تحميل</a>
+    <a href="{% url 'reports_index' %}{{ back_query }}" class="btn-secondary btn-sm">← رجوع للتقارير</a>
+  {% endpage_header %}
+
+  <iframe class="report-viewer__frame" src="{{ report_url }}" title="{{ report_title }}"></iframe>
+</div>
+{% endblock %}

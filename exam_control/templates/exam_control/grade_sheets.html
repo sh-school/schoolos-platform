@@ -1,0 +1,43 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}أوراق الرصد{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/exam-control/" parent_label="كنترول الاختبارات" current="أوراق الرصد" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "أوراق الرصد والتصحيح" subtitle=session.name icon="grade_sheets" %}
+    <a href="{% url 'exam_control:session_detail' session.pk %}" class="btn-ghost btn-sm">رجوع إلى الدورة</a>
+  {% endpage_header %}
+
+  {% section_card "الأوراق" meta=sheets|length icon="grade_sheets" flush=True empty="لا أوراقَ رصد" %}{% if sheets %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">المادة</th><th scope="col">التاريخ</th><th scope="col" class="num">الأوراق</th><th scope="col">الحالة</th><th scope="col">تحديث</th></tr></thead>
+        <tbody>
+          {% for sh in sheets %}
+            <tr>
+              <td>{{ sh.schedule.subject }} · {{ sh.schedule.grade_level }}</td>
+              <td class="num">{{ sh.schedule.exam_date|date:"d/m/Y" }}</td>
+              <td class="num">{{ sh.papers_count }}</td>
+              <td><span class="status-badge {% if sh.status == 'pending' %}status-warning{% elif sh.status == 'graded' %}status-info{% else %}status-success{% endif %}">{{ sh.get_status_display }}</span></td>
+              <td>
+                <form method="post" class="inline-form">{% csrf_token %}
+                  <input type="hidden" name="sheet_id" value="{{ sh.pk }}">
+                  <label class="sr-only" for="sheet-status-{{ sh.pk }}">حالة الورقة</label>
+                  <select id="sheet-status-{{ sh.pk }}" name="status" class="form-control form-control-sm">{% for v,l in STATUS %}<option value="{{ v }}"{% if sh.status == v %} selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+                  <button type="submit" class="btn-secondary btn-sm">حفظ</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+
+</div>
+{% endblock %}

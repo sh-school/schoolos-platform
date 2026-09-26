@@ -1,0 +1,1091 @@
+"""
+core/permissions.py
+══════════════════════════════════════════════════════════════════════
+نظام الصلاحيات الاحترافي — SchoolOS RBAC
+المرجع: قرار مجلس الوزراء 32/2019 (الهيكل التنظيمي للمدارس)
+══════════════════════════════════════════════════════════════════════
+
+المبادئ:
+  1. Least Privilege — كل دور يحصل فقط على ما يحتاجه
+  2. Defense in Depth — middleware + decorator + view-level checks
+  3. Fail Closed — إذا لم يُسمح صراحةً، يُرفض
+  4. Department Scoping — المنسق يرى تخصصه فقط
+  5. Self-Scoping — المعلم يرى فصوله فقط، الطالب يرى بياناته فقط
+"""
+
+import logging
+from collections.abc import Callable
+from functools import wraps
+from typing import Any
+
+from django.http import HttpRequest, HttpResponseForbidden, JsonResponse
+from django.http.response import HttpResponseBase
+from django.shortcuts import redirect, render
+from django.utils import timezone
+
+from core.academic_calendar import academic_year_for_school
+
+from .models.access import (
+    ACADEMIC_ROLES,
+    ALL_STAFF_ROLES,
+    TIER_1_LEADERSHIP,
+    TIER_2_DEPUTIES,
+    TIER_3_SUPERVISORS,
+)
+
+logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════════════════
+# 0. ROLE INHERITANCE — وراثة الأدوار التلقائية (v6)
+# ══════════════════════════════════════════════════════════════════════
+
+ROLE_INHERITS = {
+    # child → parent (يرث كل صلاحياته الأكاديمية)
+    "coordinator": "teacher",  # المنسق يرث المعلم
+    "ese_teacher": "teacher",  # معلم ESE يرث المعلم
+    "vice_academic": "coordinator",  # النائب الأكاديمي يرث المنسق
+    "vice_admin": "admin_supervisor",  # النائب الإداري يرث المشرف الإداري
+    "principal": "vice_academic",  # المدير يرث النائب الأكاديمي
+    # v7 — مساعدون يرثون من أساتذتهم
+    "teacher_assistant": "teacher",  # مساعد المعلم يرث المعلم (جدول + حضور)
+    "ese_assistant": "ese_teacher",  # مساعد ESE يرث معلم ESE
+    "activities_coordinator": "coordinator",  # منسق أنشطة يرث المنسق
+    "e_projects_coordinator": "teacher",  # منسّق المشاريع الإلكترونية معلّمٌ بنصابٍ مخفَّض
+    "transport_officer": "bus_supervisor",  # مسؤول نقل يرث مشرف النقل
+}
+
+
+def expand_roles(roles: set) -> set:
+    """
+    يوسّع مجموعة أدوار لتشمل كل دور يرث منها.
+
+    مثال:
+        expand_roles({"teacher"})
+        → {"teacher", "ese_teacher", "coordinator", "vice_academic", "principal"}
+
+    ملاحظة: تُستخدم فقط للصلاحيات ذات الطبيعة الوراثية (الأكاديمية).
+    الصلاحيات المتخصصة (nurse, librarian...) تبقى صريحة.
+    """
+    expanded = set(roles)
+    changed = True
+    while changed:
+        changed = False
+        for child, parent in ROLE_INHERITS.items():
+            if parent in expanded and child not in expanded:
+                expanded.add(child)
+                changed = True
+    return expanded
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 1. PERMISSION CONSTANTS — ثوابت الصلاحيات لكل نظام فرعي
+# ══════════════════════════════════════════════════════════════════════
+
+# ── الجدول الدراسي والحصص ────────────────────────────────────────
+SCHEDULE_VIEW = {
+    "principal",
+    # المطوّرُ يرى الجدولَ وطلباتِ التبديل: يُسأل عمّا فيها فلا يجدها.
+    "platform_developer",
+    "vice_academic",
+    "vice_admin",
+    "coordinator",
+    "teacher",
+    "ese_teacher",
+    "academic_advisor",
+    "student",
+    "parent",
+    # v7 — جديد:
+    "teacher_assistant",
+    "ese_assistant",  # يحتاجون لرؤية جدول فصولهم
+    "activities_coordinator",  # يحتاج الجدول لتنسيق الأنشطة
+    "e_projects_coordinator",  # قد يحمل حصصاً
+    "speech_therapist",
+    "occupational_therapist",  # جلسات الطلاب
+    "transport_officer",  # توقيت الدراسة للنقل
+}
+SCHEDULE_MANAGE = {"principal", "vice_academic"}
+SCHEDULE_SWAP_REQUEST = {
+    "teacher",
+    "ese_teacher",
+    "teacher_assistant",
+    "e_projects_coordinator",
+}  # v7: مساعد المعلم يطلب تبديل
+SCHEDULE_SWAP_APPROVE = {"coordinator"}  # تخصصه فقط
+SCHEDULE_SUBSTITUTE_ASSIGN = {
+    "coordinator",
+    "activities_coordinator",
+}  # v7: منسق الأنشطة يُسند للأنشطة
+SCHEDULE_SUBSTITUTE_APPROVE = {"principal", "vice_academic", "vice_admin"}
+
+# ── الحضور والغياب ──────────────────────────────────────────────
+ATTENDANCE_RECORD = {
+    "teacher",
+    "ese_teacher",
+    "coordinator",
+    "admin_supervisor",
+    "teacher_assistant",
+    "ese_assistant",  # v7: يسجّلون تحت إشراف المعلم
+    "e_projects_coordinator",
+}
+ATTENDANCE_VIEW_ALL = {
+    "principal",
+    "vice_academic",
+    "vice_admin",
+    "admin_supervisor",
+    "social_worker",
+    "transport_officer",  # v7: يحتاج رؤية الحضور لتنظيم النقل
+    "activities_coordinator",  # v7: يتابع حضور الأنشطة
+}
+ATTENDANCE_VIEW_DEPT = {"coordinator"}
+ATTENDANCE_VIEW_OWN = {
+    "teacher",
+    "ese_teacher",
+    "teacher_assistant",
+    "ese_assistant",
+    "e_projects_coordinator",
+}
+ATTENDANCE_VIEW_CHILD = {"parent"}
+ATTENDANCE_REPORTS = {"principal", "vice_academic", "vice_admin"}
+
+# ── التقييمات والدرجات ──────────────────────────────────────────
+ASSESSMENT_CREATE = {
+    "teacher",
+    "ese_teacher",
+    "coordinator",
+    "vice_academic",
+    "e_projects_coordinator",
+}
+ASSESSMENT_EDIT = {
+    "teacher",
+    "ese_teacher",
+    "coordinator",
+    "vice_academic",
+    "e_projects_coordinator",
+}
+ASSESSMENT_VIEW_ALL = {"principal", "vice_academic", "vice_admin"}
+ASSESSMENT_VIEW_DEPT = {"coordinator"}
+ASSESSMENT_VIEW_OWN = {"teacher", "ese_teacher", "e_projects_coordinator"}
+ASSESSMENT_VIEW_CHILD = {"parent"}
+ASSESSMENT_VIEW_SELF = {"student"}
+
+# ── السلوك والانضباط ────────────────────────────────────────────
+BEHAVIOR_RECORD = {
+    "teacher",
+    "ese_teacher",
+    "coordinator",
+    "social_worker",
+    "admin_supervisor",
+    "activities_coordinator",  # v7: يُسجّل سلوك خلال الأنشطة
+    "e_projects_coordinator",
+}
+BEHAVIOR_MANAGE = {"principal", "vice_admin", "vice_academic", "social_worker"}
+BEHAVIOR_COMMITTEE = {"principal", "vice_admin", "vice_academic", "social_worker", "specialist"}
+BEHAVIOR_VIEW_ALL = {
+    "principal",
+    "vice_admin",
+    "vice_academic",
+    "social_worker",
+    "psychologist",
+    "activities_coordinator",  # v7: يرى سلوك الطلاب في الأنشطة
+}
+BEHAVIOR_VIEW_CHILD = {"parent"}
+BEHAVIOR_VIEW_SELF = {"student"}
+
+# ── العيادة الصحية ──────────────────────────────────────────────
+CLINIC_FULL = {"nurse"}
+CLINIC_VIEW = {"principal", "vice_admin"}
+CLINIC_VIEW_CHILD = {"parent"}
+
+# ── المكتبة ─────────────────────────────────────────────────────
+LIBRARY_FULL = {"librarian"}
+LIBRARY_VIEW = {
+    "principal",
+    "vice_admin",
+    "teacher",
+    "coordinator",
+    "student",
+    "e_projects_coordinator",
+}
+#: سجلُّ استعارات المدرسة كلِّها — أمينُ المكتبة والقيادةُ التي تشرف عليها. ومن سواهم يرى
+#: استعاراتِه هو، ووليُّ الأمر استعاراتِ أبنائه (مراجعةُ 2026-09-13، ن٥).
+LIBRARY_BORROWINGS_ALL = frozenset(LIBRARY_FULL | {"principal", "vice_admin"})
+
+# ── النقل المدرسي ───────────────────────────────────────────────
+# bus_supervisor = مشرف الحافلة (ميداني — يرافق الطلاب)
+# transport_officer = مسؤول النقل (إداري — يُدير المنظومة كاملاً)
+TRANSPORT_FULL = {"bus_supervisor", "transport_officer"}  # v7: transport_officer يدير النظام
+TRANSPORT_MANAGE = {"principal", "vice_admin", "transport_officer"}  # v7: transport_officer يُدير
+TRANSPORT_VIEW = {"parent"}
+
+# ── التحليلات والتقارير ─────────────────────────────────────────
+ANALYTICS_FULL = {"principal", "vice_academic", "vice_admin"}
+ANALYTICS_DEPT = {"coordinator", "activities_coordinator"}  # v7: منسق الأنشطة يرى تحليلات قسمه
+ANALYTICS_OWN = {
+    "teacher",
+    "ese_teacher",
+    "teacher_assistant",
+    "ese_assistant",
+    "e_projects_coordinator",
+}
+ANALYTICS_VIEW = {
+    "social_worker",
+    "psychologist",
+    "academic_advisor",
+    "nurse",
+    "librarian",
+    "speech_therapist",
+    "occupational_therapist",  # v7: يحتاجون لمتابعة تقدم طلابهم
+    "activities_coordinator",  # v7: يتابع مشاركة الأنشطة
+    "transport_officer",  # v7: إحصائيات النقل
+}
+
+# ── أنصبة المعلّمين — قدراتٌ لا مسمّياتٌ وظيفيّة ─────────────────
+# لم نجد نصّاً وزاريّاً منشوراً يُسنِد اعتمادَ الأنصبة إلى وظيفةٍ بعينها، فهذه
+# افتراضاتٌ موصى بها تُهيّئها المدرسةُ عبر `WorkloadGovernance`، لا حقيقةٌ
+# تنظيميّةٌ محفورةٌ في الكود.
+#
+# ومطوّرُ المنصّة في الثلاث صراحةً (قرارُ المستخدم 2026-09-09): كان يمرّ بصفة
+# `is_superuser` وحدَها في `has_capability` — وهي صفةُ حسابٍ لا دورٌ في مدرسة.
+# فحسابُ مطوّرٍ بلا تلك الصفة يُردّ عن شاشةٍ هي عملُه، والتدقيقُ لا يقرأ من
+# أين جاءت القدرة. وهو الدرسُ نفسُه الذي دفع `TIER_SYSTEM` إلى ذكره صراحةً.
+WORKLOAD_EDIT = {"coordinator", "vice_academic", "principal", "platform_developer"}
+WORKLOAD_REVIEW = {"vice_academic", "principal", "platform_developer"}
+WORKLOAD_APPROVE = {"principal", "platform_developer"}
+# وقفُ الإسناد عن المنسّقين وفتحُه — مفتاحٌ في صفحة الإسناد لهؤلاء الثلاثة وحدَهم،
+# لا يتبدّل بتهيئة أدوار الحوكمة: المنسّقُ هو المحكومُ به، فلا يُترك للمدرسة
+# أن تُدخله في من يملك المفتاح.
+ASSIGNMENT_ENTRY_TOGGLE = {"principal", "vice_academic", "platform_developer"}
+
+# ── إدارة المستخدمين والنظام ────────────────────────────────────
+USER_MANAGE = {"principal"}
+SYSTEM_ADMIN = {"platform_developer"}
+
+# ── الجودة ──────────────────────────────────────────────────────
+QUALITY_MANAGE = {"principal", "vice_admin", "vice_academic"}
+
+# ── الإشراف على أداء المعلّم (الملاحظة الصفّية) ──────────────────────
+# من يُجري الزيارة الإشرافية (الزائر)
+OBSERVATION_CREATE = {"principal", "vice_academic", "coordinator", "academic_advisor"}
+# من يرى كل ملاحظات المدرسة (القيادة)
+OBSERVATION_VIEW_ALL = {"principal", "vice_academic", "vice_admin"}
+# إعادة فتح ملاحظة مُقَرّة + حذف ملاحظة مُرسَلة/مُقَرّة — قيادة فقط (يُلغي توقيع المعلّم)
+OBSERVATION_REOPEN = OBSERVATION_VIEW_ALL
+# من يُنشئ تقييماً ذاتياً لنفسه (المعلّمون ومن في حكمهم)
+OBSERVATION_SELF_CREATE = {
+    "teacher",
+    "ese_teacher",
+    "specialist",
+    "coordinator",
+    "activities_coordinator",
+    "e_projects_coordinator",
+}
+# من يزور زميلاً — تبادل الزيارات. وهم أنفسُهم من يُقيّم نفسه: الزيارة
+# بين الأقران لا فوقيّة فيها، فمن يصلح أن يُزار يصلح أن يزور.
+OBSERVATION_PEER_CREATE = OBSERVATION_SELF_CREATE
+
+# من يُرسل نسخةً من الزيارة إلى الجهات الأكاديميّة — الكادر الأكاديميّ والمدير.
+# مقيَّدٌ فوق ذلك بالرؤية: من لا يرى الزيارة لا يصل إلى صفحتها أصلاً، فالمعلّم
+# هنا يُشارك ما يخصّه هو لا ما يخصّ غيره.
+OBSERVATION_SEND = {
+    "principal",
+    "vice_academic",
+    "coordinator",
+    "activities_coordinator",
+    "academic_advisor",
+    "teacher",
+    "ese_teacher",
+    "specialist",
+    "e_projects_coordinator",
+}
+
+QUALITY_VIEW = {
+    # والمرشدُ الأكاديميُّ **مالكُ مؤشّرٍ** لا مطَّلعٌ عليه: المؤشّر 3.9 (المسارات)
+    # تسعةُ إجراءاتٍ كلُّها مسندةٌ إليه في الخطّة التشغيليّة. وكانت القائمةُ تعرض
+    # له «إجراءاتي» ويردُّه الحارسُ عنها — يملك العملَ ولا يبلغ شاشتَه.
+    "academic_advisor",
+    "coordinator",
+    "teacher",
+    "specialist",
+    "social_worker",
+    "psychologist",
+    "activities_coordinator",  # v7: يرى خطة الجودة المتعلقة بالأنشطة
+    "e_projects_coordinator",
+    "speech_therapist",
+    "occupational_therapist",  # v7: يتابعون أهدافهم في الخطة
+}
+QUALITY_EVALUATE = ALL_STAFF_ROLES  # الجميع يُقيَّم
+
+# ── الإشعارات (إرسال جماعي) ─────────────────────────────────────
+NOTIFICATION_BROADCAST = {"principal", "vice_admin", "vice_academic"}
+
+# ── الخطة التشغيلية ─────────────────────────────────────────────
+STAGING_MANAGE = {"principal", "vice_academic", "vice_admin"}
+
+# ═══════════════════════════════════════════════════════════════
+# صلاحيات شؤون الطلاب — MTG-2026-012
+# ═══════════════════════════════════════════════════════════════
+
+STUDENT_AFFAIRS_MANAGE = frozenset(
+    {
+        "principal",
+        "vice_admin",
+        "vice_academic",
+        "platform_developer",
+    }
+)
+STUDENT_AFFAIRS_VIEW = frozenset(
+    {
+        "principal",
+        "vice_admin",
+        "vice_academic",
+        "coordinator",
+        "social_worker",
+        "psychologist",
+        "platform_developer",
+    }
+)
+#: الأنشطةُ الطلابيّة — ومنسّقُها أهلُها لا ضيفُها.
+#:
+#: كانت شاشاتُ الأنشطة الخمسُ على `STUDENT_AFFAIRS_MANAGE` (المديرُ والنائبان
+#: والمطوّر)، فمنسّقُ الأنشطة — وعملُه كلُّه الأنشطة — تعرض له القائمةُ «الأنشطة»
+#: ويردُّه الحارس. والنصُّ الوزاريُّ صريحٌ في أهليّته: «تكون صلاحيّةُ الدخول على
+#: النظام الإلكترونيّ للبرامج والأنشطة **محصورةً بالنائب الأكاديميّ وأخصائيّ
+#: الأنشطة** أو من ينوب عنه» (ضوابط البرامج والأنشطة، ص3).
+ACTIVITIES_MANAGE = STUDENT_AFFAIRS_MANAGE | frozenset({"activities_coordinator"})
+
+STUDENT_DEACTIVATE = frozenset(
+    {
+        "principal",
+        "vice_admin",
+        "platform_developer",
+    }
+)
+PARENT_LINK_MANAGE = frozenset(
+    {
+        "principal",
+        "vice_admin",
+        "platform_developer",
+    }
+)
+BEHAVIOR_SUMMON = frozenset(
+    {
+        "principal",
+        "vice_admin",
+        "vice_academic",
+        "social_worker",
+        "psychologist",
+        "platform_developer",
+    }
+)
+
+
+# ═══════════════════════════════════════════════════════════════
+# مجموعاتٌ كانت محلّيّةً في ملفّات الواجهات — نُقلت بأعضائها حرفاً
+# ═══════════════════════════════════════════════════════════════
+#
+# مجموعةٌ معرَّفةٌ في ملفّ واجهاتها لا يراها من يقرأ هذا الملفّ، فتتغيّر
+# الصلاحيّةُ ولا يُعرف أين. وكان منها المكرَّر: `_REPORT_ROLES` بنصّه في الجدول
+# والحضور، و`_QUALITY_ALL` بنصّه في الجودة وتقاريرها.
+#
+# `EXAM_CONTROL_ACCESS` و`OPERATIONS_REPORTS` متطابقتا الأعضاء حتّى افترقتا
+# 2026-09-17 (قرارُ المستخدم): مشرفُ الجناح يقرأ تقاريرَ البدلاء ولا يفتح
+# الكنترول إطلاقاً، فصار له وحدَه بين الاثنتين. والنقلُ الأصليُّ لم يغيّر
+# عضواً — يحرسه `tests/test_permission_groups_are_central.py`.
+
+#: تقاريرُ الجدول والحضور — عرضٌ فقط. من يُعيّن بديلاً أو يسجّل غياب معلّمٍ
+#: فـ`OPERATIONS_SUBSTITUTES_MANAGE` أدناه.
+OPERATIONS_REPORTS = frozenset(
+    {"principal", "vice_academic", "vice_admin", "coordinator", "admin_supervisor", "admin"}
+)
+#: تسجيلُ غياب معلّمٍ وتعيينُ بديله — فعلٌ لا تقرير. مشرفُ الجناح يرى
+#: `OPERATIONS_REPORTS` أعلاه ولا يكتب هنا (قرارُ المستخدم 2026-09-17:
+#: «البدلاء مشاهدة فقط»).
+OPERATIONS_SUBSTITUTES_MANAGE = frozenset(
+    {"principal", "vice_academic", "vice_admin", "coordinator", "admin"}
+)
+#: إعدادُ الجدول الإداريّ.
+SCHEDULE_ADMIN = frozenset({"principal", "vice_academic", "admin"})
+#: من يفتح «إعدادات الجدول والتفريغات» — والمطوّرُ معهم صراحةً (قرارُ المستخدم
+#: 2026-09-09): كان يمرّ بصفة `is_superuser` وحدَها، وهي صفةُ حسابٍ لا دورٌ في
+#: مدرسة — فحسابُ مطوّرٍ بلا تلك الصفة يُردّ عن شاشةٍ هي عملُه.
+SCHEDULE_SETTINGS = frozenset({"principal", "vice_academic", "platform_developer"})
+#: من يعتمد الجدولَ (قرارُ المالك 2026-09-25، جلسةُ الجدول): المديرُ والنائبُ الأكاديميّ، والمطوّرُ استثناءً
+#: بسببٍ إلزاميٍّ وتدقيق — ولا النائبُ الإداريّ. المطابقةُ لأعضاء `SCHEDULE_SETTINGS` قصدٌ لا مصادفة.
+SCHEDULE_APPROVE = frozenset({"principal", "vice_academic", "platform_developer"})
+#: من يتصفّح جداول غيره — القيادة ومن يُنسّق الجداول.
+#: ومن سواهم يرى جدوله هو، مهما كتب في الرابط.
+SCHEDULE_BROWSE = frozenset(
+    {
+        "principal",
+        "vice_academic",
+        "vice_admin",
+        "coordinator",
+        #: مسؤولُ حصص التعليم الإلكترونيّ — قرارُ المدير 2026-09-06: له معاينةُ
+        #: الجدول كاملاً وجدولِ كلّ معلّمٍ وجداولِ الأقسام، شأنَ المنسّق.
+        "e_projects_coordinator",
+        "admin_supervisor",
+        "admin",
+    }
+)
+#: نظامُ الكنترول. (والمصدرُ الوزاريُّ يجعل الكنترولَ لجنةً بعضويّةٍ موقوتة لا
+#: قائمةَ أدوار — `docs/rbac_role_authority_study_2026-09.md` ملحق د؛ والنقلُ لا يحسم ذلك.)
+#: مشرفُ الجناح ليس فيه بشيء (قرارُ المستخدم 2026-09-17) — أُخرج من الأعضاء
+#: بعد أن كان معهم بالنقل الأصليّ. ولا يشمل هذا محضرَ حادثة الاختبار: تلك
+#: مسؤوليّةٌ ميدانيّةٌ لمشرف الجناح وحده — انظر `EXAM_CONTROL_REPORT_INCIDENT`.
+EXAM_CONTROL_ACCESS = frozenset(
+    {"principal", "vice_academic", "vice_admin", "coordinator", "admin"}
+)
+#: تسجيلُ حادثةِ اختبارٍ ومراجعتُها — محضرٌ يكتبه من يراقب الطلبةَ فعلاً أثناء
+#: الاختبار. مشرفُ الجناح يكتب على طلبة جناحه وحدَهم (`_incidents_in_scope`،
+#: قرارُ 2026-09-15)، ولا يفتح شيئاً آخر من الكنترول (قرارُ 2026-09-17) — فهي
+#: قدرةٌ ضيّقةٌ عن `EXAM_CONTROL_ACCESS` لا مرادفةٌ لها.
+EXAM_CONTROL_REPORT_INCIDENT = EXAM_CONTROL_ACCESS | {"admin_supervisor"}
+#: شؤونُ الموظّفين — نظيرةُ `STUDENT_AFFAIRS_MANAGE`.
+STAFF_AFFAIRS_MANAGE = frozenset({"principal", "vice_admin", "vice_academic", "platform_developer"})
+#: بوّابةُ وليّ الأمر، ومن يدخلها من الإدارة.
+PARENT_PORTAL = frozenset({"parent", "principal", "vice_admin", "vice_academic", "admin"})
+#: إدارةُ ربط أولياء الأمور.
+PARENT_PORTAL_ADMIN = frozenset({"principal", "admin"})
+#: وحدةُ الجودة كلُّها — عرضاً وإدارة.
+QUALITY_ACCESS = frozenset(QUALITY_MANAGE | QUALITY_VIEW | {"ese_teacher"})
+#: من يدرّس ويرى تقريرَ السلوك الإحصائيّ لطلبته.
+BEHAVIOR_STATS_TEACHING = frozenset({"teacher", "coordinator", "ese_teacher"})
+#: التقاريرُ الأكاديميّةُ على مستوى المدرسة (الاختباراتُ القصيرة، ونتائجُ الاختبارات،
+#: والتقدّم، والشهريُّ للسلوك والأداء) — درجةُ كلّ طالبٍ وسلوكُه بلا قيدِ شعبةٍ ولا قسم.
+#: فهي لمن يرى تقييماتِ المدرسة كلِّها. كانت ``@login_required`` وحدَها فبلغها الطالبُ
+#: وعاملُ الخدمات وصدّراها (مراجعةُ 2026-09-13، ن٢). ومن يُراد له نطاقٌ أضيق — المنسّقُ
+#: لقسمه، والمعلّمُ لشُعبه — يحتاج تقريراً مقيَّداً بنطاقه، لا فتحَ هذا.
+ACADEMIC_REPORTS_VIEW = frozenset(ASSESSMENT_VIEW_ALL)
+#: رصدُ حضور اليوم في الجناح: مشرفُ الجناح (أصيلاً أو بديلاً) والقيادةُ ومطوّرُ المنصّة.
+WING_DAY_RECORD = frozenset(
+    {"admin_supervisor", "vice_admin", "vice_academic", "principal", "platform_developer"}
+)
+
+#: قبولُ عذرِ غيابٍ بعد مهلة اليومين (الدليل 2026 م 3.4.1.5) — النائبُ الإداريّ لا المشرف.
+EXCUSE_AFTER_DEADLINE = frozenset({"vice_admin", "principal", "platform_developer"})
+
+#: من يُحصر في طلبة جناحه متى بلغ شاشةَ طلبة (قرارا 2026-09-14/15: «المشرفُ لجناحه فقط»).
+#: تُقارَن بالدور **الخامّ** ولا تمرّ على `expand_roles`: النائبُ الإداريّ يرث المشرفَ في
+#: `ROLE_INHERITS`، ولو وُسِّعت لقُيِّد النائبُ بجناحٍ لا يحمله. وتطابق
+#: `WingCoverage.SUBSTITUTE_ROLES` — فالبديلُ المكلَّف يُقيَّد بجناحه إن مُنح شاشةَ طلبةٍ يوماً.
+#: والنطاقُ نفسُه في `wings/scope.py`.
+WING_BOUND_ROLES = frozenset({"admin_supervisor", "services_worker", "student_observer"})
+
+#: متابعةُ حضور الطلبة وتأخّرهم وسلوكهم في شؤون الطلبة: القيادةُ للمدرسة، والمشرفُ لجناحه.
+#: الدليلُ 2026: الغيابُ اليوميّ وإخطارُ وليّ الأمر، والتأخّرُ الصباحيُّ من أوّل مرّة (م 3.4.2.2).
+STUDENT_FOLLOW_UP = STUDENT_AFFAIRS_MANAGE | frozenset({"admin_supervisor"})
+
+#: قائمةُ الطلبة في شؤون الطلبة: من يرى السجلَّ اليوم، والمشرفُ لجناحه.
+STUDENT_REGISTER_READ = STUDENT_AFFAIRS_VIEW | frozenset({"admin_supervisor"})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 2. ROLE GROUPS — مجموعات جاهزة للاستخدام في الديكوريتور
+# ══════════════════════════════════════════════════════════════════════
+
+# القيادة (T1 + T2)
+LEADERSHIP = TIER_1_LEADERSHIP | TIER_2_DEPUTIES
+# الطاقم الأكاديمي
+ACADEMIC_STAFF = ACADEMIC_ROLES
+# كل الطاقم (ليس طالب أو ولي أمر)
+ALL_STAFF = ALL_STAFF_ROLES
+# أكاديميون + إداريون (لوحة التحكم) — v7: يشمل جميع الأدوار الجديدة
+DASHBOARD_ROLES = (
+    LEADERSHIP
+    | TIER_3_SUPERVISORS
+    | {
+        "teacher",
+        "social_worker",
+        "nurse",
+        "librarian",
+        # v7 — الأدوار الجديدة التي تحتاج داشبورد:
+        "teacher_assistant",
+        "ese_assistant",
+        "speech_therapist",
+        "occupational_therapist",
+        # لوحةٌ فقط: بطاقةُ وصفه تعطيه سجلَّ رعايةٍ بتوقيعٍ مزدوجٍ في الدواء
+        # («إلّا بوجود الممرّض وإذنٍ كتابيٍّ من وليّ الأمر موقَّعٍ من الإدارة»)
+        # ولا وحدةَ رعايةٍ في المنصّة بعد. فيدخل ولا يجد شاشةً فارغة، ولا يُمنح
+        # صلاحيّةً لا سندَ لها.
+        "support_companion",
+        "receptionist",
+        "transport_officer",
+        "bus_supervisor",
+        "it_technician",
+        "psychologist",
+        "academic_advisor",
+        "ese_teacher",
+    }
+)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 3. DECORATORS — الديكوريتورات
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _get_user_role(request):
+    """يستخلص الدور بأمان — يدعم WSGIRequest و HttpRequest."""
+    if not hasattr(request, "user") or not request.user.is_authenticated:
+        return None
+    return request.user.get_role()
+
+
+def log_denial(request, *, role, required=None, source="decorator"):
+    """يكتب سطراً لكلّ رفض — والرفضُ الصامتُ لا يُشخَّص ولا يُقاس.
+
+    كان الـ403 يخرج من الديكوريتور والميدلوير بلا أثر: لا يُعرف من حاول،
+    ولا أيُّ صفحةٍ ردّته، ولا ما الذي كانت تطلبه. فإذا ضُيّق نطاقٌ — الجناحُ
+    مثلاً — لم يُعرف من سيُحجَب إلّا حين يتّصل بك شاكياً.
+
+    ولا يُكتب هنا اسمٌ ولا رقمٌ شخصيّ (PDPPL): المفتاحُ رقمُ المستخدم في
+    القاعدة ودورُه ومسارُه — يكفي للعدّ والتشخيص، ولا يُعرّف شخصاً لمن
+    يقرأ السجلّ بلا صلاحيّةٍ على القاعدة نفسها.
+    """
+    logger.warning(
+        "access_denied source=%s path=%s role=%s user=%s required=%s",
+        source,
+        request.path,
+        role or "-",
+        getattr(getattr(request, "user", None), "pk", "-"),
+        ",".join(sorted(required)) if required else "-",
+    )
+
+
+def forbidden_page(request, message):
+    """صفحةُ الرفض 403 برسالتها — قالبُ الخطأ الواحد لا نصٌّ يُبنى هنا.
+
+    كان عنوانٌ أحمرُ يُبنى هنا نصّاً بتنسيقٍ داخل الوسم ولونٍ لا رمزَ له، في
+    أربعة مواضع. والرسالةُ الآن تُهرَّب في القالب.
+    """
+    return render(request, "errors/forbidden.html", {"message": message}, status=403)
+
+
+def _forbidden_response(request, message):
+    """يُعيد رد مناسب حسب نوع الطلب (API vs HTML)."""
+    if request.path.startswith("/api/"):
+        return JsonResponse({"error": message, "code": "forbidden"}, status=403)
+    return forbidden_page(request, message)
+
+
+def role_required(*roles):
+    """
+    ديكوريتور أساسي — يتحقق من أن المستخدم لديه أحد الأدوار المعطاة.
+    superuser يمر دائماً.
+
+    Usage:
+        @role_required("principal", "vice_academic")
+        def my_view(request): ...
+    """
+    # دعم تمرير مجموعة set أو tuple أو list كعنصر واحد
+    if len(roles) == 1 and isinstance(roles[0], set | frozenset | list | tuple):
+        roles = tuple(roles[0])
+
+    # توسيع الأدوار لتشمل الأدوار الوارثة (coordinator ← teacher، إلخ)
+    expanded_roles = expand_roles(set(roles))
+
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapper(request, *args, **kwargs):
+            if not request.user.is_authenticated:
+                return redirect("login")
+            if request.user.is_superuser:
+                return view_func(request, *args, **kwargs)
+            user_role = request.user.get_role()
+            if user_role not in expanded_roles:
+                log_denial(request, role=user_role, required=expanded_roles)
+                return _forbidden_response(
+                    request,
+                    f"ليس لديك صلاحية الوصول — دورك: {user_role or 'غير محدد'}",
+                )
+            return view_func(request, *args, **kwargs)
+
+        wrapper._required_roles = tuple(expanded_roles)
+        return wrapper
+
+    return decorator
+
+
+def department_scoped(*roles):
+    """
+    ديكوريتور للصلاحيات المقيّدة بالقسم/التخصص.
+    يُمرّر `user_department` كـ kwarg إلى الـ view.
+    القيادة (T1+T2) تمر بدون تقييد.
+
+    Usage:
+        @department_scoped("coordinator")
+        def schedule_dept_view(request, user_department=None): ...
+    """
+    if len(roles) == 1 and isinstance(roles[0], set | frozenset | list | tuple):
+        roles = tuple(roles[0])
+
+    expanded = expand_roles(set(roles))
+
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapper(request, *args, **kwargs):
+            if not request.user.is_authenticated:
+                return redirect("login")
+            if request.user.is_superuser:
+                return view_func(request, *args, user_department=None, **kwargs)
+
+            user_role = request.user.get_role()
+            # القيادة تمر بدون تقييد بالقسم
+            if user_role in LEADERSHIP:
+                return view_func(request, *args, user_department=None, **kwargs)
+
+            if user_role not in expanded:
+                log_denial(request, role=user_role, required=expanded, source="department_scoped")
+                return _forbidden_response(
+                    request,
+                    f"ليس لديك صلاحية الوصول — دورك: {user_role or 'غير محدد'}",
+                )
+
+            dept = request.user.department
+            if not dept:
+                log_denial(request, role=user_role, source="department_scoped:no_department")
+                return _forbidden_response(
+                    request,
+                    "لم يتم تحديد القسم/التخصص في عضويتك — تواصل مع الإدارة",
+                )
+            kwargs["user_department"] = dept
+            return view_func(request, *args, **kwargs)
+
+        wrapper._required_roles = tuple(expanded)
+        wrapper._department_scoped = True
+        return wrapper
+
+    return decorator
+
+
+def permission_required(permission_set):
+    """
+    ديكوريتور يقبل مجموعة صلاحيات (set) — أنظف من تمرير أسماء الأدوار يدوياً.
+
+    Usage:
+        @permission_required(ASSESSMENT_CREATE)
+        def create_assessment(request): ...
+    """
+    return role_required(permission_set)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 4. SHORTCUT DECORATORS — ديكوريتورات مختصرة
+# ══════════════════════════════════════════════════════════════════════
+
+
+def staff_required(view_func):
+    """أي موظف بالمدرسة (ليس طالب أو ولي أمر)."""
+    return role_required(ALL_STAFF | {"specialist"})(view_func)
+
+
+def leadership_required(view_func):
+    """المدير ونوابه فقط (T1 + T2)."""
+    return role_required(LEADERSHIP)(view_func)
+
+
+def academic_required(view_func):
+    """الطاقم الأكاديمي: مدير + نائب أكاديمي + منسق + معلم."""
+    return role_required(ACADEMIC_STAFF)(view_func)
+
+
+def nurse_required(view_func):
+    """الممرض + القيادة."""
+    return role_required("nurse", "principal", "vice_admin")(view_func)
+
+
+def librarian_required(view_func):
+    """أمين المكتبة + القيادة."""
+    return role_required("librarian", "principal", "vice_admin")(view_func)
+
+
+def bus_supervisor_required(view_func):
+    """كادرُ النقل كلُّه + القيادة.
+
+    ومسؤولُ النقل (`transport_officer`) منهم: `TRANSPORT_FULL` تمنحه الوحدةَ
+    كاملةً، والوحدةُ المسجَّلةُ في `transport/apps.py` تسمح له بالمسار —
+    وهذا الحارسُ وحدَه كان لا يعرفه، فيمرّ من البوّابة ويُردّ عند الباب في
+    الواجهات السبع كلِّها. والاسمُ بقي على حاله لأنّ سبعةَ استدعاءاتٍ تقرؤه،
+    والمعنى صار «من يدخل وحدةَ النقل» لا «مشرفُ الحافلة وحدَه».
+    """
+    return role_required(TRANSPORT_FULL | TRANSPORT_MANAGE)(view_func)
+
+
+def coordinator_required(view_func):
+    """المنسق + القيادة."""
+    return role_required("coordinator", "principal", "vice_academic", "vice_admin")(view_func)
+
+
+def social_worker_required(view_func):
+    """الأخصائي الاجتماعي + القيادة."""
+    return role_required("social_worker", "specialist", "principal", "vice_admin")(view_func)
+
+
+def psychologist_required(view_func):
+    """الأخصائي النفسي + القيادة — بيانات سرية."""
+    return role_required("psychologist", "principal", "vice_admin")(view_func)
+
+
+def schedule_manage_required(view_func):
+    """إدارة الجدول الدراسي — المدير + النائب الأكاديمي."""
+    return role_required(SCHEDULE_MANAGE)(view_func)
+
+
+def schedule_view_required(view_func):
+    """عرض الجدول — معظم الأدوار."""
+    return role_required(SCHEDULE_VIEW)(view_func)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. UTILITY FUNCTIONS — دوال مساعدة
+# ══════════════════════════════════════════════════════════════════════
+
+
+def is_leadership(user):
+    """
+    يتحقق إذا كان المستخدم من القيادة العليا (T1-T2) — مدير أو نائب.
+    لا يشمل دور admin (الإداري العادي T4).
+    تُستخدم في الـ views مباشرة: if not is_leadership(request.user)
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    return user.get_role() in ("principal", "vice_admin", "vice_academic")
+
+
+def can_manage_department(user, department):
+    """
+    يتحقق إذا كان المستخدم يستطيع إدارة قسم معيّن.
+    القيادة تدير الكل. المنسق يدير قسمه فقط.
+    يقبل: اسم نصي أو كائن Department.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    role = user.get_role()
+    if role in LEADERSHIP:
+        return True
+    if role == "coordinator":
+        return user.is_same_department(department)
+    return False
+
+
+def can_view_student_data(user, student=None):
+    """
+    يتحقق إذا كان المستخدم يستطيع رؤية بيانات طالب معيّن.
+    - القيادة والأخصائيون يرون الكل
+    - المعلم يرى طلاب فصوله (يجب التحقق في الـ view)
+    - ولي الأمر يرى ابنه فقط (يجب التحقق في الـ view)
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    role = user.get_role()
+    return role in (
+        "principal",
+        "vice_admin",
+        "vice_academic",
+        "coordinator",
+        "teacher",
+        "ese_teacher",
+        "social_worker",
+        "psychologist",
+        "academic_advisor",
+        "admin_supervisor",
+        "nurse",
+        # v7 — الأدوار الجديدة التي تحتاج رؤية بيانات الطلاب:
+        "teacher_assistant",
+        "ese_assistant",  # يعملون مع طلاب مباشرة
+        "speech_therapist",
+        "occupational_therapist",  # جلسات علاج فردية
+        "activities_coordinator",  # يتابع مشاركة الطلاب في الأنشطة
+        "e_projects_coordinator",  # يرى طلابَه إن حمل حصصاً
+    )
+
+
+def get_teacher_student_ids(user, scope=None):
+    """
+    يُعيد قائمة IDs الطلاب المرئيّين حسب دور المستخدم:
+
+    - superuser / القيادة / الأخصائيون → None (كل الطلاب)
+    - المشرف الإداري → طلبةُ شُعب أجنحته بقيدهم الجاري (قرارا 2026-09-14/15)
+    - المنسق → طلاب كل معلمي قسمه + طلاب فصوله الشخصية + حصص الإشغال
+    - المعلم → طلاب فصوله فقط + حصص الإشغال (اليوم)
+
+    يعتمد على ScheduleSlot (الجدول الأسبوعي) — أكثر ثباتاً من Sessions اليومية.
+
+    `scope`: نطاقُ الطلب من `wings.scope.student_scope_for(request)` إن كان بيد الشاشة —
+    فلا يُعاد حسابُ أجنحة المشرف مرّتين في طلبٍ واحد. ولا يُقرأ لغير المشرف.
+
+    Usage:
+        student_ids = get_teacher_student_ids(request.user)
+        if student_ids is None:
+            qs = Student.objects.all()  # admin — no filter
+        else:
+            qs = Student.objects.filter(id__in=student_ids)
+    """
+
+    from core.models import StudentEnrollment
+
+    if not user or not user.is_authenticated:
+        return set()
+    if user.is_superuser:
+        return None  # all students
+
+    role = user.get_role()
+
+    # المشرفُ الإداريُّ لجناحه لا للمدرسة: كان هنا في «كلّ الطلاب»، فرأى في لوحة السلوك
+    # وملفّه وتقريره ونموذج المخالفة طلبةَ المدرسة كلَّها. والسؤالُ «مَن طلبةُ جناحه؟» جوابُه
+    # واحدٌ في المنصّة — `wings/scope.py` بقيد الطالب الجاري — فلا يُعاد هنا.
+    # والدورُ الخامّ لا الموسَّع: النائبُ الإداريّ يرث المشرفَ فلا يُقيَّد. وبديلُ الجناح
+    # (ملاحظُ الطلبة وعاملُ الخدمات) لا يمرّ بهذا الفرع: لم يكن يرى المدرسةَ ليُضيَّق عليه،
+    # وقرارُ 2026-09-15 ألّا تتّسع له متابعةُ الطلبة — فيبقى على جدوله كما كان.
+    if role == "admin_supervisor":
+        return _wing_student_ids(user, scope)
+
+    # القيادة والأخصائيون يرون كل الطلاب
+    ALL_STUDENTS_ROLES = {
+        "principal",
+        "vice_admin",
+        "vice_academic",
+        "social_worker",
+        "psychologist",
+        "academic_advisor",
+        "nurse",
+        # v7 — الأدوار الجديدة التي تحتاج رؤية كل الطلاب:
+        "speech_therapist",
+        "occupational_therapist",  # يُحال إليهم طلاب من مختلف الفصول
+        "transport_officer",  # يحتاج كل طلاب النقل لإسناد الحافلات
+        "activities_coordinator",  # يُنسّق أنشطة لكل الطلاب
+    }
+    if role in ALL_STUDENTS_ROLES:
+        return None
+
+    school = user.get_school()
+    year = academic_year_for_school(school)
+
+    from operations.models import ScheduleSlot, SubstituteAssignment
+
+    # ── 1) فصول المعلم الشخصية من الجدول الأسبوعي ──
+    own_class_ids = set(
+        ScheduleSlot.objects.filter(
+            teacher=user,
+            is_active=True,
+            academic_year=year,
+        ).values_list("class_group_id", flat=True)
+    )
+
+    # ── 2) المنسق: فصول كل معلمي قسمه ──
+    dept_class_ids = set()
+    if role == "coordinator" and school:
+        dept_obj = user.department_obj
+        if dept_obj:
+            dept_teacher_ids = dept_obj.get_teacher_ids()
+        else:
+            dept_teacher_ids = set()
+
+        if dept_teacher_ids:
+            dept_class_ids = set(
+                ScheduleSlot.objects.filter(
+                    teacher_id__in=dept_teacher_ids,
+                    is_active=True,
+                    academic_year=year,
+                ).values_list("class_group_id", flat=True)
+            )
+
+    # ── 3) حصص الإشغال (بديل) — اليوم فقط ──
+    # تاريخُ قطر لا UTC: بين منتصف الليل والثالثة فجراً كان تكليفُ الأمس يُقرأ تكليفَ اليوم.
+    today = timezone.localdate()
+    substitute_class_ids = set(
+        SubstituteAssignment.objects.filter(
+            substitute=user,
+            status__in=("assigned", "confirmed"),
+            absence__date=today,
+        )
+        .select_related("slot")
+        .values_list("slot__class_group_id", flat=True)
+    )
+
+    all_class_ids = own_class_ids | dept_class_ids | substitute_class_ids
+
+    if not all_class_ids:
+        return set()
+
+    return set(
+        StudentEnrollment.objects.filter(
+            class_group_id__in=all_class_ids,
+            is_active=True,
+        ).values_list("student_id", flat=True)
+    )
+
+
+def _wing_student_ids(user: Any, scope: Any = None) -> set[Any]:
+    """طلبةُ أجنحة المشرف من النطاق المركزيّ — ومشرفٌ بلا مدرسةٍ لا يرى أحداً."""
+    from wings.scope import student_scope
+
+    if scope is None:
+        school = user.get_school()
+        if school is None:
+            return set()
+        scope = student_scope(user, school)
+    if not scope.is_wing_bound:
+        return set()  # لا يقع للمشرف — ولو وقع فالفشلُ مغلقٌ لا المدرسةُ كلُّها
+    return set(scope.student_ids())
+
+
+def teacher_can_access_student(user, student_id):
+    """
+    يتحقق إذا كان المعلم/المنسق يمكنه الوصول لطالب معيّن.
+    True = يُسمح، False = ممنوع.
+    """
+    ids = get_teacher_student_ids(user)
+    if ids is None:
+        return True  # admin/leadership — all access
+    return student_id in ids
+
+
+def get_department_teacher_ids(user: Any) -> set[Any] | None:
+    """
+    يُعيد قائمة IDs المعلمين في قسم المنسق.
+    - المنسق → معلمي قسمه/تخصصه في نفس المدرسة
+    - القيادة → None (كل المعلمين)
+    - المعلم العادي → مجموعة فارغة (لا يرى معلمين آخرين)
+    """
+    if not user or not user.is_authenticated:
+        return set()
+    if user.is_superuser:
+        return None
+
+    role = user.get_role()
+    ALL_TEACHERS_ROLES = {
+        "principal",
+        "vice_admin",
+        "vice_academic",
+        "admin_supervisor",
+    }
+    if role in ALL_TEACHERS_ROLES:
+        return None
+
+    if role != "coordinator":
+        return set()
+
+    school = user.get_school()
+    if not school:
+        return set()
+
+    # ✅ v6: استخدام Department FK أولاً
+    dept_obj = user.department_obj
+    if dept_obj:
+        return dept_obj.get_teacher_ids()
+    return set()
+
+
+def get_accessible_modules(user):
+    """
+    يُعيد قائمة الأنظمة الفرعية التي يمكن للمستخدم الوصول إليها.
+    يستخدم Module Registry (v6) مع fallback للقاموس القديم.
+    مفيد لعرض القائمة الجانبية (sidebar) ديناميكياً.
+    """
+    if not user or not user.is_authenticated:
+        return []
+
+    # ── محاولة استخدام Module Registry أولاً ──
+    from core.module_registry import get_accessible_modules_from_registry, is_registered
+
+    if is_registered("assessments"):
+        # Registry مفعّل — نستخدمه
+        registry_modules = get_accessible_modules_from_registry(user)
+        # أضف dashboard دائماً + استخرج الأسماء فقط للتوافقية
+        names = ["dashboard"] + [m["name"] for m in registry_modules]
+        # أضف users و system للمشرفين
+        if user.is_superuser:
+            names.extend(["users", "system"])
+        elif user.get_role() in USER_MANAGE:
+            names.append("users")
+        return names
+
+    # ── Fallback: القاموس القديم (حتى اكتمال الهجرة) ──
+    if user.is_superuser:
+        return [
+            "dashboard",
+            "schedule",
+            "attendance",
+            "assessments",
+            "behavior",
+            "clinic",
+            "library",
+            "transport",
+            "analytics",
+            "reports",
+            "quality",
+            "notifications",
+            "users",
+            "staging",
+            "system",
+        ]
+
+    role = user.get_role()
+    modules = ["dashboard"]
+
+    module_access = {
+        "schedule": SCHEDULE_VIEW,
+        "attendance": ATTENDANCE_VIEW_ALL
+        | ATTENDANCE_RECORD
+        | ATTENDANCE_VIEW_DEPT
+        | ATTENDANCE_VIEW_OWN
+        | {"parent", "student"},
+        "assessments": ASSESSMENT_CREATE | ASSESSMENT_VIEW_ALL | {"parent", "student"},
+        "behavior": BEHAVIOR_MANAGE | BEHAVIOR_RECORD | {"parent", "student"},
+        "clinic": CLINIC_FULL | CLINIC_VIEW | {"parent"},
+        "library": LIBRARY_FULL | LIBRARY_VIEW,
+        "transport": TRANSPORT_FULL | TRANSPORT_MANAGE | TRANSPORT_VIEW,
+        "analytics": ANALYTICS_FULL | ANALYTICS_DEPT | ANALYTICS_OWN | ANALYTICS_VIEW,
+        "reports": {"principal", "vice_academic", "vice_admin", "coordinator", "teacher"},
+        "quality": QUALITY_MANAGE | QUALITY_VIEW,
+        "notifications": ALL_STAFF_ROLES | {"specialist"},
+        "users": USER_MANAGE,
+        "staging": STAGING_MANAGE,
+    }
+
+    for module, allowed in module_access.items():
+        if role in allowed:
+            modules.append(module)
+
+    return modules
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 6. INTERNAL ONLY — حماية endpoints حساسة
+# ══════════════════════════════════════════════════════════════════════
+
+
+def internal_only(
+    view_func: Callable[..., HttpResponseBase],
+) -> Callable[..., HttpResponseBase]:
+    """يسمح فقط بالوصول من عناوين IP الداخلية — لحماية /metrics و endpoints حساسة."""
+
+    @wraps(view_func)
+    def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponseBase:
+        from django.conf import settings as _s
+
+        from core.request_utils import get_client_ip
+
+        ip = get_client_ip(request)  # آخر إدخال XFF (موثوق من الوكيل) لا الأول (قابل للتزوير)
+        allowed = list(getattr(_s, "METRICS_ALLOWED_IPS", [])) + ["127.0.0.1", "::1"]
+        if ip not in allowed:
+            # رفضٌ صامتٌ لا يُشخَّص: قراءةُ /metrics من داخل الحاوية نفسِها رُفضت
+            # في 2026-09-05 ولم يقل السجلُّ أيَّ عنوانٍ رأى. فيُقال هنا.
+            logger.warning(
+                "internal_only: رُفض %s — ip=%r (XFF=%r, REMOTE_ADDR=%r)",
+                request.path,
+                ip,
+                request.META.get("HTTP_X_FORWARDED_FOR", ""),
+                request.META.get("REMOTE_ADDR", ""),
+            )
+            return HttpResponseForbidden("Access denied — internal only.")
+        return view_func(request, *args, **kwargs)
+
+    return wrapper

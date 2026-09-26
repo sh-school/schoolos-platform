@@ -1,0 +1,36 @@
+{% extends "email/_base.html" %}
+{% comment %}
+إشعارُ وليّ الأمر بغياب ابنه — `NotificationService.notify_absence`.
+{% endcomment %}
+{% block title %}{{ school_name }}{% endblock %}
+{% block body_attrs %} class="mail-canvas"{% endblock %}
+{% block body %}
+<div class="mail-card">
+  <div class="mail-head">
+    <h1>{{ school_name }}</h1>
+    <p>وزارة التربية والتعليم والتعليم العالي — دولة قطر</p>
+  </div>
+  <div class="mail-body">
+    <p class="mail-greeting">
+      {{ parent_name }} الكريم / الكريمة،<br>
+      نودّ إعلامكم بما يلي:
+    </p>
+
+    <div class="mail-figure">
+      <span class="mail-figure__num">{{ absence_count }}</span>
+      <span class="mail-figure__lbl">غياب خلال الفترة {{ period_start }} – {{ period_end }}</span>
+    </div>
+
+    <div class="mail-rows">
+      <div class="mail-row"><span>الطالب</span><span>{{ student_name }}</span></div>
+      <div class="mail-row"><span>صلة القرابة</span><span>{{ relationship }}</span></div>
+      <div class="mail-row"><span>المدرسة</span><span>{{ school_name }}</span></div>
+    </div>
+
+    <p class="mail-text">
+      يُرجى التواصل مع إدارة المدرسة لمتابعة هذا الأمر، حيث إن الانتظام في الحضور يؤثر مباشرةً على التحصيل الدراسي.
+    </p>
+  </div>
+  <div class="mail-foot">{{ school_name }} — هذه رسالة تلقائية، الرجاء عدم الرد عليها مباشرةً</div>
+</div>
+{% endblock %}

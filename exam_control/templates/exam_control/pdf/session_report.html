@@ -1,0 +1,152 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags %}
+{# تقرير دورة الاختبار — يرث من القالب القطري الأساسي #}
+
+{% block extra_styles %}
+.badge-open { color: {% brand_color "STATUS_DANGER_DARK" %}; font-weight: 700; }
+.badge-done { color: {% brand_color "STATUS_SUCCESS_DARK" %}; font-weight: 700; }
+{% endblock %}
+
+{% block report_title_bar %}
+<div class="report-title-bar">تقرير دورة الاختبار — {{ session.name }}</div>
+{% endblock %}
+
+{% block report_meta %}
+<table class="report-meta">
+  <tr>
+    <td>السنة الدراسية: <strong>{{ session.academic_year }}</strong></td>
+    <td>الفترة: <strong>{{ session.start_date }} ← {{ session.end_date }}</strong></td>
+    <td>تاريخ الإصدار: <strong>{{ generated_at|date:"Y/m/d" }}</strong></td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block content %}
+
+{# ── أولاً: تشكيل الكنترول ───────────────────────────────────────── #}
+<div class="section-head">أولاً: تشكيل الكنترول</div>
+<table class="report-table">
+  <thead>
+    <tr>
+      <th>الاسم</th>
+      <th>الدور</th>
+      <th>القاعة</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in supervisors %}
+    <tr>
+      <td class="cell-name">{{ s.staff.full_name }}</td>
+      <td>{{ s.get_role_display }}</td>
+      <td>{{ s.room.name|default:"—" }}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="3" class="no-data">لا يوجد بيانات</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{# ── ثانياً: جدول الاختبارات ─────────────────────────────────────── #}
+<div class="section-head mt-20">ثانياً: جدول الاختبارات</div>
+<table class="report-table">
+  <thead>
+    <tr>
+      <th>التاريخ</th>
+      <th>المادة</th>
+      <th>الصف</th>
+      <th>القاعة</th>
+      <th>عدد الطلاب</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for sc in schedules %}
+    <tr>
+      <td>{{ sc.exam_date }}</td>
+      <td class="cell-name">{{ sc.subject }}</td>
+      <td>{{ sc.grade_level }}</td>
+      <td>{{ sc.room.name }}</td>
+      <td class="cell-num">{{ sc.students_count }}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="5" class="no-data">لا يوجد بيانات</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{# ── ثالثاً: سجل الحوادث ─────────────────────────────────────────── #}
+<div class="section-head mt-20">ثالثاً: سجل الحوادث</div>
+{% if incidents %}
+<table class="report-table">
+  <thead>
+    <tr>
+      <th>النوع</th>
+      <th>الطالب</th>
+      <th>الخطورة</th>
+      <th>الحالة</th>
+      <th>التوقيت</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for i in incidents %}
+    <tr>
+      <td>{{ i.get_incident_type_display }}</td>
+      <td class="cell-name">{{ i.student.full_name|default:"—" }}</td>
+      <td>{{ i.get_severity_display }}</td>
+      <td>
+        <span class="{% if i.status == 'open' %}badge-open{% else %}badge-done{% endif %}">
+          {{ i.get_status_display }}
+        </span>
+      </td>
+      <td>{{ i.incident_time|date:"m/d H:i" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="no-data c-green">لا توجد حوادث مسجلة</p>
+{% endif %}
+
+{# ── رابعاً: حالة أوراق الرصد ────────────────────────────────────── #}
+<div class="section-head mt-20">رابعاً: حالة أوراق الرصد</div>
+<table class="report-table">
+  <thead>
+    <tr>
+      <th>المادة</th>
+      <th>التاريخ</th>
+      <th>الأوراق</th>
+      <th>الحالة</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for sh in sheets %}
+    <tr>
+      <td class="cell-name">{{ sh.schedule.subject }}</td>
+      <td>{{ sh.schedule.exam_date }}</td>
+      <td class="cell-num">{{ sh.papers_count }}</td>
+      <td>{{ sh.get_status_display }}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="4" class="no-data">لا يوجد بيانات</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}
+
+{% block signatures %}
+<div class="sig-block">
+  <div class="sig-item">
+    <div class="sig-title">رئيس الكنترول</div>
+    <div class="sig-space"></div>
+    <div class="sig-line"></div>
+    <div class="sig-name">{{ generated_by.full_name }}</div>
+    <div class="sig-role">{{ generated_at|date:"Y/m/d H:i" }}</div>
+  </div>
+  <div class="sig-item">
+    <div class="sig-title">مدير المدرسة</div>
+    <div class="sig-space"></div>
+    <div class="sig-line"></div>
+    <div class="sig-stamp">الختم الرسمي</div>
+  </div>
+</div>
+{% endblock %}

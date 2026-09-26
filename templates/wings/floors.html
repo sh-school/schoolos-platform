@@ -1,0 +1,148 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+
+{% block title %}أجنحة المدرسة{% endblock %}
+
+{# الصفحةُ لا تُمرَّر؛ ما يطول يُمرَّر داخل بطاقته. #}
+{% block main_class %}page-noscroll{% endblock %}
+
+{% block breadcrumbs %}
+{# المكوّنُ يضع «الرئيسية» بنفسه — فتمريرُها أباً يكرّرها. #}
+{% include "components/breadcrumbs.html" with current="أجنحة المدرسة" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash"{% if panels|length == 2 %} style="--floor-a: {{ panels.0.width_weight|stringformat:'s' }}; --floor-b: {{ panels.1.width_weight|stringformat:'s' }}"{% endif %}>
+
+  {% page_header "أجنحة المدرسة" subtitle=subtitle icon="wings" %}
+    <span class="exec-date">
+      {{ day_label }}{% if is_school_day %} · الساعة {{ now|date:"H:i" }}{% endif %}
+    </span>
+    {% if perms_can_cover %}
+      <a href="{% url 'wings:coverage' %}" class="btn-secondary btn-sm">
+        {% icon "link" %} التغطية والإنابة
+      </a>
+    {% endif %}
+  {% endpage_header %}
+
+  {% comment %}كلُّ بطاقةٍ سطرٌ واحد: الاسمُ فالعددُ فالتفصيل — والشُّعبُ المستثناة
+     بأسمائها في التلميح، بعد أن كانت فقرةً بين البطاقات. والتفصيلُ يُبنى في العرض.{% endcomment %}
+  {% kpi_strip label="أرقام الأجنحة" %}
+    {% kpi "الأجنحة" wing_count sub="طابقان" %}
+    {% kpi "شُعبُ الأجنحة" section_count sub=kpis.sections_sub title=kpis.sections_title tone="blue" %}
+    {% kpi "طلابُ الأجنحة" student_count sub=kpis.students_sub tone="teal" %}
+    {% kpi "اليوم" day_label sub=kpis.day_sub tone=kpis.day_tone %}
+  {% endkpi_strip %}
+
+  {# ══ الطابقان — بطاقتان في سطر، تنفكّان عموداً في الشاشة الضيّقة ══ #}
+  {# لوحُ الطابق لا `section_card`: شريطُه يحمل شاراتِ الجرس، والمكوّنُ يأخذ نصّاً. #}
+  {# عمودان رأسيّان: الطابقُ فتوقيتُه تحته — والصفُّ الأوّل والثاني من الشبكة نفسِها فيتحاذى العمودان. #}
+  <div class="floor-cols"{% if panels|length == 2 %} style="--floor-cols: minmax(0, {{ panels.0.width_weight|stringformat:'s' }}fr) minmax(0, {{ panels.1.width_weight|stringformat:'s' }}fr)"{% endif %}>
+  <div class="wing-pair wing-pair--floors">
+  {% for panel in panels %}
+  <div class="wing-panel">
+    <div class="wing-panel__bar">
+      {% icon "school_building" %}
+      {{ panel.label }}
+      <span class="floor-meta">
+        {% for bell in panel.bells %}
+          <span class="badge" title="{{ bell.band_name }}">
+            {{ bell.starts|time:"H:i" }}–{{ bell.ends|time:"H:i" }} · {{ bell.periods|length }} حصص
+          </span>
+        {% empty %}
+          <span class="badge">لا جرسَ اليوم</span>
+        {% endfor %}
+        <span class="wing-panel__sub">{{ panel.section_count }} شعبة · {{ panel.student_count }} طالباً</span>
+      </span>
+    </div>
+
+    <div class="wing-grid">
+      {% for card in panel.wings %}
+      {# ثلاثةُ أسطر: مَن وكم — أيُّ الشُّعب — أين هو من الساعة. #}
+      <div class="wing-box wing-box--lines{% if card.is_split %} wing-box--split{% endif %}">
+
+        <div class="wing-line">
+          <span class="wing-box__name">{{ card.wing.name }}</span>
+          <span class="wing-box__who{% if not card.holder %} is-vacant{% endif %}"{% if card.holder %} title="{{ card.holder.full_name }}"{% endif %}>
+            {% if card.holder %}{{ card.holder.full_name }}{% else %}بلا مشرفٍ بعد{% endif %}
+          </span>
+          {% if card.coverage %}
+            <span class="badge badge--info" title="الأصيل: {{ card.wing.supervisor.full_name|default:'—' }}{% if card.coverage.end_date %} · حتّى {{ card.coverage.end_date }}{% endif %}">بديل</span>
+          {% endif %}
+          {% if card.is_split %}
+            <span class="badge badge--warning" title="ممرٌّ بجرسين — الحصّةُ فيه تُقال بالساعة لا بالرقم">جرسان</span>
+          {% endif %}
+          <span class="wing-box__count"><b>{{ card.student_count }}</b> طالباً</span>
+        </div>
+
+        <div class="wing-sections">
+          {% for section in card.sections %}
+            <span class="wing-chip">{{ section.short_code }}</span>
+          {% endfor %}
+        </div>
+
+        <div class="wing-line wing-line--now">
+          {% if card.off_floor %}
+            <span class="ui-callout ui-callout--error" title="جرسٌ من طابقٍ آخر: {% for band in card.off_floor %}{{ band.name }}{% if not forloop.last %} · {% endif %}{% endfor %}">
+              {% icon "status_warning" %}
+              جرسٌ من طابقٍ آخر
+            </span>
+          {% endif %}
+          {% for position in card.positions %}
+            <span class="wing-now{% if position.running.is_break %} is-break{% endif %}{% if not position.running and not position.upcoming %} is-over{% endif %}" title="{% if card.is_split %}{{ position.bell.band_name }}: {% endif %}{{ position.says }}">
+              {% if card.is_split %}<span class="wing-now__bell">{{ position.bell.band_short }}</span>{% else %}{% icon "time" %}{% endif %}
+              <span>{{ position.says }}</span>
+            </span>
+          {% endfor %}
+        </div>
+
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+  </div>
+
+  {# ══ جدولا اليومين — في سطرٍ كذلك ══ #}
+  <div class="wing-pair wing-pair--floors">
+  {% for table in tables %}
+  {% section_card table.title meta="حصصاً وفسحةً وصلاة" icon="time" %}
+    <div class="table-wrap">
+      <table class="bell-table" data-no-sort>
+        <thead>
+          <tr>
+            {% for column in table.columns %}
+              <th>{{ column.name }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in table.rows %}
+          <tr>
+            {% for slot in row %}
+              {% if slot %}
+                <td{% if slot.is_break %} class="is-break"{% endif %}>
+                  <span class="bell-slot">
+                    <span class="bell-slot__name">{{ slot.label }}</span>
+                    <span class="bell-slot__time">{{ slot.start|time:"H:i" }}–{{ slot.end|time:"H:i" }}</span>
+                  </span>
+                </td>
+              {% else %}
+                <td class="bell-none">—</td>
+              {% endif %}
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% callout "hint" %}الأعمدةُ متجاورةٌ لا متطابقة: رقمُ الصفّ موضعٌ في اليوم لا رقمُ حصّة — فالحصّةُ
+      الرابعة تبدأ في الطابق الأرضيّ بعد فسحته، وفي الأوّل قبل فسحته.{% endcallout %}
+  {% endsection_card %}
+  {% endfor %}
+  </div>
+  </div>
+
+</div>
+{% endblock %}

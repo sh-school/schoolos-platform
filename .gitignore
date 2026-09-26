@@ -1,0 +1,127 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.log
+db.sqlite3
+media/
+staticfiles/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+.coverage
+htmlcov/
+.testmondata
+.testmondata-journal
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# ذاكرة pip المؤقتة — كانت مُودَعة (276 ملفاً ≈ 49MB) وتضخّم كل استنساخ
+.cache/
+
+# بيانات حقيقية — يُمنع رفعها
+data/
+*.csv
+
+# AAdocs: النصوصُ الوزاريّةُ الحرفيّةُ لا تُرفع — المستودعُ عامّ، ونسخُها
+# الاحتياطيّ مع نسخ الإنتاج المشفَّرة. ويُستثنى توثيقُ المشروع ومشتقّاتُ
+# مصدر الحقيقة (تحليلُنا نحن: مصفوفةُ الصلاحيّات وتقريرُ الامتثال وخطّةُ
+# الإصلاح) لأنّ الكودَ يُقارَن بها ويُخطَّط عليها.
+AAdocs/*
+!AAdocs/claude/
+!AAdocs/ministry_data/
+AAdocs/ministry_data/*
+!AAdocs/ministry_data/2026_2027/
+AAdocs/ministry_data/2026_2027/*
+!AAdocs/ministry_data/2026_2027/index.md
+!AAdocs/ministry_data/2026_2027/rbac_permissions_matrix.md
+!AAdocs/ministry_data/2026_2027/rbac_roles.json
+!AAdocs/ministry_data/2026_2027/compliance_audit_report.md
+!AAdocs/ministry_data/2026_2027/remediation_plan.md
+!AAdocs/ministry_data/2026_2027/01_policies_general.md
+!AAdocs/ministry_data/2026_2027/01b_policies_deep.md
+!AAdocs/ministry_data/2026_2027/02_staff_affairs.md
+!AAdocs/ministry_data/2026_2027/03_job_descriptions_rbac.md
+!AAdocs/ministry_data/2026_2027/04_academic.md
+!AAdocs/ministry_data/2026_2027/04b_academic_deep_part1.md
+!AAdocs/ministry_data/2026_2027/04c_academic_deep_part2.md
+!AAdocs/ministry_data/2026_2027/04d_academic_deep_part3.md
+!AAdocs/ministry_data/2026_2027/05_admin_behavioral_health.md
+!AAdocs/ministry_data/2026_2027/05b_health_safety_deep.md
+!AAdocs/ministry_data/2026_2027/06_attendance_performance_review.md
+!AAdocs/ministry_data/2026_2027/07_forms_catalog.md
+!AAdocs/ministry_data/2026_2027/08_conduct_policy_2026.md
+!AAdocs/ministry_data/2026_2027/09_raw_data_schema.md
+!AAdocs/ministry_data/2026_2027/ministry_data_master.xlsx
+!AAdocs/ministry_data/2026_2027/01c_policies_thirdpass.md
+!AAdocs/ministry_data/2026_2027/02b_staff_affairs_thirdpass.md
+!AAdocs/ministry_data/2026_2027/04e_academic_thirdpass.md
+!AAdocs/ministry_data/2026_2027/05c_admin_behavioral_thirdpass.md
+!AAdocs/ministry_data/2026_2027/06b_attendance_performance_thirdpass.md
+!AAdocs/ministry_data/2026_2027/07b_forms_catalog_thirdpass.md
+!AAdocs/ministry_data/2026_2027/08b_conduct_policy_thirdpass.md
+!AAdocs/ministry_data/2026_2027/07c_student_forms_catalog.md
+!AAdocs/ministry_data/2026_2027/07d_additional_forms_catalog.md
+!AAdocs/ministry_data/2026_2027/rbac_job_code_conflict_proposal.md
+!AAdocs/ministry_data/2026_2027/conduct_rules_2026.md
+nginx/ssl/
+node_modules/
+ZZZZ.zip
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# إعداداتُ Claude المحلّيّة (أذوناتُ كلّ جلسةٍ ومستخدم): تُعدَّل من كلّ شجرةٍ فتبقى تعديلاً عالقاً وتمنع الدمجَ — REP-11
+.claude/settings.local.json
+
+# Backup files
+*.dump
+*.bak
+*.backup
+
+# Temp/scratch scripts
+_*.py
+_*.txt
+# Never ignore Python package markers (the _*.py rule above catches __init__.py)
+!**/__init__.py
+
+# Azkia config
+.Azkia/
+
+# Secrets scan results
+.secrets-results.json
+
+# Local archive — مجلد محلي للملفات القديمة/المبعثرة (لا يُرفع)
+_archive/
+
+# ── خطوطٌ مملوكة لا تُنشر ────────────────────────────────────────────
+# «Traditional Arabic» ملكيّةُ Monotype، ومستودع هذا المشروع عامّ.
+# فتُثبَّت على الخادم عبر `install_pdf_font` الذي يحفظها في القاعدة،
+# ولا تدخل الشيفرة المنشورة.
+static/fonts/trado.ttf
+static/fonts/tradbdo.ttf
+static/fonts/TRADO.TTF
+static/fonts/TRADBDO.TTF
+
+# بيئةُ pip داخل الحاوية: `docker compose exec web pip install` يكتب في
+# /app/.local وهو مُجلَّدٌ مشتركٌ مع الشجرة — أدواتُ التطوير لا تُودَع.
+.local/
+
+# لقطاتُ الجدول قبل التوليد — بياناتُ تشغيلٍ لا كود.
+backups/
+
+# سكربتاتُ تحليلٍ مؤقّتةٌ في الجذر: تُكتب لسؤالٍ في جلسةٍ ثمّ تُنسى
+# (قياسُ الفراغات، فحصُ التلاصق، نطاقاتُ التوقيت…). لا تُودَع كي لا يظنّها
+# قارئُ المستودع أدواتٍ معتمَدة.
+/adj.py
+/adj2.py
+/gaps.py
+/tb.py
+/scratch_*.py

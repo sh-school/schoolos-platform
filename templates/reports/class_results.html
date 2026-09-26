@@ -1,0 +1,49 @@
+{% extends "reports/base_qatar_report.html" %}
+{% load brand_tags %}
+{# كشف نتائج الفصل — الهيكلُ من base_qatar_report.html، والنغماتُ من reports/views.py #}
+
+{% block extra_styles %}
+.rank-badge {
+  display: inline-block; width: 22px; height: 22px;
+  border-radius: 50%; background: {% brand_color "MAROON" %}; color: {% brand_color "ON_FILL" %};
+  font-size: 10px; font-weight: 700; line-height: 22px; text-align: center;
+}
+.doc-body > table:not([class]) thead th.subject-head { font-size: 9px; }
+{% endblock %}
+
+{% block report_title %}كشف النتائج السنوية — {{ class_group.short_label }} — {{ year }}{% endblock %}
+
+{% block report_meta_cells %}
+<td>الفصل: <strong>{{ class_group.short_label }}</strong></td>
+<td>السنة: <strong>{{ year }}</strong></td>
+<td>تاريخ الطباعة: <strong>{{ print_date }}</strong></td>
+{% endblock %}
+
+{% block content %}
+<table>
+  <thead>
+    <tr>
+      <th scope="col">ترتيب</th>
+      <th scope="col">اسم الطالب</th>
+      {% for subj in subjects %}<th scope="col" class="subject-head">{{ subj.name_ar|truncatechars:10 }}</th>{% endfor %}
+      <th scope="col">المتوسط</th>
+      <th scope="col">الحالة</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in student_rows %}
+    <tr>
+      <td><span class="rank-badge">{{ row.rank }}</span></td>
+      <th scope="row">{{ row.student.full_name }}</th>
+      {% for cell in row.grade_cells %}
+      <td>{% if cell.value %}<b class="c-{{ cell.tone }}">{{ cell.value }}</b>{% else %}—{% endif %}</td>
+      {% endfor %}
+      <td><b>{{ row.avg|default:"—" }}</b></td>
+      <td><b class="c-{{ row.status_tone }}">{{ row.status }}</b></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
+
+{% block signatures %}{% include "reports/pdf/_signatures.html" with s1="رائد الفصل" s2="وكيل شؤون التعليم" s3="مدير المدرسة" %}{% endblock %}

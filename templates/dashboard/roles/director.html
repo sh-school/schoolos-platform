@@ -1,0 +1,91 @@
+{% load icons %}
+{% load ui %}
+{% comment %}لوحةُ المدير — اليومُ أوّلاً، ثمّ نبضُ الأقسام، ثمّ العامُ الدراسيّ.{% endcomment %}
+<div class="exec-dash">
+
+  {% page_header dashboard_title|default:"لوحة تحكم المدير" subtitle=subtitle icon="dashboard" %}
+    <a href="{% url 'daily_report' %}" class="btn-primary btn-sm">{% icon "absence" %} غياب اليوم</a>
+  {% endpage_header %}
+
+  {% if pending_excuses %}
+    {% callout "warning" show=True %}أعذارٌ أرسلها المشرفون بعد المهلة تنتظر قرارك: {{ pending_excuses }}. <a href="{% url 'wings:excuse_requests' %}" class="btn-primary btn-sm">افتح الأعذار</a>{% endcallout %}
+  {% endif %}
+
+  {% comment %}بطاقةٌ واحدةٌ لأرقام اليوم كلِّها: صفّان بخمسةٍ خمسة (طلب المالك 2026-09-23) —
+  الأوّلُ أرقامُ اليوم (الحضور والحصص والمعلّمون الغائبون)، والثاني ما ينتظر في الأقسام.{% endcomment %}
+  {% section_card "نبض المدرسة" meta="اليوم وهذا الشهر" icon="dashboard" %}
+    {% kpi_strip label="اليوم" %}
+      {% kpi "نسبة الحضور" attendance_label sub=att_delta_label tone="green" %}
+      {% kpi "الحاضرون" present tone="teal" %}
+      {% kpi "الغائبون" absent sub=absent_delta_label tone="red" %}
+      {% kpi "حصص اليوم" sessions_today sub=sessions_sub tone="maroon" %}
+      {% kpi "معلّمون غائبون" absent_teachers_today tone=teachers_tone href=teachers_url %}
+    {% endkpi_strip %}
+    {% kpi_strip label="نبض الأقسام" %}
+      {% kpi "مخالفات الشهر" behavior_monthly|default:0 sub=behavior_sub tone=behavior_tone href=behavior_url %}
+      {% kpi "زيارات العيادة" clinic_today|default:0 sub=clinic_sub tone=clinic_tone href=clinic_url %}
+      {% kpi "إعارات متأخّرة" library_overdue|default:0 tone=library_tone href=library_url %}
+      {% kpi "تبديلات معلّقة" pending_swaps tone=swaps_tone href=swaps_url %}
+      {% kpi "تعويضات معلّقة" pending_comp tone=comp_tone href=comp_url %}
+    {% endkpi_strip %}
+  {% endsection_card %}
+
+  {% if total_annual %}
+  {% section_card "العام الدراسي" meta=year icon="academic" %}
+    {% kpi_strip label="نتائج العام" %}
+      {% kpi "نسبة النجاح" pass_label tone="green" %}
+      {% kpi "نتائجُ ناجحة" passed_annual tone="green" title="نتيجةُ مادّةٍ لطالب" %}
+      {% kpi "طلابٌ راسبون" failing_count tone=failing_tone href=failing_url %}
+      {% kpi "موادّ غير مكتملة" incomplete_setups sub="مادّة × شعبة" tone="orange" %}
+    {% endkpi_strip %}
+  {% endsection_card %}
+  {% endif %}
+
+  <div class="ui-grid-2">
+    {% section_card "اتجاه الحضور" meta="آخر 7 أيّام" icon="trend" %}
+      <div class="dash-chart-wrap"><canvas id="miniAttendance" role="img" aria-label="رسم بياني: نسبة الحضور آخر 7 أيام"></canvas></div>
+    {% endsection_card %}
+    {% section_card "توزيع الدرجات السنويّة" icon="stats" %}
+      <div class="dash-chart-wrap"><canvas id="miniGrades" role="img" aria-label="رسم بياني: توزيع الدرجات السنوية"></canvas></div>
+    {% endsection_card %}
+    {% comment %}
+    كانت هذه البطاقةُ قسماً مستقلّاً بقائمةٍ رأسيّةٍ (اسمٌ + شارةٌ في كلّ
+    سطر) — فترتفع مع تراكم "نبض الأقسام" و"العام الدراسي" فوقها حتى تدفع
+    الرسمين البيانيّين وشريطَ الأقسام السريعة خارج الشاشة، رغم أنّ عددها
+    محدودٌ بـ`[:5]` أصلاً. انضمّت هنا عموداً ثالثاً بجانب الرسمين (الشبكةُ
+    `auto-fit` أصلاً، لا تحتاج تعديلاً لتقبل عموداً ثالثاً)، و`.is-scroll`
+    تُسقّف ارتفاعها بارتفاع الرسمين بجانبها ولو زاد عددُ التنبيهات الحقيقيّ
+    مستقبلاً عن الخمسة المعروضة. وهي دائمةٌ لا مشروطةٌ بوجود تنبيهات — تختفي
+    البطاقةُ الثالثةُ فتضطرب الشبكةُ (عمودان فقط) كلّما خلا يومٌ من التنبيهات،
+    فتبقى ظاهرةً دوماً بحالةٍ فارغةٍ موحّدة (`section_card` نفسُها ترسمها
+    حين يكون محتواها فارغاً — `{% if alerts %}` هنا لا حول القسم كلِّه).
+    {% endcomment %}
+    {% section_card "تنبيهات الغياب المتكرّر" meta=alerts|length icon="absence" empty="لا تنبيهات معلّقة" %}
+      {% if alerts %}
+      <ul class="plain-list is-scroll">
+        {% for alert in alerts %}
+          <li class="plain-list__row">
+            <span class="plain-list__main">
+              <span class="plain-list__title">{{ alert.student.full_name }}</span>
+              <span class="plain-list__sub">{{ alert.class_text }}</span>
+            </span>
+            <span class="status-badge status-danger">{{ alert.absence_count }} أيّام</span>
+          </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    {% endsection_card %}
+  </div>
+
+  <nav class="ui-actions" aria-label="الأقسام">
+    {% url 'analytics_dashboard' as u %}{% action_tile "التحليلات" icon="stats" href=u primary=True %}
+    {% url 'behavior:dashboard' as u %}{% action_tile "السلوك" icon="behavior" href=u %}
+    {% url 'clinic:dashboard' as u %}{% action_tile "العيادة" icon="clinic" href=u %}
+    {% url 'library:dashboard' as u %}{% action_tile "المكتبة" icon="library" href=u %}
+    {% url 'transport:dashboard' as u %}{% action_tile "النقل" icon="transport" href=u %}
+    {% url 'quality_dashboard' as u %}{% action_tile "الجودة" icon="status_success" href=u %}
+    {% url 'notifications_dashboard' as u %}{% action_tile "الإشعارات" icon="notifications" href=u %}
+    {% action_tile "الاختبارات" icon="assessments" href="/exam-control/" %}
+  </nav>
+
+</div>

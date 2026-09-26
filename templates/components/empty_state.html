@@ -1,0 +1,42 @@
+{% comment %}
+  مكوّن حالة الفراغ الموحّدة — SchoolOS v5.1
+  ════════════════════════════════════════════
+  الاستخدام:
+    include "components/empty_state.html" with
+       icon="empty"
+       title="لا توجد نتائج"
+       subtitle="لم يتم العثور على أي عناصر تطابق معايير البحث."
+       action_url="/students/add/"
+       action_label="إضافة طالب جديد"
+
+  المتغيرات:
+    icon         — معنًى من قاموس الأيقونات `core/icons.py` (مثل "empty" أو "status_success").
+                   وكان يُطبَع نصّاً خاماً، فمن مرّر اسماً رأى الاسمَ نفسَه
+                   بخطٍّ ضخمٍ مكانَ الأيقونة — «check-circle» في شاشة الغياب.
+                   ولا تُمرَّر emoji: أيقوناتُ المنصّة من مصدرٍ واحد.
+    title        — العنوان الرئيسي
+    subtitle     — النص التوضيحي
+    action_url   — رابط الإجراء (اختياري)
+    action_label — نص الزر (اختياري)
+    action_modal — data-modal-open value بدلاً من URL
+    compact      — True لحجم أصغر
+{% endcomment %}
+{% load icons %}
+<div class="empty-state-v2 {% if compact %}py-8{% endif %}">
+  {% if icon %}
+  <div class="es-icon">{% icon_named icon size="2xl" %}</div>
+  {% endif %}
+  <div class="es-title">{{ title|default:"لا توجد بيانات" }}</div>
+  {% if subtitle %}
+  <div class="es-sub">{{ subtitle }}</div>
+  {% endif %}
+  {% if action_url %}
+  <a href="{{ action_url }}" class="btn-primary">
+    {{ action_label|default:"إضافة جديد" }}
+  </a>
+  {% elif action_modal %}
+  <button class="btn-primary" data-modal-open="{{ action_modal }}">
+    {{ action_label|default:"إضافة جديد" }}
+  </button>
+  {% endif %}
+</div>

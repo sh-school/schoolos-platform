@@ -1,0 +1,159 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load static ui %}
+{% block title %}بوابة ولي الأمر — {{ current_school.name|default:"المدرسة" }}{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/parents/" parent_label="بوابة ولي الأمر" current="لوحة التحكم" %}
+{% endblock %}
+
+{% block extra_head %}
+{# PWA #}
+<link rel="manifest" href="{% url 'pwa_manifest' %}">
+{# المعياريُّ أوّلاً، ثمّ نظيرُه الخاصُّ بآبل — انظر `templates/base/base.html`. #}
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="{{ current_school.city|default:'المدرسة' }}">
+{% endblock %}
+
+{% block content %}
+
+{# ── شريطُ تثبيت التطبيق — يظهر بعد ثلاث ثوانٍ إن عرض المتصفّحُ التثبيت ── #}
+<div id="pwa-banner" class="pwa-banner" hidden>
+  <span class="pwa-banner__icon">{% icon "download" %}</span>
+  <div class="pwa-banner__text">
+    <p class="pwa-banner__title">ثبّت تطبيق المدرسة</p>
+    <p class="pwa-subtitle">وصول سريع بدون متصفح</p>
+  </div>
+  <button type="button" data-call="installPWA" class="btn-secondary btn-sm">تثبيت</button>
+  <button type="button" data-hide="#pwa-banner" class="pwa-close-btn" aria-label="إغلاق">{% icon "status_error" %}</button>
+</div>
+
+<div class="exec-dash">
+
+  {% page_header "بوابة ولي الأمر" subtitle=school.name icon="link" %}
+    <span id="online-indicator" class="status-dot status-dot-online" title="متصل" role="status" aria-label="متصل"></span>
+    <span class="exec-date">{{ year }}</span>
+  {% endpage_header %}
+
+  {% for child in children %}
+    {% section_card child.student.full_name meta=child.enrollment.class_group.short_code icon="profile" %}
+      <div class="parent-child">
+        {% if child.kpis %}
+        {% kpi_strip label="أرقام الابن" %}
+          {% for k in child.kpis %}{% kpi k.label k.value sub=k.sub tone=k.tone title=k.title %}{% endfor %}
+        {% endkpi_strip %}
+        {% endif %}
+        <nav class="parent-child__actions" aria-label="تفاصيل الابن">
+          {% if child.link.can_view_grades %}
+            <a href="{% url 'parent_student_grades' child.student.id %}?year={{ year }}" class="btn-secondary btn-sm">{% icon "grades" %} الدرجات</a>
+          {% endif %}
+          {% if child.link.can_view_attendance %}
+            <a href="{% url 'parent_student_attendance' child.student.id %}?year={{ year }}" class="btn-secondary btn-sm">{% icon "attendance_register" %} الحضور</a>
+          {% endif %}
+          <a href="{% url 'parent_behavior' %}" class="btn-secondary btn-sm">{% icon "behavior" %} السلوك</a>
+        </nav>
+      </div>
+    {% endsection_card %}
+  {% empty %}
+    {% section_card "أبنائي" icon="children" empty="لم يُربط حسابك بأيّ طالبٍ بعد" empty_sub="تواصل مع إدارة المدرسة لربط حسابك بأبنائك" %}{% endsection_card %}
+  {% endfor %}
+
+  {% if children %}
+  {% section_card "روابط عامّة" icon="wings" %}
+    <nav class="parent-child__actions" aria-label="روابط عامّة">
+      <a href="{% url 'parent_all_grades' %}?year={{ year }}" class="btn-secondary btn-sm">{% icon "grades" %} كل الدرجات</a>
+      <a href="{% url 'parent_all_attendance' %}" class="btn-secondary btn-sm">{% icon "attendance_register" %} كل الحضور</a>
+      <a href="{% url 'notification_inbox' %}" class="btn-secondary btn-sm">{% icon "notifications" %} الإشعارات</a>
+      <a href="{% url 'parent_consent' %}" class="btn-secondary btn-sm">{% icon "settings" %} إعدادات الخصوصية</a>
+      <a data-app-file href="{% url 'behavior:policy_pdf' %}" target="_blank" rel="noopener" class="btn-secondary btn-sm">{% icon "print" %} لائحة السلوك</a>
+    </nav>
+  {% endsection_card %}
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+/* ── Online/Offline Indicator ── */
+function updateOnlineStatus() {
+  var el = document.getElementById('online-indicator');
+  if (!el) return;
+  /* اللونُ من الصنف لا من رقمٍ في الشيفرة — فيتبع الوضعَ الداكن. */
+  el.classList.toggle('status-dot-online', navigator.onLine);
+  el.classList.toggle('status-dot-offline', !navigator.onLine);
+  el.title = navigator.onLine ? 'متصل' : 'غير متصل';
+  el.setAttribute('aria-label', el.title);
+}
+window.addEventListener('online',  updateOnlineStatus);
+window.addEventListener('offline', updateOnlineStatus);
+updateOnlineStatus();
+
+/* ── PWA Install Prompt ── */
+var deferredPrompt;
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  deferredPrompt = e;
+  if (!window.matchMedia('(display-mode: fullscreen)').matches
+      && !window.matchMedia('(display-mode: standalone)').matches) {
+    setTimeout(function() {
+      var banner = document.getElementById('pwa-banner');
+      if (banner) banner.hidden = false;
+    }, 3000);
+  }
+});
+window.installPWA = function () {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.then(function() {
+    deferredPrompt = null;
+    var banner = document.getElementById('pwa-banner');
+    if (banner) banner.hidden = true;
+  });
+};
+
+/* ── Service Worker + Push Notifications ── */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/parents/sw.js', { scope: '/parents/' })
+      .then(function(reg) { _initPushNotifications(reg); })
+      .catch(function(err) { console.log('SW error:', err); });
+  });
+}
+async function _initPushNotifications(swReg) {
+  if (!('PushManager' in window)) return;
+  try {
+    var keyResp = await fetch('/parents/push/vapid-key/');
+    var keyData = await keyResp.json();
+    if (!keyData.publicKey) return;
+    var sub = await swReg.pushManager.getSubscription();
+    if (!sub) {
+      if (await Notification.requestPermission() !== 'granted') return;
+      sub = await swReg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: _urlB64ToUint8(keyData.publicKey),
+      });
+    }
+    await fetch('/parents/push/subscribe/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': _getCsrf() },
+      body: JSON.stringify(sub.toJSON()),
+    });
+  } catch(e) { console.log('Push init error:', e); }
+}
+function _urlB64ToUint8(b64) {
+  var pad = '='.repeat((4 - b64.length % 4) % 4);
+  var raw = window.atob((b64 + pad).replace(/-/g,'+').replace(/_/g,'/'));
+  return Uint8Array.from([...raw].map(function(c){ return c.charCodeAt(0); }));
+}
+/* [P2-A] الرمز من DOM لا من الكوكي — هذه الصفحة تمتدّ من base/base.html
+   الذي يضع {% csrf_token %} لكل مستخدم مُعتمَد. القراءة من document.cookie
+   كانت تُلزمنا بإبقاء CSRF_COOKIE_HTTPONLY=False. */
+function _getCsrf() {
+  var el = document.querySelector('[name=csrfmiddlewaretoken]');
+  return el ? el.value : '';
+}
+</script>
+{% endblock %}

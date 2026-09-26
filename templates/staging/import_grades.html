@@ -1,0 +1,105 @@
+{% extends "base/base.html" %}
+{% load icons %}
+{% load ui %}
+{% block title %}استيراد الدرجات من Excel{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/import/" parent_label="الاستيراد" current="استيراد الدرجات" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "استيراد الدرجات" subtitle="اختر التقييم، ثمّ حمّل قالبه المعبّأ بأسماء الطلاب، ثمّ ارفعه بعد تعبئة الدرجات" icon="import" %}
+    <a href="{% url 'import_log_list' %}" class="btn-secondary btn-sm">{% icon "time" %} سجل العمليات السابقة</a>
+    {% if not assessments %}
+    <a href="{% url 'assessments_dashboard' %}" class="btn-secondary btn-sm">{% icon "assessments" %} التقييمات</a>
+    {% endif %}
+  {% endpage_header %}
+
+  {% section_card "التقييمات المتاحة للاستيراد" meta=year icon="import" empty="لا توجد تقييمات منشورة حالياً" flush=True %}{% if assessments %}
+    {% if not openpyxl_ok %}
+    {% callout "warning" %}مكتبة <code>openpyxl</code> غير مثبتة — شغّل <code dir="ltr">pip install openpyxl</code> لتفعيل هذه الميزة.{% endcallout %}
+    {% endif %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">المادة</th>
+            <th scope="col">الفصل</th>
+            <th scope="col">التقييم</th>
+            <th scope="col" class="num">الدرجة القصوى</th>
+            <th scope="col" class="num">الحالة</th>
+            <th scope="col" class="num">إجراءات</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in assessments %}
+          <tr id="row-{{ a.id }}">
+            <td><b>{{ a.package.setup.subject.name_ar }}</b></td>
+            <td>{{ a.class_group.short_label }}</td>
+            <td>{{ a.title }}</td>
+            <td class="num">{{ a.max_grade }}</td>
+            <td class="num"><span class="status-badge {{ a.badge_class }}">{{ a.badge_label }}</span></td>
+            <td>
+              <div class="import-actions">
+                {% if openpyxl_ok %}
+                <a data-app-file href="{% url 'download_grade_template' a.id %}" class="btn-secondary btn-xs">{% icon "export_excel" %} قالب Excel</a>
+                {% else %}
+                <span class="btn-secondary btn-xs" aria-disabled="true">{% icon "export_excel" %} قالب Excel</span>
+                {% endif %}
+                <button type="button" data-call="toggleUpload" data-arg="{{ a.id }}" class="btn-primary btn-xs" aria-controls="upload-{{ a.id }}" {% if not openpyxl_ok %}disabled{% endif %}>
+                  {% icon "upload" %} رفع الدرجات
+                </button>
+              </div>
+
+              <div id="upload-{{ a.id }}" class="import-upload" hidden>
+                {% callout "warning" %}الاستيراد يستبدل الدرجةَ المسجّلة لكلّ طالبٍ في الملف، ويُعيد حساب النتائج. استعمل «معاينة» أولاً.{% endcallout %}
+                <form method="post" enctype="multipart/form-data" action="{% url 'upload_grade_file' a.id %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="dry_run" id="dry-run-{{ a.id }}" value="0">
+                  <div class="import-actions">
+                    <input type="file" name="grade_file" accept=".xlsx,.xls" class="form-control form-control-sm" aria-label="ملف الدرجات" required>
+                    <button type="submit" data-set-value="#dry-run-{{ a.id }}|1" class="btn-secondary btn-xs" title="تحقّقٌ من الأخطاء قبل الحفظ الفعليّ">
+                      {% icon "view" %} معاينة
+                    </button>
+                    <button type="submit" data-set-value="#dry-run-{{ a.id }}|0" class="btn-primary btn-xs">
+                      {% icon "import" %} استيراد
+                    </button>
+                    <button type="button" data-call="toggleUpload" data-arg="{{ a.id }}" class="btn-ghost btn-xs" aria-label="إغلاق">{% icon "close" %}</button>
+                  </div>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}{% endsection_card %}
+
+  {% if logs %}
+  {% section_card "آخر عمليات الاستيراد" icon="import" %}
+    <ul class="plain-list">
+      {% for log in logs|slice:":5" %}
+      <li class="plain-list__row">
+        <span class="plain-list__main">
+          <b class="plain-list__title">{{ log.file_name }}</b>
+          <span class="plain-list__sub">{{ log.started_at|date:"d/m/Y H:i" }} · مستورد {{ log.imported_rows }}{% if log.failed_rows %} · أخطاء {{ log.failed_rows }}{% endif %}</span>
+        </span>
+        <span class="status-badge {{ log.badge_class }}">{{ log.get_status_display }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endsection_card %}
+  {% endif %}
+
+</div>
+
+<script nonce="{{ request.csp_nonce }}">
+window.toggleUpload = function (id) {
+  const el = document.getElementById('upload-' + id);
+  if (el) el.hidden = !el.hidden;
+};
+</script>
+{% endblock %}

@@ -1,0 +1,55 @@
+{% load icons %}
+{% comment %}
+  عنصر إشعار واحد — يُستخدم في inbox.html وعند HTMX swap بعد mark_read.
+  كان تنسيقُه كلُّه في وسمه (خلفيّةٌ وإطارٌ وحشوٌ لكلّ حال)؛ فصار صنفين:
+  `notif-item` و`is-unread` — والألوانُ من الرموز في custom.css.
+{% endcomment %}
+<div
+  id="notif-{{ notif.id }}"
+  class="notif-item{% if not notif.is_read %} is-unread{% endif %}"
+  data-filter-item
+  data-id="{{ notif.id }}"
+  data-url="{{ notif.related_url|default:'' }}"
+  data-title="{{ notif.title }}"
+  data-body="{{ notif.body|default:'' }}"
+  tabindex="0"
+  role="article"
+  aria-label="{{ notif.title }}">
+
+  <div class="notif-item__main">
+    <h4 class="notif-item__title">
+      {% if notif.related_url %}<a href="{{ notif.related_url }}">{{ notif.title }}</a>{% else %}{{ notif.title }}{% endif %}
+    </h4>
+
+    {# النصُّ كاملاً: كان يُقصّ بـ160 حرفاً وسطرين فلا يُقرأ على اللمس، والنقرُ على العنوان يفتح صفحةً أخرى. #}
+    {% if notif.body %}<p class="notif-item__body">{{ notif.body }}</p>{% endif %}
+
+    {# الشارةُ في سطر الوقت لا سطرٌ لها وحدَها — كانت تزيد كلَّ بطاقةٍ سطراً. #}
+    {% now "Ymd" as today_key %}
+    <p class="notif-item__meta">
+      {% if notif.priority == "urgent" %}
+        <span class="status-badge status-danger">{% icon "status_critical" %} عاجل</span>
+      {% elif notif.priority == "high" %}
+        <span class="status-badge status-warning">{% icon "status_warning" %} مهم</span>
+      {% elif not notif.is_read %}
+        <span class="status-badge status-maroon">جديد</span>
+      {% endif %}
+      <span>{{ notif.get_event_type_display }}</span>
+      <time datetime="{{ notif.created_at|date:'c' }}" title="قبل {{ notif.created_at|timesince }}">{% if notif.created_at|date:"Ymd" != today_key %}{{ notif.created_at|date:"j/n" }} · {% endif %}{{ notif.created_at|date:"H:i" }}</time>
+    </p>
+  </div>
+
+  {% if not notif.is_read %}
+  <button
+    hx-post="{% url 'mark_notification_read' notif.id %}"
+    hx-target="#notif-{{ notif.id }}"
+    hx-swap="outerHTML"
+    hx-include="[name=csrfmiddlewaretoken]"
+    title="تحديد كمقروء (m)"
+    aria-label="تحديد «{{ notif.title }}» كمقروء"
+    class="notif-item__read"
+  >{% icon "confirm" %}</button>
+  {% else %}
+  <span class="notif-item__done" aria-label="مقروء">{% icon "confirm" %}</span>
+  {% endif %}
+</div>

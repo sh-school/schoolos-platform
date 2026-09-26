@@ -1,0 +1,1503 @@
+"""
+notifications/tasks.py
+مهام Celery غير المتزامنة للإشعارات
+[مهمة 15] بدلاً من الإرسال المباشر في الـ request، تُوضع المهام في queue
+
+الاستخدام:
+    # من أي مكان في الكود:
+    send_email_task.delay(
+        school_id=str(school.id),
+        recipient_email="parent@example.com",
+        subject="إشعار",
+        body_text="...",
+        ...
+    )
+"""
+
+import logging
+import re
+from time import monotonic
+from typing import TYPE_CHECKING, Any
+
+from celery import shared_task
+from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
+from django.conf import settings
+
+from core.celery_tasks import TenantRLSTask, school_rls_scope
+from notifications.channels import deliverable_external_channels
+from notifications.delivery_state import (
+    budget_exhausted,
+    claim_delivery,
+    finalize_delivery,
+    mark_undeliverable,
+)
+
+logger = logging.getLogger(__name__)
+
+
+#: [P2-B2] أنماط تُنقَّى من نصّ الخطأ قبل تخزينه. الخدمات اليوم تُرجع رسائل
+#: عامة، لكن عقد `_to_dlq` يقبل أي استثناء من أي مُستدعٍ مستقبلي — ورسائل
+#: مزوّدي البريد وTwilio تحمل عادةً العنوان أو الرقم الذي فشل. الحقل يجب أن
+#: يكون آمناً بحكم العقد لا بحكم عادة المُستدعين الحاليين.
+_ERROR_REDACTIONS = (
+    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "<email>"),
+    (re.compile(r"\+?\d[\d\s-]{7,}\d"), "<phone>"),
+    (re.compile(r"https?://\S+"), "<url>"),
+)
+
+
+def _safe_error(error):
+    """[P2-B2] يُزيل ما قد يحمله نصّ الاستثناء من بيانات شخصية."""
+    text = str(error)
+
+    for pattern, replacement in _ERROR_REDACTIONS:
+        text = pattern.sub(replacement, text)
+
+    return text[:2000]
+
+
+def _resolve_delivery(delivery_id, school_id, channel, recipient_id=None):
+    """[B4-1] يقرأ التسليم الذي سمّاه السلك، أو يرفض الإرسال.
+
+    قراءة فقط. لا `get_or_create` ولا إنشاء ناقص: مهمّة تسليم لا تخترع هويّتها،
+    وإن لم تجد ما أُرسلت لتنفّذه فالصواب ألّا تُرسل شيئاً — إشعارٌ غير متتبَّع
+    أسوأ من إشعار لم يُرسَل، لأن الأول يبدو ناجحاً.
+
+    والتحقّق ليس شكلياً: مُعرِّف تسليم من مدرسة أخرى، أو لقناة أخرى، أو لمستلم
+    آخر، يعني أن الرسالة تحمل هويّة ليست هويّتها. لا شيء في السلك يمنع ذلك،
+    فالمهمّة هي التي تمنعه.
+    """
+    from notifications.models import NotificationDelivery
+
+    delivery = NotificationDelivery.objects.filter(id=delivery_id).first()
+
+    if delivery is None:
+        raise ValueError(f"delivery {delivery_id} غير موجود — لن يُرسَل شيء")
+
+    if str(delivery.school_id) != str(school_id):
+        raise ValueError(f"delivery {delivery_id} يخصّ مدرسة أخرى")
+
+    if delivery.channel != channel:
+        raise ValueError(f"delivery {delivery_id} قناته {delivery.channel} لا {channel}")
+
+    if recipient_id is not None and str(delivery.recipient_id) != str(recipient_id):
+        raise ValueError(f"delivery {delivery_id} يخصّ مستلماً آخر")
+
+    return delivery
+
+
+def _resolve_dispatch_deliveries(dispatch_id, user_id, school_id, channels):
+    """[B4-1] يجمع تسليمات الواقعة لقنواتها قبل أن يُطابر أيّاً منها.
+
+    يُحلّ الكلّ أولاً ثم يُطابر: لو حللنا قناةً وأرسلناها ثم اكتشفنا نقص تسليم
+    القناة التالية، لكان بعضُ الإشعار خرج متتبَّعاً وبعضه لم يخرج — وهو أسوأ من
+    الفشل الكامل لأنه يترك حالة نصفية لا يصفها شيء.
+
+    والقنوات هنا هي التي **ستُطابَر فعلاً** لا التي طُلبت: مستخدم بلا هاتف لا
+    تُرسَل له SMS، فاشتراط تسليم لها كان سيُفشل مساراً مشروعاً.
+    """
+    from notifications.models import NotificationDelivery
+
+    found = {
+        row.channel: str(row.id)
+        for row in NotificationDelivery.objects.filter(
+            dispatch_id=dispatch_id,
+            recipient_id=user_id,
+            school_id=school_id,
+            channel__in=list(channels),
+        )
+    }
+
+    missing = sorted(set(channels) - set(found))
+    if missing:
+        raise ValueError(f"dispatch {dispatch_id} بلا تسليم للقنوات {missing} — لن يُرسَل شيء")
+
+    return found
+
+
+def _close_unreachable_channels(dispatch_id, user_id, school_id, lost_channels):
+    """[B4-4] يُغلق تسليمات القنوات التي فقد المستلم وجهتها عليها.
+
+    `mark_undeliverable` لا يمسّ إلّا `pending` و`retry_wait`، فتسليمٌ نجح أو
+    يجري تنفيذه الآن لا يتأثّر. والقناة التي لا تسليم لها تُتجاهل بلا خطأ:
+    غيابُ التسليم هو نفسه المعنى — لم تكن ضمن السقف أصلاً.
+    """
+    if not lost_channels:
+        return 0
+
+    from notifications.delivery_state import mark_undeliverable
+    from notifications.models import NotificationDelivery
+
+    orphans = NotificationDelivery.objects.filter(
+        dispatch_id=dispatch_id,
+        recipient_id=user_id,
+        school_id=school_id,
+        channel__in=sorted(lost_channels),
+        status__in=("pending", "retry_wait"),
+    ).values_list("id", flat=True)
+
+    closed = sum(1 for delivery_id in list(orphans) if mark_undeliverable(delivery_id, school_id))
+
+    if closed:
+        logger.info(
+            "dispatch %s: %d delivery(ies) closed — contact removed for channels %s",
+            dispatch_id,
+            closed,
+            sorted(lost_channels),
+        )
+
+    return closed
+
+
+def _to_dlq(kind, school_id, payload, error, delivery_id=None):
+    """
+    [P0-8] يحفظ رسالة فشلت نهائياً في Dead-Letter Queue بدل ضياعها بصمت.
+
+    [P2-B1] المدرسة وسيط صريح لا مفتاح يُستخرج من الـpayload. هي العمود الذي
+    تعتمد عليه سياسة العزل، وتمريرها ضمناً داخل JSON هو ما أبقى هذا الجدول
+    خارج RLS من الأساس.
+
+    [P2-B2] الـpayload بيانات **تشخيصية**: تكفي لمعرفة ما فشل ومتى ولأي مدرسة،
+    ولا تكفي لإعادة الإرسال. `send_email_task` تقبل `student_id=None` مع
+    `notif_type="custom"`، فرسالة إلى عنوان خارجي لا يبقى منها ما يستعيد
+    المستلم. إعادة الإرسال تحتاج مرجعاً أو snapshot مشفّراً لم يُصمَّم بعد —
+    والبديل، أي تخزين البريد والهاتف والنصّ خاماً، يُنشئ مستودع PII جديداً.
+    """
+    try:
+        from notifications.models import DeadLetterMessage
+
+        DeadLetterMessage.objects.create(
+            kind=kind,
+            school_id=school_id,
+            # [B4-3B] الرابط الذي بقي فارغاً منذ B4-0 يصير ذا معنى هنا: صفّ
+            # الطابور يشير إلى التسليم الذي استنفد محاولاته، ويبقى `None`
+            # للمسار القديم الذي لا تسليم له.
+            delivery_id=delivery_id,
+            payload=payload,
+            error=_safe_error(error),
+        )
+        logger.error("DLQ: %s message dead-lettered", kind)
+    except Exception:  # noqa: BLE001 — لا نُفشل المهمة بسبب فشل الكتابة في DLQ نفسه
+        logger.exception("DLQ write failed for kind=%s", kind)
+
+
+def _tracked_failure(task, delivery, token, exc, *, kind, school_id, payload):
+    """[B4-3B] نهاية تنفيذٍ متتبَّع فشل — إعادةً أو استنفاداً.
+
+    الاستنفاد يُقرَّر **قبل** `self.retry()` بقراءة `request.retries`، لا
+    بالتقاط `MaxRetriesExceededError`. عقد Celery أن `retry(exc=exc)` عند تجاوز
+    الحدّ — ونحن داخل معالجة استثناء — قد يُعيد رفع الاستثناء الأصلي بدل
+    استثناء الاستنفاد، فبناءُ دورة حياة الصفّ على ذلك التفصيل يجعل صحّتها
+    رهينةَ تفاصيل إطار العمل.
+
+    وفقدانُ السياج يُنهي كل شيء: عاملٌ لم يعد يملك الصفّ لا يُعيد الإرسال ولا
+    يكتب حالة. الإعادة عندئذٍ تعويضٌ عن سلطة فُقدت، وهي بالضبط ما يُنتج
+    التكرار.
+
+    [B4-4] والاستنفاد يُقرَّر بالعدّاد **الدائم** لا بـ`request.retries`.
+
+    الأخير يعيش في رسالة Celery وحدها، ويبدأ من صفر في كل رسالة جديدة. ومنذ
+    صار للمُصالِح أن يُعيد طبر `retry_wait`، صارت كلُّ إعادة طبرٍ دورةً كاملة
+    جديدة: لا حدّ فعليّ للمحاولات مهما تكرّر الفشل. العدّاد على الصفّ ينجو من
+    موت العملية ومن ضياع الرسالة معاً، فهو وحده يصلح ميزانيةً.
+
+    و`request.retries` يبقى مساراً سريعاً داخل الرسالة الواحدة: إن رفض Celery
+    الإعادة لاستنفاد ميزانيتها هو، بقي الصفّ `retry_wait` وأخذه المُصالِح لاحقاً
+    ضمن الميزانية الدائمة نفسها — لا محاولة تُكتسب ولا تُفقد.
+    """
+    if budget_exhausted(delivery.id, school_id):
+        if not finalize_delivery(delivery.id, school_id, token, "dead_lettered"):
+            return {"status": "lost_lease"}
+
+        _to_dlq(kind, school_id, payload, exc, delivery_id=str(delivery.id))
+        return {"status": "dead_letter"}
+
+    if not finalize_delivery(delivery.id, school_id, token, "retry_wait"):
+        return {"status": "lost_lease"}
+
+    try:
+        raise task.retry(exc=exc)
+    except MaxRetriesExceededError:
+        # ميزانية الرسالة نفدت، والدائمة لم تنفد. الصفّ `retry_wait` بالفعل،
+        # فيأخذه المُصالِح بمهلته — ورفعُ الاستثناء هنا كان سيُعلّم المهمّة
+        # فاشلةً عن حالةٍ مُدارة.
+        logger.info("delivery %s: message retries exhausted — left to the reconciler", delivery.id)
+        return {"status": "retry_wait"}
+
+
+# ── إرسال بريد إلكتروني ─────────────────────────────────────────────
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,  # إعادة المحاولة بعد دقيقة
+    name="notifications.send_email",
+)
+def send_email_task(
+    self,
+    school_id,
+    recipient_email,
+    subject,
+    body_text,
+    body_html=None,
+    student_id=None,
+    notif_type="custom",
+    sent_by_id=None,
+    delivery_id=None,
+):
+    """
+    إرسال بريد إلكتروني بشكل غير متزامن.
+    يُعيد المحاولة تلقائياً 3 مرات عند الفشل.
+
+    [B4-1] `delivery_id` آخر وسيطة واختيارية: رسالة من إصدار سابق لا تحملها
+    فتسلك المسار الحالي حرفياً، ورسالة تحملها تُربط محاولتها بتسليمها.
+
+    [B4-3B] وتُدير دورة حياته: استحواذ قبل المزوّد، وإنهاء مُسيَّج بعده.
+    """
+    delivery = None
+    token = None
+
+    try:
+        from core.models import CustomUser, School
+        from notifications.services import NotificationService
+
+        school = School.objects.get(id=school_id)
+        student = CustomUser.objects.filter(id=student_id).first() if student_id else None
+        sent_by = CustomUser.objects.filter(id=sent_by_id).first() if sent_by_id else None
+        delivery = _resolve_delivery(delivery_id, school_id, "email") if delivery_id else None
+
+        if delivery is not None:
+            # [B4-3B] الاستحواذ بعد الحلّ وقبل المزوّد. مهمّة تفشل عند حلّ
+            # المدرسة أو المستلم لم يكن للمزوّد فيها احتمال، فوسمُها "قيد
+            # التنفيذ" يجعل المُصالِح يراها لاحقاً كأن عاملاً مات فيها.
+            token = claim_delivery(delivery.id, school_id)
+
+            if token is None:
+                # التسليم انتهى أو يملكه تنفيذ آخر. لا مزوّد، ولا سجلّ محاولة،
+                # ولا إعادة — وهذا ما يجعل تكرار الرسالة في الطابور غير ضارّ.
+                return {"status": "not_claimed", "recipient": recipient_email}
+
+        ok, err = NotificationService.send_email(
+            school=school,
+            recipient_email=recipient_email,
+            subject=subject,
+            body_text=body_text,
+            body_html=body_html,
+            student=student,
+            notif_type=notif_type,
+            sent_by=sent_by,
+            delivery=delivery,
+        )
+
+        if not ok:
+            # [B4-7O] لا عنوان بريدٍ في السجلّ — التسليم يُعرَّف بمُعرِّفه، ونصّ الخطأ
+            # يُستبدَل بنوعه لأن ردّ SMTP يحمل العنوان عادةً.
+            logger.warning(
+                "email attempt failed delivery_id=%s error=%s",
+                getattr(delivery, "id", None),
+                type(err).__name__ if isinstance(err, BaseException) else "provider_error",
+            )
+            raise RuntimeError(err)  # نوع مُلتقَط ⇒ يدخل مسار retry ثم DLQ
+
+        if delivery is not None and not finalize_delivery(delivery.id, school_id, token, "sent"):
+            return {"status": "lost_lease", "recipient": recipient_email}
+
+        return {"status": "sent", "recipient": recipient_email}
+
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.exception("send_email_task error: %s", exc)
+
+        if delivery is not None and token is not None:
+            return _tracked_failure(
+                self,
+                delivery,
+                token,
+                exc,
+                kind="email",
+                school_id=school_id,
+                payload={
+                    "student_id": student_id,
+                    "notif_type": notif_type,
+                    "sent_by_id": sent_by_id,
+                },
+            )
+
+        try:
+            raise self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            # [P2-B2] تشخيص لا إعادة تشغيل: بلا recipient_email ولا subject.
+            # مع student_id=None و notif_type="custom" لا يبقى ما يستعيد المستلم —
+            # وهذا مقصود حتى يُصمَّم مرجع/snapshot مشفّر (P2-C).
+            _to_dlq(
+                "email",
+                school_id,
+                {
+                    "student_id": student_id,
+                    "notif_type": notif_type,
+                    "sent_by_id": sent_by_id,
+                },
+                exc,
+            )
+            return {"status": "dead_letter", "recipient": recipient_email}
+
+
+# ── إرسال SMS ────────────────────────────────────────────────────────
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    name="notifications.send_sms",
+)
+def send_sms_task(
+    self,
+    school_id,
+    phone_number,
+    message,
+    student_id=None,
+    notif_type="custom",
+    sent_by_id=None,
+    delivery_id=None,
+):
+    """إرسال SMS بشكل غير متزامن عبر Twilio
+
+    [B4-1] `delivery_id` آخر وسيطة واختيارية — انظر `send_email_task`.
+    [B4-3B] ودورة الحياة نفسها: استحواذ قبل المزوّد، وإنهاء مُسيَّج بعده.
+    """
+    delivery = None
+    token = None
+
+    try:
+        from core.models import CustomUser, School
+        from notifications.services import NotificationService
+
+        school = School.objects.get(id=school_id)
+        student = CustomUser.objects.filter(id=student_id).first() if student_id else None
+        sent_by = CustomUser.objects.filter(id=sent_by_id).first() if sent_by_id else None
+        delivery = _resolve_delivery(delivery_id, school_id, "sms") if delivery_id else None
+
+        if delivery is not None:
+            token = claim_delivery(delivery.id, school_id)
+
+            if token is None:
+                return {"status": "not_claimed", "recipient": phone_number}
+
+        ok, err = NotificationService.send_sms(
+            school=school,
+            phone_number=phone_number,
+            message=message,
+            student=student,
+            notif_type=notif_type,
+            sent_by=sent_by,
+            delivery=delivery,
+        )
+
+        if not ok:
+            raise RuntimeError(err)  # نوع مُلتقَط ⇒ يدخل مسار retry ثم DLQ
+
+        if delivery is not None and not finalize_delivery(delivery.id, school_id, token, "sent"):
+            return {"status": "lost_lease", "recipient": phone_number}
+
+        return {"status": "sent", "recipient": phone_number}
+
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.exception("send_sms_task error: %s", exc)
+
+        if delivery is not None and token is not None:
+            return _tracked_failure(
+                self,
+                delivery,
+                token,
+                exc,
+                kind="sms",
+                school_id=school_id,
+                payload={
+                    "student_id": student_id,
+                    "notif_type": notif_type,
+                    "sent_by_id": sent_by_id,
+                },
+            )
+
+        try:
+            raise self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            # [P2-B2] تشخيص لا إعادة تشغيل: الهاتف والنصّ بيانات شخصية،
+            # وما تبقّى لا يكفي لإعادة البناء عند student_id=None.
+            _to_dlq(
+                "sms",
+                school_id,
+                {
+                    "student_id": student_id,
+                    "notif_type": notif_type,
+                    "sent_by_id": sent_by_id,
+                },
+                exc,
+            )
+            return {"status": "dead_letter", "recipient": phone_number}
+
+
+# ── إرسال WhatsApp ───────────────────────────────────────────────────
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    name="notifications.send_whatsapp",
+)
+def send_whatsapp_task(
+    self, school_id, phone_number, title, body, sent_by_id=None, delivery_id=None
+):
+    """
+    [P2-B3] تسليم WhatsApp مستقلّ.
+
+    كان يُرسَل داخل hub_send_notification_task مباشرةً بينما فُوّضت بقيّة
+    القنوات، فلم يكن له retry خاص ولا مسار إلى DLQ: فشله يُضاف إلى results
+    وتنتهي مهمة الـHub بنجاح. قناة تُرسل بنفسها داخل المنسّق تُبطل عقد
+    "الوحدة تسليم" بدل أن تستثني نفسها منه.
+    """
+    delivery = None
+    token = None
+
+    try:
+        from core.models import School
+
+        school = School.objects.get(id=school_id)
+        delivery = _resolve_delivery(delivery_id, school_id, "whatsapp") if delivery_id else None
+
+        if delivery is not None:
+            token = claim_delivery(delivery.id, school_id)
+
+            if token is None:
+                return {"status": "not_claimed", "channel": "whatsapp"}
+
+        _send_whatsapp(school, phone_number, title, body, delivery=delivery)
+
+        if delivery is not None and not finalize_delivery(delivery.id, school_id, token, "sent"):
+            return {"status": "lost_lease", "channel": "whatsapp"}
+
+        return {"status": "sent", "channel": "whatsapp"}
+
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        logger.exception("send_whatsapp_task error: %s", exc)
+
+        if delivery is not None and token is not None:
+            return _tracked_failure(
+                self,
+                delivery,
+                token,
+                exc,
+                kind="whatsapp",
+                school_id=school_id,
+                payload={"notif_type": "whatsapp", "sent_by_id": sent_by_id, "user_id": None},
+            )
+
+        try:
+            raise self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            # [P2-B2] تشخيص لا إعادة تشغيل: لا رقم ولا نصّ رسالة.
+            _to_dlq(
+                "whatsapp",
+                school_id,
+                {"notif_type": "whatsapp", "sent_by_id": sent_by_id, "user_id": None},
+                exc,
+            )
+            return {"status": "dead_letter", "channel": "whatsapp"}
+
+
+# ── إشعار غياب الطالب ───────────────────────────────────────────────
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=2,
+    default_retry_delay=120,
+    name="notifications.notify_absence",
+)
+def notify_absence_task(self, absence_alert_id, sent_by_id=None, school_id=None):
+    """إشعار ولي الأمر بغياب ابنه — يُشغَّل من AbsenceService"""
+    try:
+        from core.models import CustomUser
+        from notifications.services import NotificationService
+        from operations.models import AbsenceAlert
+
+        alert = AbsenceAlert.objects.select_related("school", "student").get(
+            id=absence_alert_id, school_id=school_id
+        )
+        sent_by = CustomUser.objects.filter(id=sent_by_id).first() if sent_by_id else None
+
+        results = NotificationService.notify_absence(alert, sent_by=sent_by)
+        sent = sum(1 for r in results if r["ok"])
+        # [B4-7O] `{alert.student}` يستدعي `__str__` فيُسرّب اسم الطالب.
+        logger.info(
+            "absence notification student_id=%s sent=%d/%d",
+            alert.student_id,
+            sent,
+            len(results),
+        )
+
+        # ✅ v5: إرسال Push للوالدين المشتركين
+        try:
+            from core.models import ParentStudentLink
+
+            parents = ParentStudentLink.objects.filter(
+                student=alert.student, school=alert.school
+            ).values_list("parent_id", flat=True)
+            from notifications.push_publisher import enqueue_push
+
+            for pid in parents:
+                # [B4-6] النشر عبر المالك: الحدّ اللين يسافر في الرسالة
+                # ويتغلّب على إعداد العامل، فمصدره يجب أن يكون موضعاً واحداً.
+                enqueue_push(
+                    user_id=pid,
+                    school_id=alert.school_id,
+                    title=f"⚠️ غياب — {alert.student.full_name}",
+                    body="تم تسجيل غياب اليوم. اضغط للتفاصيل.",
+                )
+        except (ImportError, OSError, RuntimeError) as pe:
+            # [B4-7O] نصّ استثناء Push يحمل عنوان الاشتراك (endpoint) — وهو مُعرِّف
+            # جهازٍ قرّرنا في B4-PRE1 ألّا نُخزّنه. فالنوع وحده.
+            logger.warning(
+                "push fan-out failed student_id=%s error=%s",
+                alert.student_id,
+                type(pe).__name__,
+            )
+
+        return {"sent": sent, "total": len(results)}
+
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.exception("notify_absence_task error: %s", exc)
+        raise self.retry(exc=exc)
+
+
+# ── إشعار رسوب الطالب ───────────────────────────────────────────────
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=2,
+    default_retry_delay=120,
+    name="notifications.notify_fail",
+)
+def notify_fail_task(
+    self,
+    student_id,
+    school_id,
+    failed_subjects,
+    year=None,
+    sent_by_id=None,
+):
+    """إشعار ولي الأمر برسوب ابنه"""
+    try:
+        from core.models import CustomUser, School
+        from notifications.services import NotificationService
+
+        student = CustomUser.objects.get(id=student_id)
+        school = School.objects.get(id=school_id)
+        sent_by = CustomUser.objects.filter(id=sent_by_id).first() if sent_by_id else None
+
+        results = NotificationService.notify_fail(
+            student=student,
+            school=school,
+            failed_subjects=failed_subjects,
+            year=year,
+            sent_by=sent_by,
+        )
+        sent = sum(1 for r in results if r["ok"])
+        return {"sent": sent, "total": len(results)}
+
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.exception("notify_fail_task error: %s", exc)
+        raise self.retry(exc=exc)
+
+
+# ── إرسال جماعي لتنبيهات الغياب المعلقة (مُجدوَل) ──────────────────
+
+
+@shared_task(name="notifications.send_pending_absence_alerts_all_schools")
+def send_pending_absence_alerts_task():
+    """Send pending absence alerts one school at a time."""
+    from core.models import School
+    from notifications.services import NotificationService
+
+    total_sent = 0
+    total_failed = 0
+
+    schools = School.objects.filter(is_active=True)
+
+    for school in schools.iterator(chunk_size=100):
+        with school_rls_scope(school.id):
+            sent, failed = NotificationService.send_pending_absence_alerts(school)
+
+            total_sent += sent
+            total_failed += failed
+
+            # [B4-7O] مُعرِّف المدرسة لا اسمها — بيانات مستأجِر في وجهةٍ
+            # لا نتحكّم في حفظها.
+            logger.info(
+                "school_id=%s sent=%d failed=%d",
+                school.id,
+                sent,
+                failed,
+            )
+
+    logger.info(
+        "Daily absence alerts: %d sent, %d failed",
+        total_sent,
+        total_failed,
+    )
+
+    return {
+        "total_sent": total_sent,
+        "total_failed": total_failed,
+    }
+
+
+# ── إشعار مخالفة سلوكية ─────────────────────────────────────────────
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    name="notifications.notify_behavior",
+)
+def notify_behavior_task(self, infraction_id, reporter_id, school_id=None):
+    """إشعار ولي الأمر عند تسجيل مخالفة سلوكية"""
+    try:
+        from behavior.models import BehaviorInfraction
+        from core.models import CustomUser
+
+        infraction = BehaviorInfraction.objects.select_related("student", "school").get(
+            id=infraction_id, school_id=school_id
+        )
+        reporter = CustomUser.objects.get(id=reporter_id)
+
+        from behavior.services import BehaviorService
+
+        BehaviorService.notify_parents(infraction, infraction.school, reporter)
+
+        return {"status": "done", "infraction": str(infraction_id)}
+
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.exception("notify_behavior_task error: %s", exc)
+        raise self.retry(exc=exc)
+
+
+# ── إشعار خرق البيانات (PDPPL م.11 + NCSA 72h) ──────────────────────
+
+
+@shared_task(name="notifications.check_breach_deadlines")
+def check_breach_deadlines_task():
+    """Check breach deadlines inside one school scope at a time."""
+    from django.utils import timezone
+
+    from core.models import BreachReport, School
+
+    now = timezone.now()
+    warnings = 0
+    overdue = 0
+
+    schools = School.objects.all()
+
+    for school in schools.iterator(chunk_size=100):
+        with school_rls_scope(school.id):
+            active = BreachReport.objects.filter(
+                school=school,
+                status__in=["discovered", "assessing"],
+            ).select_related(
+                "school",
+                "reported_by",
+                "assigned_to",
+            )
+
+            for breach in active.iterator(chunk_size=100):
+                if not breach.ncsa_deadline:
+                    continue
+
+                hours_left = breach.hours_remaining
+
+                if hours_left is not None and hours_left <= 12:
+                    _send_breach_alert(
+                        breach,
+                        hours_left,
+                        overdue=False,
+                    )
+                    warnings += 1
+
+                if breach.is_overdue:
+                    _send_breach_alert(
+                        breach,
+                        0,
+                        overdue=True,
+                    )
+                    overdue += 1
+
+    logger.warning(
+        "Breach check: %d تحذير، %d تجاوز مهلة",
+        warnings,
+        overdue,
+    )
+
+    return {
+        "warnings": warnings,
+        "overdue": overdue,
+    }
+
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
+    from core.models import BreachReport, CustomUser
+
+
+#: لا يُكرَّر تنبيهُ المنصّة لنفس المستلم والبلاغ قبل انقضاء هذه المدّة — والمهمّةُ ساعيّة.
+BREACH_INAPP_REPEAT_HOURS = 12
+
+
+def _breach_inapp_recipients(breach: "BreachReport") -> "QuerySet[CustomUser]":
+    """من يصله تنبيهُ المنصّة: المكلَّف والمُبلِّغ والمدير ومسؤولُ حماية البيانات.
+
+    مسؤولُ حماية البيانات يُعرف بـ`DPO_EMAIL` إن ضُبط، وبدور مطوّر المنصّة في هذه المدرسة
+    (هو من يمارس الدور اليوم). فلا يعتمد الوصولُ على مزوّد بريدٍ لم يُشترَ بعد.
+    """
+    from django.conf import settings
+
+    from core.models import CustomUser
+    from core.models.access import TIER_1_LEADERSHIP, TIER_SYSTEM, Membership
+
+    ids = set(
+        Membership.objects.filter(
+            school=breach.school,
+            is_active=True,
+            role__name__in=TIER_1_LEADERSHIP | TIER_SYSTEM,
+        ).values_list("user_id", flat=True)
+    )
+    if breach.assigned_to_id:
+        ids.add(breach.assigned_to_id)
+    if breach.reported_by_id:
+        ids.add(breach.reported_by_id)
+    dpo_email = getattr(settings, "DPO_EMAIL", "")
+    if dpo_email:
+        ids.update(CustomUser.objects.filter(email__iexact=dpo_email).values_list("pk", flat=True))
+    return CustomUser.objects.filter(pk__in=ids, is_active=True)
+
+
+def _notify_breach_in_app(
+    breach: "BreachReport", hours_left: float | None, overdue: bool = False
+) -> int:
+    """تنبيهُ الخرق داخل المنصّة (الجرس) — لا يعتمد على مزوّد بريد.
+
+    الإنذارُ كان بالبريد وحدَه، و`DPO_EMAIL` ومزوّدُ البريد غيرُ مضبوطَين في الإنتاج
+    (DPIA R8)، فكان مؤقّتُ الـ72 ساعة يعمل ولا يصل أحداً. والنصُّ هنا بلا بياناتٍ
+    شخصيّة ولا عنوانِ البلاغ: رقمٌ ومهلةٌ ورابط.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from notifications.models import InAppNotification
+
+    since = timezone.now() - timedelta(hours=BREACH_INAPP_REPEAT_HOURS)
+    title = (
+        "🚨 تجاوزتَ مهلةَ إشعار الجهة المختصّة عن خرق بيانات"
+        if overdue
+        else f"⚠️ بقي {hours_left} ساعة على مهلة إشعار الجهة المختصّة عن خرق بيانات"
+    )
+    created = 0
+    for user in _breach_inapp_recipients(breach):
+        already = InAppNotification.objects.filter(
+            user=user,
+            school=breach.school,
+            related_object_id=str(breach.pk),
+            created_at__gte=since,
+        ).exists()
+        if already:
+            continue
+        InAppNotification.objects.create(
+            user=user,
+            school=breach.school,
+            title=title,
+            body=f"الخطورة: {breach.get_severity_display()} — افتح البلاغ لاتّخاذ الإجراء.",
+            event_type="general",
+            priority="urgent",
+            related_object_id=str(breach.pk),
+            related_url=f"/breach/{breach.pk}/",
+        )
+        created += 1
+    return created
+
+
+def _send_breach_alert(breach, hours_left, overdue=False):
+    """تنبيه الخرق: داخل المنصّة أوّلاً (لا يحتاج مزوّداً)، ثمّ بالبريد للمدير والـ DPO"""
+    from django.conf import settings
+    from django.core.mail import send_mail
+
+    try:
+        _notify_breach_in_app(breach, hours_left, overdue=overdue)
+    except Exception:  # noqa: BLE001 — الإنذارُ لا يسقط ببابٍ منه فيُحجب الآخر
+        logger.error("breach in-app alert failed", exc_info=True)
+
+    subject = (
+        f"🚨 [عاجل] تجاوز مهلة إشعار NCSA — {breach.title}"
+        if overdue
+        else f"⚠️ تنبيه: {hours_left} ساعة لإشعار NCSA — {breach.title}"
+    )
+
+    body = f"""
+تقرير خرق البيانات: {breach.title}
+المدرسة: {breach.school.name}
+الخطورة: {breach.get_severity_display()}
+البيانات المتأثرة: {breach.get_data_type_affected_display()}
+عدد الأشخاص: {breach.affected_count}
+وقت الاكتشاف: {breach.discovered_at}
+موعد NCSA: {breach.ncsa_deadline}
+الحالة: {"⛔ تجاوز المهلة" if overdue else f"⚠️ {hours_left} ساعة متبقية"}
+
+الإجراء الفوري: {breach.immediate_action or "—"}
+
+رابط المراجعة: /breach/{breach.pk}/
+
+PDPPL م.11 — يجب إشعار NCSA خلال 72 ساعة من الاكتشاف.
+    """.strip()
+
+    # جمع المستلمين: المسؤول (DPO) + المُبلِّغ
+    recipients = []
+    # مسؤولُ حماية البيانات من الإعدادات (البيئة) — وإن لم يُضبط بقي المُبلِّغُ والمكلَّف.
+    dpo_email = getattr(settings, "DPO_EMAIL", "")
+    if dpo_email:
+        recipients.append(dpo_email)
+    if breach.assigned_to and breach.assigned_to.email:
+        recipients.append(breach.assigned_to.email)
+    if breach.reported_by and breach.reported_by.email:
+        recipients.append(breach.reported_by.email)
+
+    if recipients:
+        try:
+            delivered = send_mail(
+                subject=subject,
+                message=body,
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+                recipient_list=list(set(recipients)),
+                fail_silently=True,
+            )
+            if not delivered:
+                logger.error("تنبيه الخرق لم يُسلَّم بالبريد — مهلة NCSA قائمة، تابِعه يدوياً")
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.error("breach alert email failed error=%s", type(e).__name__, exc_info=True)
+
+
+# ── Push Notification — VAPID (v5) ───────────────────────────────────
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    # [B4-5] مهلةٌ لينة لا صلبة: اللينة تُرفع كاستثناء **داخل** المسار المالك
+    # للاستئجار، فيكتب العامل نهايته بنفسه. والصلبة تقتل العملية بـSIGKILL
+    # فتترك التسليم `in_progress` بلا كاتب — وهو بالضبط ما يُنتج
+    # `unknown_outcome` عن حالةٍ كانت معروفة.
+    soft_time_limit=settings.PUSH_SOFT_TIME_LIMIT_SECONDS,
+    name="notifications.send_push",
+)
+def send_push_task(self, user_id, title, body, url="/parents/", school_id=None, delivery_id=None):
+    """
+    إرسال Push Notification لولي الأمر عبر VAPID
+    يعمل حتى لو كان المتصفح مغلقاً (شرط قبوله الإذن)
+
+    [B4-PRE1] وحدة المحاولة هنا نداء المزوّد لا المهمّة: مستخدم بعدّة اشتراكات
+    يُنتج عدّة نداءات، فيُكتب صفّ لكل واحد. مسارٌ لا يبلغ `webpush` — لا اشتراكات
+    فعّالة، أو مكتبة الإرسال غير مثبتة — لا يكتب شيئاً، لأن محاولة تسليم لم تقع.
+
+    ودلالة `failed` هنا "هذه المحاولة فشلت" لا "التسليم فشل نهائياً"؛ الفرق
+    بينهما يحتاج `NotificationDelivery` ولم تُبنَ بعد. وسلوك الإعادة وDLQ لم
+    يتغيّر في هذه المرحلة: النجاح الجزئي يبقى نجاحاً للمهمّة كما قرّرنا في B3.
+    """
+    delivery = None
+    token = None
+
+    try:
+        import json
+
+        from django.conf import settings
+        from django.utils import timezone
+
+        from notifications.models import NotificationLog, PushSubscription
+
+        # [B4-1] تسليم واحد للمستخدم على هذه القناة، ومحاولات بعدد اشتراكاته.
+        # `recipient_id` مُتاح في السلك هنا، فيُفحص أيضاً: مُعرِّف تسليم لمستلم
+        # آخر يعني رسالة تحمل هويّة ليست هويّتها.
+        delivery = (
+            _resolve_delivery(delivery_id, school_id, "push", recipient_id=user_id)
+            if delivery_id
+            else None
+        )
+
+        subs = PushSubscription.objects.filter(
+            user_id=user_id,
+            school_id=school_id,
+            is_active=True,
+        )
+        if not subs.exists():
+            # [B4-3B] لا وجهة أصلاً — ولا استحواذ.
+            #
+            # المرور بـ`in_progress` هنا ادّعاءٌ بأن تنفيذاً جرى: لم ندخل منطقة
+            # مزوّد، ولا سجلّ محاولة يُكتب. فالانتقال مباشر من `pending`.
+            if delivery is not None:
+                mark_undeliverable(delivery.id, school_id)
+            return {"status": "no_subscriptions", "user": str(user_id)}
+
+        if delivery is not None:
+            token = claim_delivery(delivery.id, school_id)
+
+            if token is None:
+                return {"status": "not_claimed", "user": str(user_id)}
+
+        payload = json.dumps(
+            {
+                "title": title,
+                "body": body,
+                "url": url,
+                "icon": "/static/icons/icon-192.png",
+                "badge": "/static/icons/badge-72.png",
+            }
+        )
+
+        # محاولة استخدام pywebpush إذا كان مثبتاً
+        try:
+            from pywebpush import WebPushException, webpush
+
+            vapid_private = getattr(settings, "VAPID_PRIVATE_KEY", "").replace("\\n", "\n")
+            vapid_email = getattr(settings, "VAPID_CLAIMS_EMAIL", "")
+
+            sent = invalidated = 0
+            transient = []
+
+            # [B4-5] موعدٌ نهائيّ محسوب من ميزانية أسوأ حالة، يُقاس بساعةٍ
+            # أحاديّة الاتجاه لا بساعة الحائط: تعديلُ وقت النظام أثناء التنفيذ
+            # يجعل الثانية تسبق التي قبلها، فينهار الحساب في اللحظة التي نحتاجه
+            # فيها أكثر ما نحتاج.
+            deadline = monotonic() + settings.PUSH_WORST_CASE_BUDGET_SECONDS
+            provider_timeout = settings.PUSH_PROVIDER_TIMEOUT_SECONDS
+
+            for sub in subs:
+                # الميزانية تُفحص **قبل** النداء لا بعده: بعده يكون النداء قد
+                # وقع، وهو ما نمنعه أصلاً.
+                if monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"push fanout budget exhausted after {sent + invalidated + len(transient)} "
+                        "subscription(s) — remaining calls skipped"
+                    )
+
+                # [B4-PRE1] محاولة لكل نداء مزوّد — لا واحدة للمهمّة كلّها.
+                #
+                # المهمّة تنادي webpush مرّة لكل اشتراك فعّال، ووليّ أمر بهاتف
+                # وحاسوب ينتج عنه نداءان قد ينجح أحدهما ويفشل الآخر. صفّ واحد
+                # يلخّص الاثنين لا يستطيع قول ذلك ضمن pending/sent/failed:
+                # "أُرسل" يُخفي جهازاً لم تصله الرسالة، و"فشل" يقول إن شيئاً لم
+                # يصل وقد وصل. صفٌّ لكل نداء يجعل كل صفّ صادقاً بذاته.
+                #
+                # والمستلم يُعرَّف بمعرّف الاشتراك الداخلي لا بـendpoint: هذا
+                # الأخير عنوان جهاز، وتخزينه يفتح مستودع تتبّع جديداً.
+                log = NotificationLog.objects.create(
+                    school_id=sub.school_id,
+                    delivery=delivery,
+                    recipient=f"push:{sub.id}",
+                    channel="push",
+                    notif_type="custom",
+                    subject=title,
+                    body=body,
+                    status="pending",
+                )
+                try:
+                    webpush(
+                        subscription_info=sub.to_dict(),
+                        data=payload,
+                        vapid_private_key=vapid_private,
+                        vapid_claims={"sub": f"mailto:{vapid_email}"},
+                        # [B4-5] بلا هذه، `requests` ينتظر بلا حدّ. وهي مهلةُ
+                        # انتظارٍ على الاتصال والقراءة لا سقفٌ إجماليّ، فلذلك
+                        # لا يُحسب بها وحدها — يحرسها الموعد النهائي أعلاه.
+                        timeout=provider_timeout,
+                    )
+                except WebPushException as e:
+                    log.status = "failed"
+                    log.error_msg = _safe_error(e)
+                    log.save(update_fields=["status", "error_msg"])
+
+                    # [P2-B3] 404/410 ليست تسليماً فاشلاً بل اشتراكاً ميّتاً:
+                    # المتصفّح ألغاه. إعادة المحاولة عليه لن تنجح أبداً، وتسجيله
+                    # في DLQ يملؤها بضجيج لا إجراء له. التعطيل هو الإجراء.
+                    #
+                    # [B4-PRE1] والتعطيل لا يمحو أثر المحاولة: الاشتراك يصير
+                    # غير فعّال، والصفّ يبقى شاهداً على أننا حاولنا وفشلنا.
+                    if "410" in str(e) or "404" in str(e):
+                        sub.is_active = False
+                        sub.save(update_fields=["is_active"])
+                        invalidated += 1
+                        logger.info("Push subscription invalidated (gone)")
+                        continue
+
+                    # وفشل المزوّد على اشتراك صالح تسليمٌ فاشل قابل للإعادة —
+                    # كان يُبتلع في عدّاد وتنتهي المهمة بنجاح، فلا retry ولا DLQ.
+                    transient.append(e)
+                    logger.warning("Push delivery failed (transient): %s", e)
+                    continue
+
+                sub.last_used = timezone.now()
+                sub.save(update_fields=["last_used"])
+                log.status = "sent"
+                log.save(update_fields=["status"])
+                sent += 1
+
+            if transient and sent == 0:
+                # كل التسليمات الصالحة فشلت ⇒ لا شيء نجح، فالإعادة لا تُكرّر شيئاً.
+                raise RuntimeError(f"push delivery failed for {len(transient)} subscription(s)")
+
+            # [B4-3B] نتيجة واحدة للتسليم بعد اكتمال الصورة — لا داخل الحلقة.
+            #
+            # التسليم `(dispatch, user, push)`، والحلقة تُنتج محاولةً لكل
+            # اشتراك. فقد تجتمع محاولة نجحت وأخرى فشلت وثالثة على اشتراك ميت،
+            # ولا تُحسم الحالة إلا بعد أن تُعرَف كلّها.
+            if delivery is not None:
+                if sent:
+                    # عقد B3: النجاح الجزئي نجاح ولا يُعاد — إعادةُ الإرسال
+                    # تُكرّر على الجهاز الذي وصلته الرسالة.
+                    outcome = "sent"
+                else:
+                    # لا نجاح ولا فشل عابر، وثمّة اشتراكات ردّ عليها المزوّد
+                    # بـ404/410: وجهات ميتة نهائياً، والإعادة لن تُحييها.
+                    outcome = "undeliverable"
+
+                if not finalize_delivery(delivery.id, school_id, token, outcome):
+                    return {"status": "lost_lease", "user": str(user_id)}
+
+            return {"sent": sent, "invalidated": invalidated, "transient": len(transient)}
+
+        except ImportError as exc:
+            # [B4-3B] المكتبة الغائبة عطلٌ تشغيلي لا "لا وجهة".
+            #
+            # المسار القديم يسجّل ويمضي كما كان؛ والمتتبَّع يدخل مسار الفشل،
+            # لأن الوجهة موجودة والنظام هو الذي لا يستطيع بلوغها.
+            if delivery is not None:
+                raise RuntimeError("مزوّد Push غير متاح على هذا العامل.") from exc
+
+            # [B4-7O] العنوان محتوى إشعار — وعناوين أحداث السلوك تحمل اسم الطالب
+            # بالبناء. المُعرِّف وحده يكفي لمعرفة أيّ إشعارٍ لم يخرج.
+            logger.info("push skipped (pywebpush missing) recipient_id=%s", user_id)
+            return {"status": "queued_no_pywebpush", "user": str(user_id)}
+
+    except (ImportError, OSError, RuntimeError, ValueError, SoftTimeLimitExceeded) as exc:
+        # [B4-5] `SoftTimeLimitExceeded` هنا عمداً: لو خرجت فوق هذا المستوى
+        # لانتهت المهمّة بلا `finalize_delivery`، فبقي التسليم `in_progress`
+        # حتى ينقضي استئجاره — أي عدنا إلى `unknown_outcome` نفسه باسمٍ آخر.
+        # المسار هنا ما زال يملك السياج، فيكتب `retry_wait` أو `dead_lettered`.
+        logger.exception("send_push_task error: %s", exc)
+
+        if delivery is not None and token is not None:
+            return _tracked_failure(
+                self,
+                delivery,
+                token,
+                exc,
+                kind="push",
+                school_id=school_id,
+                payload={"user_id": str(user_id), "notif_type": "push", "sent_by_id": None},
+            )
+
+        try:
+            raise self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            # [P2-B3] تسليم Push انتهت محاولاته ⇒ يدخل DLQ مثل البريد وSMS.
+            # النموذج يُعرّف kind="push" منذ البداية ولم يكن يُكتب قط.
+            _to_dlq(
+                "push",
+                school_id,
+                {"user_id": str(user_id), "notif_type": "push", "sent_by_id": None},
+                exc,
+            )
+            return {"status": "dead_letter", "user": str(user_id)}
+
+
+@shared_task(
+    base=TenantRLSTask,
+    name="notifications.send_push_to_school",
+)
+def send_push_to_school_task(school_id, title, body, url="/parents/"):
+    """إرسال Push لكل أولياء الأمور في مدرسة"""
+    from core.models import School
+    from notifications.models import PushSubscription
+
+    school = School.objects.get(id=school_id)
+    users = (
+        PushSubscription.objects.filter(school=school, is_active=True)
+        .values_list("user_id", flat=True)
+        .distinct()
+    )
+
+    from notifications.push_publisher import enqueue_push
+
+    for uid in users:
+        enqueue_push(user_id=uid, school_id=school_id, title=title, body=body, url=url)
+
+    return {"queued": len(users)}
+
+
+# ════════════════════════════════════════════════════════════════════
+# ✅ v6: Hub task — إرسال مركزي مع retry لكل القنوات
+# ════════════════════════════════════════════════════════════════════
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=3,
+    name="notifications.hub_send",
+)
+def hub_send_notification_task(
+    self,
+    user_id,
+    school_id,
+    channels,
+    title,
+    body,
+    event_type,
+    context=None,
+    sent_by_id=None,
+    # `dispatch_id` يبقى آخرَ الوسائط: حارسُ السلك يشترطه، وكلُّ نداءٍ لهذه
+    # المهمّة بالكلمات لا بالمواضع، فترتيبُ ما قبله لا يُزيح ربطاً.
+    email_html=None,
+    email_text=None,
+    dispatch_id=None,
+):
+    """
+    مهمة مركزية — يستدعيها NotificationHub لإرسال الإشعارات الخارجية.
+    Retry: 3 محاولات مع exponential backoff (60s, 120s, 240s)
+
+    [B4-1] السلك هنا `dispatch_id` لا `delivery_id`: هذه المهمّة تمثّل مستلماً
+    واحداً على عدّة قنوات، فتقابلها عدّة تسليمات لا واحد. وهي تقرأ فقط — تبحث
+    عن تسليم كل قناة وتمرّره إلى مهمّتها، ولا تُنشئ واقعةً ولا تسليماً.
+
+    ورسالة بلا `dispatch_id` تسلك المسار الحالي حرفياً.
+    """
+    from core.models import CustomUser, School
+
+    try:
+        user = CustomUser.objects.get(id=user_id)
+        school = School.objects.get(id=school_id)
+        sender = CustomUser.objects.get(id=sent_by_id) if sent_by_id else None
+
+        results = []
+
+        # القنوات التي ستُطابَر فعلاً — لا التي طُلبت. تُحلّ تسليماتها كلّها
+        # قبل إطلاق أيّ منها، كي لا يخرج نصف الإشعار متتبَّعاً ونصفه لا.
+        #
+        # [B4-2B] المنطق مشترك مع الكاتب الذي يُنشئ التسليمات. نسختان منه
+        # تعنيان انحرافاً بين ما أُنشئ وما يُطلب — ولأن هذه المهمّة تفشل مغلقاً
+        # عند النقص، يظهر الانحراف كإشعارٍ لا يخرج لا كخطأ يُقرأ.
+        deliverable = deliverable_external_channels(user, channels)
+        delivery_ids = (
+            _resolve_dispatch_deliveries(dispatch_id, user_id, school_id, deliverable)
+            if dispatch_id
+            else {}
+        )
+
+        # [B4-4] وجهة اتصال اختفت بعد إنشاء الواقعة.
+        #
+        # القناة طُلبت ولها تسليمٌ قائم، لكن المستلم لم يعد يملك ما يُوصَل إليه:
+        # حُذف هاتفه أو بريده بين إنشاء الواقعة وبلوغ العامل. تركُها `pending`
+        # كان يجعل المُصالِح يُعيد طبرها إلى الأبد بلا أن تتحرّك.
+        #
+        # وهذا هو النصف الآخر من قاعدة السقف: مجموعة التسليمات القائمة هي
+        # الحدّ الأعلى لما يُرسَل — فما فقد وجهته منها يُغلق، وما لم يكن فيها
+        # لا يُفتح ولو ظهرت له وجهة الآن.
+        if dispatch_id:
+            _close_unreachable_channels(
+                dispatch_id, user_id, school_id, set(channels) - set(deliverable)
+            )
+
+        # ── Email ──────────────────────────────────────────────
+        if "email" in channels and user.email:
+            # [P2-B3] تسليم مستقلّ لا إرسال داخل هذه المهمة. كان البريد وSMS
+            # يُرسَلان هنا مباشرةً، فصار فشل قناة واحدة إمّا يضيع صامتاً — لأن
+            # المهمة تنتهي بنجاح ما دام أحدهما نجح — أو، لو أعدنا المهمة،
+            # يُعيد إرسال القناة الناجحة ويُنتج إشعاراً مكرّراً.
+            # كل مهمة تسليم تحمل retry الخاص بها ومسارها إلى DLQ.
+            send_email_task.delay(
+                school_id=str(school.id),
+                recipient_email=user.email,
+                subject=title,
+                body_text=email_text or body,
+                body_html=email_html,
+                notif_type=_hub_to_notif_type(event_type),
+                sent_by_id=str(sender.id) if sender else None,
+                delivery_id=delivery_ids.get("email"),
+            )
+            results.append(("email", True, None))
+
+        # ── SMS ────────────────────────────────────────────────
+        if "sms" in channels and user.get_phone_decrypted():
+            send_sms_task.delay(
+                school_id=str(school.id),
+                phone_number=user.get_phone_decrypted(),
+                message=f"{title}\n{body}",
+                notif_type=_hub_to_notif_type(event_type),
+                sent_by_id=str(sender.id) if sender else None,
+                delivery_id=delivery_ids.get("sms"),
+            )
+            results.append(("sms", True, None))
+
+        # ── WhatsApp (عبر Twilio WhatsApp API) ────────────────
+        if "whatsapp" in channels and user.get_phone_decrypted():
+            send_whatsapp_task.delay(
+                school_id=str(school.id),
+                phone_number=user.get_phone_decrypted(),
+                title=title,
+                body=body,
+                sent_by_id=str(sender.id) if sender else None,
+                delivery_id=delivery_ids.get("whatsapp"),
+            )
+            results.append(("whatsapp", True, None))
+
+        # ── Push ───────────────────────────────────────────────
+        if "push" in channels:
+            try:
+                from notifications.push_publisher import enqueue_push
+
+                enqueue_push(
+                    user_id=user.id,
+                    school_id=school.id,
+                    title=title,
+                    body=body,
+                    url=context.get("related_url", "/") if context else "/",
+                    delivery_id=delivery_ids.get("push"),
+                )
+                results.append(("push", True, None))
+            except (ImportError, OSError, RuntimeError) as e:
+                logger.exception("فشل جدولة مهمة Push للمستخدم %s: %s", user_id, e)
+                results.append(("push", False, str(e)))
+
+        # ── تحقق من الفشل ─────────────────────────────────────
+        # [P2-B3] لا retry على مستوى المهمة. كان هنا raise Exception(...)
+        # و except أدناه يمسك (OSError, RuntimeError, ValueError, KeyError)
+        # فقط — فلم يكن يلتقطها، ولم يُستدعَ self.retry() قط رغم أن التعليق
+        # يقول "→ retry". وحتى لو التقطها، إعادة المهمة كانت ستُعيد إرسال
+        # القنوات الناجحة. الفشل الآن مسؤولية كل مهمة تسليم على حدة.
+        failures = [r for r in results if not r[1]]
+        if failures:
+            logger.warning(
+                "hub_send: %d channel(s) failed to dispatch for user %s",
+                len(failures),
+                user_id,
+            )
+
+        # [B4-7O] هذا المسار الساخن — سطرٌ لكل إشعارٍ يخرج. كان يحمل الاسم
+        # الكامل لكل وليّ أمر، وهو أوسع تسريبٍ في الوحدة كلّها.
+        logger.info(
+            "hub_send recipient_id=%s success=%s failed=%s",
+            user_id,
+            [r[0] for r in results if r[1]],
+            [r[0] for r in results if not r[1]],
+        )
+        return {"user": str(user_id), "results": [(r[0], r[1]) for r in results]}
+
+    except (CustomUser.DoesNotExist, School.DoesNotExist) as e:
+        logger.error("hub_send: object not found error=%s", type(e).__name__)
+        return {"error": str(e)}
+
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        # Exponential backoff: 60s, 120s, 240s
+        countdown = 60 * (2**self.request.retries)
+        logger.warning(
+            "hub_send retry %d/3 recipient_id=%s error=%s next_in=%ds",
+            self.request.retries + 1,
+            user_id,
+            type(exc).__name__,
+            countdown,
+        )
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+def _hub_to_notif_type(event_type):
+    """تحويل event_type من Hub لنوع NotificationLog"""
+    mapping = {
+        "behavior_l1": "custom",
+        "behavior_l2": "custom",
+        "behavior_l3": "custom",
+        "behavior_l4": "custom",
+        "behavior_digest": "custom",
+        "absence": "absence_alert",
+        "grade": "grade_report",
+        "fail": "fail_alert",
+    }
+    return mapping.get(event_type, "custom")
+
+
+def _send_whatsapp(school, phone, title, body, delivery=None):
+    """
+    إرسال WhatsApp عبر Twilio WhatsApp Business API.
+    يحتاج: whatsapp_from_number في NotificationSettings
+
+    [B4-PRE1] السجلّ يُنشأ `pending` **قبل** المزوّد ثم يُحسم.
+
+    كان يُكتب بعد نجاح `messages.create` وحده، فمحاولة فشلت لا تترك أثراً:
+    القناة الوحيدة التي يبدو سجلّها نظيفاً دائماً هي القناة التي لا تُسجّل
+    فشلها. وكان يُسجَّل `channel="sms"` لأن `whatsapp` لم يكن في الخيارات —
+    تعليق في الكود يعترف بذلك بينما الصفّ في القاعدة يقول شيئاً آخر.
+
+    وإخفاق الإعدادات يُحسَم `failed` كذلك، مثل `send_sms` تماماً: رقم غير
+    مضبوط سببُ عدم وصول رسالة، ولا فرق عند المستلم بين ذلك وبين رفض المزوّد.
+    """
+    from notifications.models import NotificationLog, NotificationSettings
+
+    log = NotificationLog.objects.create(
+        school=school,
+        delivery=delivery,
+        recipient=f"whatsapp:{phone}",
+        channel="whatsapp",
+        notif_type="custom",
+        subject=title,
+        body=body,
+        status="pending",
+    )
+
+    try:
+        cfg = NotificationSettings.objects.filter(school=school).first()
+        if not cfg:
+            raise RuntimeError("لا توجد إعدادات إشعارات للمدرسة")
+
+        whatsapp_from = getattr(cfg, "whatsapp_from_number", "") or getattr(
+            cfg, "sms_from_number", ""
+        )
+        if not whatsapp_from:
+            raise RuntimeError("رقم WhatsApp غير مضبوط")
+
+        try:
+            from twilio.rest import Client
+        except ImportError as exc:
+            raise RuntimeError("مكتبة twilio غير مثبتة") from exc
+
+        try:
+            client = Client(cfg.twilio_account_sid, cfg.twilio_auth_token)
+            message = client.messages.create(
+                from_="whatsapp:" + whatsapp_from,
+                to="whatsapp:" + phone,
+                body=f"*{title}*\n{body}",
+            )
+        except Exception as exc:  # noqa: BLE001 — أخطاء المزوّد أنواع خاصة به
+            # [P2-B3] تُلَفّ في RuntimeError لأنها العقد الذي تمسكه مهمة التسليم.
+            # بلا ذلك يفلت خطأ Twilio من retry ومن DLQ معاً — وهو الفشل الأكثر
+            # احتمالاً في هذه القناة. والرسالة عامة عمداً: نصّ استثناء المزوّد
+            # يحمل عادةً الرقم الذي فشل.
+            raise RuntimeError("تعذّر إرسال رسالة WhatsApp عبر المزوّد.") from exc
+
+    except Exception as exc:  # noqa: BLE001 — يُحسَم السجلّ ثم يُعاد رفع الخطأ
+        log.status = "failed"
+        log.error_msg = _safe_error(exc)
+        log.save(update_fields=["status", "error_msg"])
+        raise
+
+    log.status = "sent"
+    log.save(update_fields=["status"])
+    return message.sid
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=0,
+    name="notifications.reconcile_deliveries",
+)
+def reconcile_deliveries_task(self, school_id):
+    """[B4-4] يُصالح تسليمات مدرسة واحدة.
+
+    `TenantRLSTask` يفرض `school_id` ويضبط السياق المستأجَر حوله — وهو نفسه
+    السبب الذي جعل نطاق المُصالِح مدرسةً واحدة لكل استدعاء: عبورُ المدارس في
+    نداءٍ واحد يحتاج إمّا تجاوز RLS وإمّا تبديل السياق داخل حلقة، والأول يهدم
+    الحدّ والثاني يجعل خطأً واحداً يترك السياق على مدرسة غير المقصودة.
+
+    `max_retries=0` عمداً: المُصالِح دوريّ بطبعه، والفشل اليوم يُعالَج في المسح
+    التالي. وإعادةُ محاولته فوراً تعني مُصالِحَين على نفس المدرسة يتنافسان على
+    نفس الصفوف بلا فائدة.
+
+    ولا جدولة Beat هنا: `BEAT_DEPLOY` غير مصرَّح به، والمهمّة تبقى بلا مُشغّل
+    دوريّ حتى يُصرَّح.
+    """
+    from .reconciler import reconcile_school
+
+    return reconcile_school(school_id)
+
+
+@shared_task(
+    base=TenantRLSTask,
+    bind=True,
+    max_retries=0,
+    name="notifications.release_after_quiet_hours",
+)
+def release_after_quiet_hours_task(
+    self: Any, school_id: Any, user_id: Any, target: str, payload: dict
+) -> dict:
+    """يحفظ إرسالاً خارجياً حتى تنتهي ساعاتُ هدوء مستلمه، ثم يُطلقه.
+
+    المرجعُ المشترك لكلّ مسارات الإرسال الخارجيّ (الـHub وخدمة الغياب والرسوب):
+    `quiet_hours.plan`. تُجدوَل هذه المهمّةُ بموعد (`eta`) لا يتجاوز قفزةً واحدة،
+    وعند كلّ قفزةٍ يُعاد السؤال — فإن انتهت الساعاتُ أُطلقت الحمولةُ كما هي إلى
+    مهمّة قناتها، وإلّا أعادت جدولةَ نفسها. القفزاتُ القصيرة عمداً: وسيطُ Redis
+    يُعيد تسليم رسالةٍ مؤجَّلة تجاوزت `visibility_timeout`، فموعدٌ واحدٌ بعيد
+    (حتى ثماني ساعات) كان يُخرجها مكرّرةً كلَّ ساعة.
+
+    `target` مفتاحٌ من قائمةٍ مغلقة لا اسمُ مهمّةٍ حرّ: هذه المهمّة لا تُنفّذ ما
+    يُملى عليها. والحمولةُ لا تحمل `delivery_id` — التسليمُ المتتبَّع يُعاد إنتاجُه
+    بالـHub (`dispatch_id`) لا هنا.
+
+    لا `retry`: الفشلُ في هذه الحلقة القصيرة يُعالَج بأنّ المنتِج (الـHub أو المُصالِح)
+    يعود فيطلب من جديد، ورسالةُ الخدمة المباشرة تبقى في سجلّ تنبيهها `pending`.
+    """
+    from core.models import CustomUser
+    from notifications import quiet_hours
+
+    targets = {
+        "hub": hub_send_notification_task,
+        "email": send_email_task,
+        "sms": send_sms_task,
+    }
+    task = targets.get(target)
+    if task is None:
+        logger.error("release_after_quiet_hours: unknown target=%s", target)
+        return {"status": "unknown_target"}
+
+    user = CustomUser.objects.filter(id=user_id).first()
+    if user is None:
+        plan = quiet_hours.QuietPlan(quiet_hours.SEND_NOW)
+    else:
+        plan = quiet_hours.plan(user)
+
+    if plan.action == quiet_hours.HOLD:
+        assert plan.eta is not None  # HOLD يحمل موعداً دائماً
+        self.apply_async(
+            kwargs={
+                "school_id": school_id,
+                "user_id": user_id,
+                "target": target,
+                "payload": payload,
+            },
+            eta=plan.eta,
+        )
+        return {"status": "held", "until": plan.eta.isoformat()}
+
+    if plan.action == quiet_hours.SKIP:
+        logger.warning("release_after_quiet_hours: no worker to hold — dropped target=%s", target)
+        return {"status": "skipped"}
+
+    task.delay(**payload)
+    return {"status": "released", "target": target}

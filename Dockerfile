@@ -1,0 +1,64 @@
+# ══════════════════════════════════════════════════════════════
+# SchoolOS v5.2 — Production Dockerfile
+# - Pinned base image
+# - Non-root user (appuser)
+# - HEALTHCHECK instruction
+# ══════════════════════════════════════════════════════════════
+
+# 3.12 = ما تُفحص عليه البوّابات (ruff/mypy/pytest). كان 3.11 هنا وحدَه منذ
+# 2026-04 فتُفحص الشيفرةُ على إصدارٍ وتعمل على غيره.
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DJANGO_SETTINGS_MODULE=shschool.settings.production
+
+WORKDIR /app
+
+# System dependencies (Cairo/Pango for PDF generation via pycairo/WeasyPrint)
+# Include -dev packages + pkg-config for building pycairo from source
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    pkg-config \
+    libpq-dev \
+    libcairo2 \
+    libcairo2-dev \
+    libpango-1.0-0 \
+    libpango1.0-dev \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-dev \
+    libffi-dev \
+    shared-mime-info \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# أدواتُ التطوير (pytest وruff وmypy) للصورة المحلّيّة وحدها: `docker-compose.yml`
+# يمرّر INSTALL_DEV=true، وRailway يبني بلا وسيطٍ فتبقى صورةُ الإنتاج كما هي.
+# وبلاها كانت كلُّ حاويةِ جلسةٍ تثبّت pytest بيدها، ويضيع مع إعادة إنشائها.
+ARG INSTALL_DEV=false
+RUN if [ "$INSTALL_DEV" = "true" ]; then pip install --no-cache-dir -r requirements-dev.txt; fi
+
+# Application code
+COPY . .
+
+# Create directories and non-root user
+RUN groupadd -r appuser && useradd -r -g appuser -d /app appuser \
+    && mkdir -p /app/media/letters /app/media/imports /app/staticfiles /app/logs \
+    && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget -qO- http://localhost:8000/health/ || exit 1
+
+# ASGI (daphne) — يدعم WebSocket/Channels مثل docker-compose.prod.yml (لا gunicorn WSGI)
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && daphne -b 0.0.0.0 -p 8000 shschool.asgi:application"]

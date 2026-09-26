@@ -1,0 +1,62 @@
+{% extends "base/base.html" %}
+{% load ui %}
+{% block title %}إحصاءات السلوك{% endblock %}
+
+{% block breadcrumbs %}
+{% include "components/breadcrumbs.html" with parent_url="/behavior/dashboard/" parent_label="السلوك" current="إحصاءات السلوك" %}
+{% endblock %}
+
+{% block content %}
+<div class="exec-dash">
+
+  {% page_header "إحصاءات السلوك المدرسي" subtitle=subtitle icon="behavior" %}{% endpage_header %}
+
+  {% kpi_strip label="أرقام العام الدراسي" %}
+    {% kpi "إجمالي المخالفات" total tone="maroon" %}
+    {% kpi "الدرجة الأولى" by_level.1 tone="blue" %}
+    {% kpi "الدرجة الثانية" by_level.2 tone="orange" %}
+    {% kpi "الدرجة 3 و4" severe_count tone="red" %}
+    {% kpi "نسبة الحلّ" resolved_label tone=resolved_tone title="المخالفات المحلولة من كلّ مخالفات العام" %}
+  {% endkpi_strip %}
+
+  <div class="ui-grid-2">
+    {% section_card "أكثر الطلاب مخالفة" meta="أعلى 10" icon="stats" empty="لا مخالفاتٍ هذا العام" %}{% if top_students %}
+      <input type="search" id="topStudentsSearch" class="form-control form-control-sm beh-search"
+             placeholder="بحث بالاسم..." autocomplete="off" aria-label="بحث بالاسم">
+      <ul class="plain-list is-scroll">
+        {% for s in top_students %}
+          <li class="plain-list__row js-filter-row" data-text="{{ s.student__full_name }}">
+            <a href="{% url 'behavior:behavior_report' s.student__id %}" class="plain-list__title link-maroon" title="التقرير السلوكي">{{ s.student__full_name }}</a>
+            <span class="status-badge status-maroon">{{ s.count }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+
+    {% section_card "التوزيع الشهري" icon="trend" empty="لا مخالفاتٍ هذا العام" %}{% if monthly_rows %}
+      <ul class="plain-list is-scroll">
+        {% for m in monthly_rows %}
+          <li class="plain-list__row">
+            <span class="plain-list__title">{{ m.month|date:"F Y" }}</span>
+            <span class="beh-bar">
+              <span class="progress-qatar beh-bar__track"><span class="progress-qatar-fill" style="--progress-w:{{ m.share }}%"></span></span>
+              <b class="beh-bar__value">{{ m.count }}</b>
+            </span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}{% endsection_card %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function(){
+  if (typeof window.smartFilter === 'function') {
+    window.smartFilter('topStudentsSearch', '.js-filter-row', { textAttr: 'data-text' });
+  }
+});
+</script>
+{% endblock extra_js %}

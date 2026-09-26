@@ -1,0 +1,211 @@
+{% load brand_tags %}
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 1.8cm 2cm 2cm 2cm; }
+  * { box-sizing: border-box; direction: rtl; }
+  html, body, div, p, span, td, th, li, h1, h2, h3, h4, h5, h6 {
+    direction: rtl !important;
+    text-align: right;
+    unicode-bidi: embed;
+  }
+  body {
+    font-family: 'Tajawal', 'Amiri', Tahoma, Arial, sans-serif;
+    font-size: 13px;
+    color: {% brand_color "TEXT_PRIMARY" %};
+    margin: 0;
+    padding: 0;
+    background: {% brand_color "SURFACE" %};
+    border: 2px solid {% brand_color "MAROON" %};
+  }
+  .page-wrapper {
+    border-top: 2.5px solid {% brand_color "MAROON" %};
+    border-bottom: 1px solid {% brand_color "GOLD" %};
+    padding: 0;
+  }
+  /* ===== HEADER ===== */
+  .doc-header {
+    width: 100%;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+    text-align: center !important;
+  }
+  .doc-header-logo {
+    width: 60px;
+    height: 60px;
+    margin: 0 auto 6px auto;
+    display: block;
+    object-fit: contain;
+  }
+  .doc-header-ministry {
+    font-size: 10px;
+    color: {% brand_color "TEXT_SECONDARY" %};
+    margin-bottom: 3px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .doc-header-school {
+    font-size: 19px;
+    font-weight: 700;
+    color: {% brand_color "MAROON" %};
+    line-height: 1.4;
+  }
+  /* Suppress duplicated names from child templates */
+  .school-name { display: none !important; }
+  .report-header { display: none !important; }
+  .header h1 { display: none !important; }
+  /* Keep form-title / date-line from child .header divs.
+     و`.form-title` في الأبناء عنصرُ عنوانٍ من المستوى الأوّل (2026-09-14): هذه
+     القاعدةُ (0,2,0) تغلب `.header h1` (0,1,1) فيبقى ظاهراً، وحجمُه ووزنُه وهوامشُه
+     من `.form-title` أدناه لا من افتراضات المتصفّح — فالورقةُ كما كانت. */
+  .header .form-title { display: block !important; }
+  .header .date-line  { display: block !important; }
+
+  /* ===== SECTIONS ===== */
+  .section { margin-bottom: 14px; page-break-inside: avoid; }
+  .section-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: {% brand_color "ON_FILL" %};
+    background: {% brand_color "MAROON" %};
+    padding: 5px 10px;
+    border-radius: 3px;
+    margin-bottom: 8px;
+  }
+  .report-title { font-size: 13px; font-weight: 700; color: {% brand_color "MAROON" %}; margin-bottom: 6px; }
+  .form-title { font-size: 15px; font-weight: 900; color: {% brand_color "MAROON" %}; text-align: center !important; margin: 6px 0 2px 0; }
+  .date-line { font-size: 11px; color: {% brand_color "TEXT_SECONDARY" %}; text-align: center !important; margin-bottom: 8px; }
+
+  /* ===== RTL for all tables ===== */
+  table { direction: rtl; border-collapse: collapse; width: 100%; }
+  td, th { text-align: right; }
+
+  /* ===== DATA TABLE (field rows) ===== */
+  .data-table { margin-bottom: 8px; font-size: 12px; }
+  .data-table td { padding: 5px 8px; border-bottom: 1px dotted {% brand_color "BORDER" %}; }
+  .data-table .fl { font-weight: 700; color: {% brand_color "TEXT_SECONDARY" %}; white-space: nowrap; width: 18%; }
+  .data-table .fv { color: {% brand_color "TEXT_PRIMARY" %}; }
+  .body-text { font-size: 12px; line-height: 1.7; color: {% brand_color "TEXT_PRIMARY" %}; margin: 4px 0; }
+
+  /* ===== CHECKBOXES ===== */
+  .checkbox-row { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 6px 0; }
+  .checkbox-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .checkbox-box {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid {% brand_color "TEXT_SECONDARY" %};
+    text-align: center;
+    line-height: 12px;
+    font-size: 11px;
+    border-radius: 2px;
+  }
+
+  /* ===== BADGES ===== */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+  .badge-A { background: {% brand_color "STATUS_DANGER_BG" %}; color: {% brand_color "STATUS_DANGER_DARK" %}; }
+  .badge-B { background: {% brand_color "STATUS_WARNING_BG" %}; color: {% brand_color "STATUS_WARNING_DARK" %}; }
+  .badge-C { background: {% brand_color "STATUS_SUCCESS_BG" %}; color: {% brand_color "STATUS_SUCCESS_FG" %}; }
+
+  /* ===== SIGNATURES ===== */
+  .sig-section { margin-top: 30px; page-break-inside: avoid; }
+  .sig-section-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: {% brand_color "MAROON" %};
+    border-bottom: 1px solid {% brand_color "BORDER" %};
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+  .sig-table { width: 100%; border-collapse: collapse; direction: rtl; }
+  .sig-table td {
+    width: 33.33%;
+    text-align: center !important;
+    padding: 0 10px;
+    vertical-align: bottom;
+    height: 60px;
+  }
+  .sig-table .sig-line {
+    border-top: 1.5px solid {% brand_color "TEXT_SECONDARY" %};
+    padding-top: 6px;
+    font-size: 11px;
+    color: {% brand_color "TEXT_PRIMARY" %};
+    text-align: center !important;
+  }
+
+  /* ===== FOOTER ===== */
+  .doc-footer {
+    margin-top: 16px;
+    padding-top: 6px;
+    border-top: 1.5px solid {% brand_color "MAROON" %};
+    text-align: center;
+    font-size: 10px;
+    color: {% brand_color "TEXT_PRIMARY" %};
+    font-weight: 600;
+    line-height: 1.7;
+  }
+  .doc-footer-vision { color: {% brand_color "MAROON_DARK" %}; font-size: 13px; font-weight: 600; }
+
+  /* ختمُ التصدير: من صدّر الوثيقةَ ومتى — تُلحقه الاستماراتُ الوارثة إن مُرِّر. */
+  .export-stamp {
+    text-align: center;
+    font-size: 8pt;
+    color: {% brand_color "TEXT_MUTED" %};
+    border-top: 1px solid {% brand_color "BORDER" %};
+    padding-top: 8px;
+    margin-top: 30px;
+  }
+  .export-stamp p { margin: 2px 0 0; }
+  .export-stamp p:first-child { margin: 0; }
+  .export-stamp strong { color: {% brand_color "TEXT_PRIMARY" %}; }
+
+  /* تباعدٌ تطلبه استمارةٌ بعينها — بين فقرتين أو قبل جدولٍ ثانٍ. */
+  .data-table.is-spaced { margin-top: 10px; }
+  .body-text.is-spaced { margin: 14px 0; }
+
+  .notice {
+    margin-top: 18px;
+    font-size: 10px;
+    color: {% brand_color "TEXT_MUTED" %};
+    text-align: center !important;
+    border-top: 1px solid {% brand_color "BORDER" %};
+    padding-top: 6px;
+    page-break-inside: avoid;
+  }
+
+  {% block extra_styles %}{% endblock %}
+
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .no-print { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page-wrapper">
+
+<!-- ===== DOCUMENT HEADER ===== -->
+<div class="doc-header">
+  <img src="static/brand/logoMaroon.png" class="doc-header-logo" alt="شعار المدرسة">
+  <div class="doc-header-ministry">وزارة التربية والتعليم والتعليم العالي – دولة قطر</div>
+  <div class="doc-header-school">{{ school.name|default:"المدرسة" }}</div>
+</div>
+
+<!-- ===== CHILD TEMPLATE CONTENT ===== -->
+{% block content %}{% endblock %}
+
+<!-- ===== DOCUMENT FOOTER ===== -->
+{% comment %}
+هوية المدرسة متغيّرة لا ثابتة: كان الذيل يحمل اسم مدرسةٍ بعينها وهاتفها
+وبريدها نصّاً عارياً، فتُطبع على وثائق كل مدرسة في المنصّة.
+{% endcomment %}
+<div class="doc-footer">
+  {{ school.name }}{% if school.phone %} · هاتف: {{ school.phone }}{% endif %}{% if school.email %} · {{ school.email }}{% endif %}{% if school.city %} · {{ school.city }}، قطر{% endif %}
+  <div class="doc-footer-vision">وزارة التربية والتعليم والتعليم العالي — دولة قطر — {% include "components/ministry_vision.html" %} · SchoolOS-SAMM © {% now "Y" %}</div>
+</div>
+
+</div>
+</body>
+</html>

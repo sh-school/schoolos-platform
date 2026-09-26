@@ -1,0 +1,420 @@
+import re
+from pathlib import Path
+
+import pytest
+from django.core.management.base import CommandError
+
+from core.management.commands import provision_rls_role as provision_role
+from core.management.commands import verify_runtime_db_role as runtime_role
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class FakeCursor:
+    def __init__(self, rows):
+        self._rows = iter(rows)
+
+    def execute(self, *args, **kwargs):
+        return None
+
+    def fetchone(self):
+        return next(self._rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class FakeConnection:
+    def __init__(self, rows, vendor="postgresql"):
+        self.vendor = vendor
+        self._rows = rows
+
+    def cursor(self):
+        return FakeCursor(self._rows)
+
+
+def runtime_rows(
+    *,
+    role="shschool_app",
+    superuser=False,
+    bypass_rls=False,
+    can_login=True,
+    inherit=False,
+    create_db=False,
+    create_role=False,
+    role_memberships=0,
+    can_create_in_public=False,
+    context=None,
+    tenant_bound=True,
+    mapping_writable=False,
+    rls_enabled=True,
+    policy_count=1,
+    owned_public_tables=0,
+):
+    """صفوف المؤشّر بترتيب استعلامات verify_runtime_db_role تماماً."""
+    return [
+        (role,),
+        (
+            superuser,
+            bypass_rls,
+            can_login,
+            inherit,
+            create_db,
+            create_role,
+        ),
+        (role_memberships,),
+        (can_create_in_public,),
+        (context,),
+        (tenant_bound,),
+        (mapping_writable, mapping_writable, mapping_writable, mapping_writable),
+        (rls_enabled,),
+        (policy_count,),
+        (owned_public_tables,),
+    ]
+
+
+def run_verifier(monkeypatch, **overrides):
+    rows = runtime_rows(**overrides)
+    monkeypatch.setattr(
+        runtime_role,
+        "connection",
+        FakeConnection(rows),
+    )
+    runtime_role.Command().handle()
+
+
+def test_runtime_role_accepts_safe_rls_worker(monkeypatch):
+    run_verifier(monkeypatch)
+
+
+def test_runtime_role_rejects_non_postgresql(monkeypatch):
+    monkeypatch.setattr(
+        runtime_role,
+        "connection",
+        FakeConnection([], vendor="sqlite"),
+    )
+
+    with pytest.raises(CommandError) as exc:
+        runtime_role.Command().handle()
+
+    assert "requires PostgreSQL" in str(exc.value)
+
+
+def test_runtime_role_rejects_wrong_database_role(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, role="postgres")
+
+    assert "Unsafe runtime DB role" in str(exc.value)
+
+
+def test_runtime_role_rejects_superuser(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, superuser=True)
+
+    assert "superuser=true" in str(exc.value)
+
+
+def test_runtime_role_rejects_bypassrls(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, bypass_rls=True)
+
+    assert "bypassrls=true" in str(exc.value)
+
+
+def test_runtime_role_rejects_non_login_role(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, can_login=False)
+
+    assert "cannot login" in str(exc.value)
+
+
+def test_runtime_role_rejects_inheriting_role(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(
+            monkeypatch,
+            inherit=True,
+        )
+
+    assert "inherit=true" in str(exc.value)
+
+
+def test_runtime_role_rejects_createdb(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, create_db=True)
+
+    assert "createdb=true" in str(exc.value)
+
+
+def test_runtime_role_rejects_createrole(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, create_role=True)
+
+    assert "createrole=true" in str(exc.value)
+
+
+def test_runtime_role_rejects_role_memberships(monkeypatch):
+    """[SEC-06] NOINHERIT لا يمنع SET ROLE — العضوية مسار تصعيد."""
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, role_memberships=1)
+
+    assert "SET ROLE escalation path" in str(exc.value)
+
+
+def test_runtime_role_rejects_schema_create_privilege(monkeypatch):
+    """[SEC-06] CREATE على المخطّط ⇒ جداول يملكها الدور تتجاوز RLS."""
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, can_create_in_public=True)
+
+    assert "CREATE on schema public" in str(exc.value)
+
+
+def test_runtime_role_rejects_missing_tenant_binding(monkeypatch):
+    """[SEC-07] بلا ربط دور←مدرسة تُقيَّم كل سياسة على NULL — رفض لا عمل أعمى."""
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, tenant_bound=False)
+
+    assert "no tenant binding" in str(exc.value)
+
+
+def test_runtime_role_rejects_writable_mapping(monkeypatch):
+    """[SEC-07] القدرة على تعديل جدول الربط = إعادة كتابة الهوية."""
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, mapping_writable=True)
+
+    assert "rewrite its own tenant identity" in str(exc.value)
+
+
+def test_runtime_role_rejects_missing_table_rls(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, rls_enabled=False)
+
+    assert "RLS is not enabled" in str(exc.value)
+
+
+@pytest.mark.parametrize("policy_count", [0, 2])
+def test_runtime_role_requires_exactly_one_canonical_policy(
+    monkeypatch,
+    policy_count,
+):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(monkeypatch, policy_count=policy_count)
+
+    assert "Expected exactly one" in str(exc.value)
+
+
+def test_runtime_role_rejects_owned_public_tables(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(
+            monkeypatch,
+            owned_public_tables=1,
+        )
+
+    assert "owns public tables" in str(exc.value)
+
+
+def test_runtime_role_rejects_inherited_tenant_context(monkeypatch):
+    with pytest.raises(CommandError) as exc:
+        run_verifier(
+            monkeypatch,
+            context="00000000-0000-0000-0000-000000000001",
+        )
+
+    assert "inherited a non-empty tenant RLS context" in str(exc.value)
+
+
+def test_worker_script_is_fail_closed_and_not_a_web_release_process():
+    script = (ROOT / "scripts" / "railway-worker.sh").read_text(encoding="utf-8")
+
+    required = (
+        "REDIS_URL is required for the Celery worker.",
+        "APP_DB_PASSWORD is required for the Celery worker.",
+        "unset DATABASE_URL",
+        "export DB_USER=shschool_app",
+        'export DB_PASSWORD="$APP_DB_PASSWORD"',
+        "python manage.py verify_runtime_db_role",
+        "exec celery -A shschool worker",
+    )
+
+    for fragment in required:
+        assert fragment in script
+
+    # `collectstatic` ليس هنا عمداً (N-042): يكتب في `STATIC_ROOT` المحلّيّ لحاوية العامل وحدَها لا في قرصٍ مشترك،
+    # وقالبُ PDF يحتاج manifest هذه الحاوية؛ وهو لا يلمس القاعدة. يحرسه tests/test_worker_collects_static.py.
+    forbidden = (
+        "python manage.py migrate",
+        "daphne",
+        "provision_rls_role",
+    )
+
+    for fragment in forbidden:
+        assert fragment not in script
+
+    # Creating a worker must not activate async producers in the web app.
+    assert "CELERY_ASYNC_ENABLED" not in script
+
+
+def test_worker_railway_config_is_worker_only():
+    iac = (ROOT / ".railway" / "railway.ts").read_text(encoding="utf-8")
+    match = re.search(r'service\("celery-worker",\s*\{(.*?)\n  \}\);', iac, re.DOTALL)
+    assert match, "خدمة العامل غير معرَّفة في .railway/railway.ts"
+    worker = match.group(1)
+
+    assert 'start: "bash scripts/railway-worker.sh"' in worker
+    assert "build: DOCKER_BUILD" in worker
+    assert "deploy: RESTART_ON_FAILURE" in worker
+
+    # A Celery worker has no HTTP health endpoint.
+    assert "healthcheck" not in worker
+
+
+def test_runtime_role_critical_relation_is_schema_qualified():
+    assert runtime_role.CRITICAL_RLS_RELATION == "public.operations_session"
+
+    source = (ROOT / "core" / "management" / "commands" / "verify_runtime_db_role.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "[CRITICAL_RLS_RELATION]" in source
+
+
+class ProvisionCursor:
+    def __init__(self, role_exists):
+        self.role_exists = role_exists
+        self.calls = []
+        self.fetchone_count = 0
+
+    def execute(self, sql, params=None):
+        self.calls.append(
+            (
+                " ".join(sql.split()),
+                params,
+            )
+        )
+
+    def fetchone(self):
+        self.fetchone_count += 1
+
+        # 1) هل الدور موجود؟
+        if self.fetchone_count == 1:
+            return (1, None, None, None) if self.role_exists else None
+
+        # 2) سمات الدور بعد التوفير (6 أعمدة)
+        if self.fetchone_count == 2:
+            return (
+                False,  # rolsuper
+                False,  # rolbypassrls
+                True,  # rolcanlogin
+                False,  # rolinherit
+                False,  # rolcreatedb
+                False,  # rolcreaterole
+            )
+
+        # 3) عدد عضويات الدور
+        if self.fetchone_count == 3:
+            return (0,)
+
+        raise AssertionError("unexpected fetchone call")
+
+    def fetchall(self):
+        # [SEC-07] _resolve_school_id: مدرسة واحدة ⇒ استنتاج مقبول.
+        return [("11111111-1111-1111-1111-111111111111",)]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(
+        self,
+        exc_type,
+        exc,
+        tb,
+    ):
+        return False
+
+
+class ProvisionConnection:
+    vendor = "postgresql"
+    settings_dict = {
+        "NAME": "school_test",
+    }
+
+    def __init__(self, role_exists):
+        self.cursor_instance = ProvisionCursor(role_exists)
+
+    def cursor(self):
+        return self.cursor_instance
+
+
+@pytest.mark.parametrize(
+    ("role_exists", "expected_sql"),
+    [
+        (
+            True,
+            (
+                "ALTER ROLE shschool_app WITH LOGIN PASSWORD %s "
+                "NOSUPERUSER NOBYPASSRLS NOINHERIT "
+                "NOCREATEDB NOCREATEROLE"
+            ),
+        ),
+        (
+            False,
+            (
+                "CREATE ROLE shschool_app LOGIN PASSWORD %s "
+                "NOSUPERUSER NOBYPASSRLS NOINHERIT "
+                "NOCREATEDB NOCREATEROLE"
+            ),
+        ),
+    ],
+)
+def test_provision_rls_role_enforces_noinherit(
+    monkeypatch,
+    role_exists,
+    expected_sql,
+):
+    connection = ProvisionConnection(role_exists)
+
+    monkeypatch.setattr(
+        provision_role,
+        "connection",
+        connection,
+    )
+
+    monkeypatch.setenv(
+        "APP_DB_PASSWORD",
+        "test-only-password",
+    )
+
+    provision_role.Command().handle()
+
+    executed_sql = [sql for sql, _params in connection.cursor_instance.calls]
+
+    assert expected_sql in executed_sql
+
+    role_check_sql = [sql for sql in executed_sql if "SELECT rolsuper" in sql]
+
+    assert len(role_check_sql) == 1
+    assert "rolinherit" in role_check_sql[0]
+    assert "rolcreatedb" in role_check_sql[0]
+    assert "rolcreaterole" in role_check_sql[0]
+
+    # [SEC-06] CREATE على المخطّط يُلغى صراحةً — قواعد مُرقّاة من إصدارات
+    # أقدم من PostgreSQL 15 تحتفظ بالمنحة القديمة لولا هذا السطر.
+    assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC" in executed_sql
+    assert "REVOKE CREATE ON SCHEMA public FROM shschool_app" in executed_sql
+
+    # العضويات تُرصد ولا تُلغى تلقائياً — الفاحص هو من يرفض الإقلاع.
+    membership_sql = [sql for sql in executed_sql if "pg_has_role" in sql]
+
+    assert len(membership_sql) == 1
+
+    # [SEC-07] السحب يجب أن يأتي بعد المنح الشاملة، وإلا أعادها الإطلاق التالي.
+    revoke_index = next(
+        i for i, sql in enumerate(executed_sql) if "REVOKE INSERT, UPDATE, DELETE, TRUNCATE" in sql
+    )
+    grant_all_index = next(
+        i for i, sql in enumerate(executed_sql) if "ON ALL TABLES IN SCHEMA public" in sql
+    )
+
+    assert revoke_index > grant_all_index
