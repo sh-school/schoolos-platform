@@ -4,29 +4,29 @@
 -r requirements.txt
 
 # Testing
-pytest==9.1.1
+pytest==9.2.0
 pytest-cov==7.1.0
 pytest-django==4.14.0
-pytest-asyncio==1.4.0
+pytest-asyncio==1.4.1.post1
 pytest-xdist==3.8.0          # Parallel test execution across CPU cores
-pytest-testmon==2.2.0        # Incremental testing — only run tests affected by changes
-coverage==7.16.1
+pytest-testmon==2.3.0        # Incremental testing — only run tests affected by changes
+coverage==7.17.2
 factory-boy==3.3.3
-Faker==40.39.0
+Faker==40.44.0
 
 # Code quality
-black==26.5.1
-isort==9.0.1
+black==26.10.1
+isort==9.0.2
 ruff==0.4.4  # ثابتٌ عمداً — يطابق CI (quality-gate.yml) وpre-commit، انظر feedback_ruff_pinned_version
 
 # Type checking — إصداراتُه ثابتةٌ في ملفٍّ واحدٍ يقرؤه CI أيضاً (OWN-30، انظر رأس الملفّ)
 -r requirements-mypy.txt
 
 # Load testing
-locust==2.46.6
+locust==2.47.0
 
 # Mutation testing (quality.yml الأسبوعيّ + make test-mutmut)
-mutmut==3.8.0
+mutmut==3.8.1
 
 # تنظيف تاريخ git (أداةُ مالكٍ، لا تدخل صورةَ الإنتاج)
 git-filter-repo==2.47.0
@@ -42,5 +42,5 @@ django-migration-linter==6.0.0
 
 # اختبارات المتصفّح (tests/e2e/ + بوّابة axe-core الحيّة، P2-1) — playwright
 # نفسُه في requirements.txt، لكنّ إضافة pytest عليه أداةُ اختبارٍ لا إنتاج.
-pytest-playwright==0.9.0
+pytest-playwright==0.10.0
 axe-playwright-python==0.1.8
